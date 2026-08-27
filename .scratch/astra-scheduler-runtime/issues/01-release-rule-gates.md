@@ -72,3 +72,4 @@ Claimed by: CodeBuddy agent + Codex Linux/WSL revision (2026-08-27)
 - 2026-08-27因D-167/D-168与R-111/R-112重新打开本Ticket；保留原R-004/R-005/R-094证据并追加WSL-only开发门禁。
 - 2026-08-27批准修订后，从WSL执行追踪校验与15项release gate均通过；AST-001重新完成并解锁AST-002。
 - 2026-08-27（Linux/WSL符合性审计）：确认全部交付物与R-111/R-112一致——CI仅使用Linux runner（`runs-on: ubuntu-latest`）、AGENTS.md与docs/development.md固定WSL命令入口与canonical path、milestones.md含Local WSL development gate；对齐`tools/check_release_gates.py` docstring运行命令为WSL形式，并从WSL复核`Ran 15 tests ... OK`与`Traceability valid`。
+- 2026-08-27（Python版本对齐）：WSL仅提供python3.8（3.8.10）；CI setup-python从3.12改为与本机WSL一致的3.8，脚本docstring标注兼容Python 3.8+；WSL复验`py_compile`与`Ran 15 tests ... OK`。

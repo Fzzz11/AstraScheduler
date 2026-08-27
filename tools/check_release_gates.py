@@ -1,16 +1,16 @@
-"""AST-001 release rule gates: repository documentation/configuration tests.
+"""AST-001 发布规则门禁：仓库文档/配置测试。
 
 Source ticket: .scratch/astra-scheduler-runtime/issues/01-release-rule-gates.md
 Primary rules: R-004, R-005, R-094, R-112.
 
-These tests audit the specification, the published tickets and the release
-planning entry points so that the "approved Spec gates ticketing/implementation"
-policy and the Phase 0 -> v1.0 milestone delivery matrix are enforced by the
-CI entry point instead of relying on chat context.
+这些测试审计规格、已发布的 Ticket 与发布规划入口，使"批准 Spec 才可拆票/实现"
+策略和 Phase 0 -> v1.0 里程碑交付矩阵由 CI 入口强制校验，而不是依赖聊天上下文。
 
-Run locally (R-112: from the WSL Linux user space):
+本地运行（R-112：必须在 WSL Linux 用户空间执行）：
 
     wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_release_gates.py"
+
+Python 兼容性：3.8+（WSL 基线为 python3.8 / 3.8.10；CI 固定 3.8 保持一致）。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ AGENTS_PATH = REPO_ROOT / "AGENTS.md"
 DEVELOPMENT_PATH = REPO_ROOT / "docs" / "development.md"
 AST001_PATH = ISSUES_DIR / "01-release-rule-gates.md"
 
-# R-094 milestone sequence, in delivery order. Phase 0 is untagged scaffold.
+# R-094 里程碑序列，按交付顺序排列。Phase 0 为无 tag 的脚手架。
 ALLOWED_MILESTONES = (
     "Phase 0",
     "v0.1.0",
@@ -58,7 +58,7 @@ def read_required(path: Path) -> str:
 
 
 def parse_rule_blocks(spec_text: str) -> dict[str, str]:
-    """Split the spec into rule blocks keyed by rule id."""
+    """将 spec 按规则 id 切分为规则块。"""
     return {
         match.group(1): match.group(0)
         for match in RULE_BLOCK_RE.finditer(spec_text)
@@ -66,7 +66,7 @@ def parse_rule_blocks(spec_text: str) -> dict[str, str]:
 
 
 def section_body(testcase: unittest.TestCase, markdown: str, heading: str) -> str:
-    """Return the body of a '## <heading>' section (fails if the section is missing)."""
+    """返回 '## <heading>' 节的内容（节缺失时失败）。"""
     marker = f"## {heading}"
     testcase.assertIn(marker, markdown, f"document is missing the '## {heading}' section")
     start = markdown.index(marker) + len(marker)
@@ -75,14 +75,14 @@ def section_body(testcase: unittest.TestCase, markdown: str, heading: str) -> st
 
 
 def text_before(testcase: unittest.TestCase, markdown: str, heading: str) -> str:
-    """Return everything before a '## <heading>' section (fails if missing)."""
+    """返回 '## <heading>' 节之前的内容（节缺失时失败）。"""
     marker = f"## {heading}"
     testcase.assertIn(marker, markdown, f"document is missing the '## {heading}' section")
     return markdown.split(marker, 1)[0]
 
 
 def subsection_body(testcase: unittest.TestCase, markdown: str, heading: str) -> str:
-    """Return the body of a '### <heading>' subsection."""
+    """返回 '### <heading>' 子节的内容。"""
     marker = f"### {heading}"
     testcase.assertIn(marker, markdown, f"document is missing the '### {heading}' subsection")
     start = markdown.index(marker) + len(marker)
@@ -94,14 +94,14 @@ def subsection_body(testcase: unittest.TestCase, markdown: str, heading: str) ->
 
 
 class R004SpecScopeTests(unittest.TestCase):
-    """R-004: the spec covers the cross-version Runtime and every rule declares its scope."""
+    """R-004：spec 覆盖跨版本 Runtime，且每条规则声明其适用范围。"""
 
     @classmethod
     def setUpClass(cls):
         cls.spec_text = read_required(SPEC_PATH)
 
     def test_R004_spec_status_is_approved(self):
-        """Gate: only an approved spec may back ticketing/implementation work."""
+        """门禁：只有 approved 状态的 spec 才能支撑拆票/实现工作。"""
         header = self.spec_text.split("## ", 1)[0]
         self.assertRegex(header, r"(?m)^Status: approved\b")
 
@@ -124,7 +124,7 @@ class R004SpecScopeTests(unittest.TestCase):
         )
 
     def test_R004_spec_states_cross_version_scope(self):
-        """The overall goal must not be narrowed to a single version range."""
+        """整体目标不得被收窄为单一版本范围。"""
         problem_statement = section_body(self, self.spec_text, "Problem Statement")
         goals = section_body(self, self.spec_text, "Goals")
         preamble = text_before(self, self.spec_text, "Problem Statement")
@@ -135,7 +135,7 @@ class R004SpecScopeTests(unittest.TestCase):
 
 
 class R005TicketVersioningTests(unittest.TestCase):
-    """R-005: implementation work is split into tickets that each record a target version."""
+    """R-005：实现工作拆分为多个 Ticket，且每个 Ticket 记录目标版本。"""
 
     @classmethod
     def setUpClass(cls):
@@ -194,7 +194,7 @@ class R005TicketVersioningTests(unittest.TestCase):
 
 
 class R094MilestoneGateTests(unittest.TestCase):
-    """R-094: Phase 0 through v1.0 is delivered as independently buildable milestone tags."""
+    """R-094：Phase 0 至 v1.0 以可独立构建的里程碑 tag 交付。"""
 
     @classmethod
     def setUpClass(cls):
@@ -280,7 +280,7 @@ class R094MilestoneGateTests(unittest.TestCase):
 
 
 class R112WslDevelopmentGateTests(unittest.TestCase):
-    """R-112: local development and verification commands run in WSL Linux."""
+    """R-112：本机开发与验证命令在 WSL Linux 内执行。"""
 
     @classmethod
     def setUpClass(cls):

@@ -15,6 +15,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # 与本机 WSL 基线一致：WSL 默认 python3 为 3.8.10（仅 python3.8）
+          python-version: "3.8"
       - name: Approved-spec and milestone release gate audit
         run: python -X utf8 tools/check_release_gates.py
