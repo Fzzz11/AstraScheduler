@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
-# AstraScheduler — Phase 0 compiled library 与可安装 CMake package（AST-002 / R-110）。
+# AstraScheduler — Phase 0 compiled library、可安装 CMake package 与版本契约
+#（AST-002 / R-110；AST-003 / R-093）。
 # Supported Configuration 仅 64-bit Linux（R-111 / D-167）。
 
 project(AstraScheduler VERSION 0.1.0 LANGUAGES CXX)
@@ -19,12 +20,20 @@ set(CMAKE_INSTALL_LIBDIR "lib" CACHE PATH "Library installation directory")
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+# R-093（AST-003）：单一版本源——project VERSION 经 configure_file 生成
+# public header 版本宏；CMake version file 与 library 版本符号均源于此。
+configure_file(
+  cmake/version.hpp.in
+  "${CMAKE_CURRENT_BINARY_DIR}/include/astra/version.hpp"
+  @ONLY
+)
+
 # R-110：tests/examples/benchmarks/tools 由 ASTRA_BUILD_* 选项控制；
 # 当前仓库只有 tests 入口（ASTRA_BUILD_TESTS），examples/benchmarks/tools
 # 选项在对应目录引入时按同一命名加入。作为子工程被消费时不构建测试。
 option(ASTRA_BUILD_TESTS "Build the AstraScheduler test entry points" ON)
 
-add_library(AstraScheduler src/skeleton.cpp)
+add_library(AstraScheduler src/version.cpp)
 add_library(AstraScheduler::AstraScheduler ALIAS AstraScheduler)
 
 # R-110：CMake target 声明 cxx_std_20（通过 PUBLIC compile feature 传播给 consumer）。
@@ -32,6 +41,8 @@ target_compile_features(AstraScheduler PUBLIC cxx_std_20)
 
 target_include_directories(AstraScheduler
   PUBLIC
+    # R-093：生成的 version.hpp（构建期由 configure_file 产出）。
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
@@ -51,6 +62,7 @@ set_target_properties(AstraScheduler PROPERTIES
 )
 
 # R-110：实现目录不安装；public headers 仅位于 include/astra。
+# R-093：生成的 version.hpp 是 public header，与源树 header 同位安装。
 install(TARGETS AstraScheduler
   EXPORT AstraSchedulerTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -61,6 +73,10 @@ install(TARGETS AstraScheduler
 
 install(DIRECTORY include/astra
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/include/astra/version.hpp"
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/astra
 )
 
 install(EXPORT AstraSchedulerTargets
@@ -75,10 +91,13 @@ configure_package_config_file(
   INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AstraScheduler
 )
 
+# R-093：CMake exact-version 检查是主要 mismatch 边界——请求版本与安装
+# 版本不一致（含同 major 的更旧组合）在 configure 边界即被拒绝；
+# D-145：binary consumer 升级时必须 rebuild/relink。
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/AstraSchedulerConfigVersion.cmake"
   VERSION ${PROJECT_VERSION}
-  COMPATIBILITY SameMajorVersion
+  COMPATIBILITY ExactVersion
 )
 
 install(FILES

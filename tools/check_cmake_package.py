@@ -1,12 +1,15 @@
-"""AST-002 CMake package 门禁：编译、安装并验证独立 Linux consumer smoke。
+"""AstraScheduler CMake package 门禁：编译、安装并验证独立 Linux consumer smoke。
 
-Source ticket: .scratch/astra-scheduler-runtime/issues/02-cmake-package.md
-Primary rules: R-110（primary）、R-111（supporting）。
+Source tickets:
+- .scratch/astra-scheduler-runtime/issues/02-cmake-package.md（R-110 primary、R-111 supporting）
+- .scratch/astra-scheduler-runtime/issues/03-version-contract.md（R-093 primary）
 
 这些测试在 WSL/Linux 中构建 C++20 compiled library、安装为可消费的
 CMake package，并用仓库外的独立最小 consumer 工程执行 find_package/
 link/run smoke；同时审计 install 布局、符号可见性与 consumer compile
-line 不携带内部诊断选项或私有 include 路径。
+line 不携带内部诊断选项或私有 include 路径。R-093 增加版本契约门禁：
+同一安装 header/library 版本一致、查询无副作用、CMake exact-version
+边界拒绝错误版本请求、手工链接时篡改 header 的 mismatch 可被诊断。
 
 本地运行（R-112：必须在 WSL Linux 用户空间执行）：
 
@@ -15,6 +18,7 @@ line 不携带内部诊断选项或私有 include 路径。
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -22,6 +26,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from collections import namedtuple
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +36,9 @@ CXX = os.environ.get("CXX", "g++")
 
 # install 树中允许出现的文件后缀（R-111：仅 Linux 产物）。
 FORBIDDEN_INSTALL_SUFFIXES = (".dll", ".lib", ".exe")
+
+# 单一版本源解析结果（project VERSION 三元组）。
+ProjectVersion = namedtuple("ProjectVersion", "major minor patch")
 
 
 def run_checked(command, cwd=None, context=""):
@@ -50,85 +58,111 @@ def run_checked(command, cwd=None, context=""):
     return proc.stdout
 
 
+def _cmake_build_install(build, install, extra_args, label):
+    """configure → build → ctest → install 的统一构建流程。"""
+    run_checked(
+        ["cmake", "-S", str(REPO_ROOT), "-B", str(build),
+         "-DCMAKE_BUILD_TYPE=Release", *extra_args],
+        context=f"configure {label}",
+    )
+    run_checked(
+        ["cmake", "--build", str(build), "--parallel"],
+        context=f"build {label}",
+    )
+    run_checked(
+        ["ctest", "--test-dir", str(build), "--output-on-failure"],
+        context=f"ctest {label}",
+    )
+    run_checked(
+        ["cmake", "--install", str(build), "--prefix", str(install)],
+        context=f"install {label}",
+    )
+
+
+def _build_consumer(workdir, prefix, name):
+    """把 consumer 模板复制到仓库外并构建 smoke。"""
+    source = workdir / name
+    shutil.copytree(CONSUMER_TEMPLATE, source)
+    build = source / "build"
+    run_checked(
+        ["cmake", "-S", str(source), "-B", str(build),
+         "-DCMAKE_PREFIX_PATH=" + str(prefix),
+         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
+        context=f"configure {name}",
+    )
+    run_checked(
+        ["cmake", "--build", str(build)],
+        context=f"build {name}",
+    )
+    return source
+
+
+# 模块级共享构建缓存：多个测试类复用同一次 build/install/consumer，
+# 避免每个类重复完整构建；进程退出时经 atexit 清理临时目录。
+_SHARED_BUILDS = None
+
+
+def _get_shared_builds():
+    global _SHARED_BUILDS
+    if _SHARED_BUILDS is not None:
+        return _SHARED_BUILDS
+
+    # RED 失败点：仓库尚未提供 compiled library / CMake package。
+    if not ROOT_CMAKE.is_file():
+        raise FileNotFoundError(
+            f"required CMake project is missing: {ROOT_CMAKE}"
+        )
+    if not (CONSUMER_TEMPLATE / "main.cpp").is_file():
+        raise FileNotFoundError(
+            f"consumer template is missing: {CONSUMER_TEMPLATE}"
+        )
+
+    workdir = Path(tempfile.mkdtemp(prefix="astra-package-gates-"))
+    atexit.register(shutil.rmtree, str(workdir), True)
+
+    # static（默认变体）与 shared（BUILD_SHARED_LIBS=ON 可选变体）
+    # 共用同一套 in-tree tests（R-110：static/shared 共用语义/tests）。
+    static_build = workdir / "build-static"
+    static_install = workdir / "install-static"
+    _cmake_build_install(static_build, static_install, (), "static")
+
+    shared_build = workdir / "build-shared"
+    shared_install = workdir / "install-shared"
+    _cmake_build_install(
+        shared_build, shared_install, ("-DBUILD_SHARED_LIBS=ON",), "shared",
+    )
+
+    # 仓库外独立 consumer（static 与 shared 各一）
+    static_consumer = _build_consumer(workdir, static_install, "consumer-static")
+    shared_consumer = _build_consumer(workdir, shared_install, "consumer-shared")
+
+    _SHARED_BUILDS = {
+        "workdir": workdir,
+        "static_build": static_build,
+        "static_install": static_install,
+        "shared_build": shared_build,
+        "shared_install": shared_install,
+        "static_consumer": static_consumer,
+        "shared_consumer": shared_consumer,
+    }
+    return _SHARED_BUILDS
+
+
 class PackageBuildFixture(unittest.TestCase):
-    """公共 fixture：在仓库外构建并安装 static/shared 两个变体与两个 consumer。"""
+    """公共 fixture：复用模块级共享构建（仓库外 static/shared 变体与 consumer）。"""
 
     workdir = None
 
     @classmethod
     def setUpClass(cls):
-        # RED 失败点：仓库尚未提供 compiled library / CMake package。
-        if not ROOT_CMAKE.is_file():
-            raise FileNotFoundError(
-                f"required CMake project is missing: {ROOT_CMAKE}"
-            )
-        if not (CONSUMER_TEMPLATE / "main.cpp").is_file():
-            raise FileNotFoundError(
-                f"consumer template is missing: {CONSUMER_TEMPLATE}"
-            )
-
-        cls.workdir = Path(tempfile.mkdtemp(prefix="astra-ast002-"))
-
-        # static（默认变体）与 shared（BUILD_SHARED_LIBS=ON 可选变体）
-        # 共用同一套 in-tree tests（R-110：static/shared 共用语义/tests）。
-        cls.static_build = cls.workdir / "build-static"
-        cls.static_install = cls.workdir / "install-static"
-        cls._cmake_build_install(cls.static_build, cls.static_install, (), "static")
-
-        cls.shared_build = cls.workdir / "build-shared"
-        cls.shared_install = cls.workdir / "install-shared"
-        cls._cmake_build_install(
-            cls.shared_build, cls.shared_install,
-            ("-DBUILD_SHARED_LIBS=ON",), "shared",
-        )
-
-        # 仓库外独立 consumer（static 与 shared 各一）
-        cls.static_consumer = cls._build_consumer(cls.static_install, "consumer-static")
-        cls.shared_consumer = cls._build_consumer(cls.shared_install, "consumer-shared")
-
-    @classmethod
-    def _cmake_build_install(cls, build, install, extra_args, label):
-        """configure → build → ctest → install 的统一构建流程。"""
-        run_checked(
-            ["cmake", "-S", str(REPO_ROOT), "-B", str(build),
-             "-DCMAKE_BUILD_TYPE=Release", *extra_args],
-            context=f"configure {label}",
-        )
-        run_checked(
-            ["cmake", "--build", str(build), "--parallel"],
-            context=f"build {label}",
-        )
-        run_checked(
-            ["ctest", "--test-dir", str(build), "--output-on-failure"],
-            context=f"ctest {label}",
-        )
-        run_checked(
-            ["cmake", "--install", str(build), "--prefix", str(install)],
-            context=f"install {label}",
-        )
-
-    @classmethod
-    def _build_consumer(cls, prefix, name):
-        """把 consumer 模板复制到仓库外并构建、运行 smoke。"""
-        source = cls.workdir / name
-        shutil.copytree(CONSUMER_TEMPLATE, source)
-        build = source / "build"
-        run_checked(
-            ["cmake", "-S", str(source), "-B", str(build),
-             "-DCMAKE_PREFIX_PATH=" + str(prefix),
-             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
-            context=f"configure {name}",
-        )
-        run_checked(
-            ["cmake", "--build", str(build)],
-            context=f"build {name}",
-        )
-        return source
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls.workdir is not None:
-            shutil.rmtree(cls.workdir, ignore_errors=True)
+        builds = _get_shared_builds()
+        cls.workdir = builds["workdir"]
+        cls.static_build = builds["static_build"]
+        cls.static_install = builds["static_install"]
+        cls.shared_build = builds["shared_build"]
+        cls.shared_install = builds["shared_install"]
+        cls.static_consumer = builds["static_consumer"]
+        cls.shared_consumer = builds["shared_consumer"]
 
     def _consumer_binary(self, consumer):
         binary = consumer / "build" / "consumer"
@@ -226,14 +260,23 @@ class R110PackageConsumerGates(PackageBuildFixture):
             ["nm", "-D", "--defined-only", str(shared)],
             context="nm dynamic symbols",
         )
+        # AST-003 起，版本查询 API 取代 AST-002 的私有探针，成为首个
+        # 正式导出的 public symbol 集。
         self.assertIn(
-            "package_probe_exported", dynamic,
-            "export macro failed to publish the exported probe symbol",
+            "_ZN5astra15library_versionEv", dynamic,
+            "export macro failed to publish astra::library_version()",
         )
-        self.assertIsNone(
-            re.search(r"package_probe[^_]", dynamic),
-            "internal (hidden) symbol leaked into the shared dynamic symbol "
-            f"table: {dynamic}",
+        self.assertIn(
+            "_ZN5astra22library_version_stringEv", dynamic,
+            "export macro failed to publish astra::library_version_string()",
+        )
+        # 动态表中 astra 命名空间导出符号必须只有这两个版本查询；
+        # 其余符号（含版本字符串静态存储）保持 hidden。
+        exported = re.findall(r"_ZN5astra\w+", dynamic)
+        self.assertCountEqual(
+            exported,
+            ["_ZN5astra15library_versionEv", "_ZN5astra22library_version_stringEv"],
+            f"unexpected astra dynamic symbols leaked: {dynamic}",
         )
 
     def test_R110_public_header_rejects_fno_exceptions(self):
@@ -312,6 +355,154 @@ class R111LinuxOnlyVariantGates(PackageBuildFixture):
     def test_R111_static_and_shared_both_install_and_consume(self):
         self._run_consumer(self.static_consumer)
         self._run_consumer(self.shared_consumer)
+
+
+class R093VersionContractGates(PackageBuildFixture):
+    """R-093：header/library 版本查询与 mismatch 诊断。"""
+
+    def _project_version(self):
+        """从 CMakeLists.txt 读取单一版本源（project VERSION）。"""
+        text = ROOT_CMAKE.read_text(encoding="utf-8")
+        match = re.search(
+            r"project\(AstraScheduler\s+VERSION\s+(\d+)\.(\d+)\.(\d+)", text
+        )
+        self.assertIsNotNone(
+            match, "CMakeLists.txt must declare project(AstraScheduler VERSION x.y.z)"
+        )
+        return ProjectVersion(
+            int(match.group(1)), int(match.group(2)), int(match.group(3))
+        )
+
+    def test_R093_installed_version_sources_stay_consistent(self):
+        # 单一版本源：installed header 宏、CMake version file 与 consumer
+        # 模板的 exact-version 钉住值必须都来自 project VERSION（各生成/
+        # 维护路径不得漂移；升级时钉住值随门禁失败一并更新）。
+        major, minor, patch = self._project_version()
+        header = (self.static_install / "include" / "astra" / "version.hpp").read_text(
+            encoding="utf-8"
+        )
+        for name, value in (
+            ("ASTRA_VERSION_MAJOR", major),
+            ("ASTRA_VERSION_MINOR", minor),
+            ("ASTRA_VERSION_PATCH", patch),
+        ):
+            self.assertRegex(
+                header, rf"#define {name} {value}\b",
+                f"installed version.hpp macro {name} drifted from project version",
+            )
+        version_file = (
+            self.static_install / "lib" / "cmake" / "AstraScheduler"
+            / "AstraSchedulerConfigVersion.cmake"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            f'set(PACKAGE_VERSION "{major}.{minor}.{patch}")', version_file,
+            "CMake package version file drifted from project version",
+        )
+        consumer_template = (CONSUMER_TEMPLATE / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            f"find_package(AstraScheduler {major}.{minor}.{patch} REQUIRED)",
+            consumer_template,
+            "consumer template must pin the full version triple declared by "
+            "project VERSION (R-093 exact-version boundary)",
+        )
+
+    def test_R093_same_install_consumers_verify_version_contract(self):
+        # consumer 内部断言 header==library、查询不启动线程、string_view
+        # 稳定且三元组一致；任一失败都会以非零退出。
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+    def test_R093_find_package_rejects_version_mismatch_at_configure(self):
+        # R-093：CMake exact-version 检查是主要 mismatch 边界——请求同
+        # major 的更旧版本（0.x minor 可含 breaking change 的错误组合）
+        # 必须在 configure 边界被拒绝。RED：宽版本兼容模式下该请求会被
+        # 错误接受（纯净 HEAD 上请求 0.0.9 对 0.1.0 安装 configure 成功）。
+        major, minor, patch = self._project_version()
+        if patch > 0:
+            requested = f"{major}.{minor}.{patch - 1}"
+        elif minor > 0:
+            requested = f"{major}.{minor - 1}.0"
+        else:
+            self.skipTest("no same-major older version exists to request")
+        source = self.workdir / "consumer-mismatch-cmake"
+        shutil.copytree(CONSUMER_TEMPLATE, source)
+        cmake_lists = source / "CMakeLists.txt"
+        cmake_lists.write_text(
+            re.sub(
+                r"find_package\(AstraScheduler [^)]*\)",
+                f"find_package(AstraScheduler {requested} REQUIRED)",
+                cmake_lists.read_text(encoding="utf-8"),
+            ),
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            ["cmake", "-S", str(source), "-B", str(source / "build"),
+             "-DCMAKE_PREFIX_PATH=" + str(self.static_install)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertNotEqual(
+            proc.returncode, 0,
+            f"find_package(AstraScheduler {requested}) must be rejected at "
+            f"configure time against installed {major}.{minor}.{patch} "
+            f"(exact-version mismatch boundary):\n{proc.stdout}",
+        )
+        self.assertIn(
+            "version", proc.stdout.lower(),
+            f"configure failure must report the version mismatch:\n{proc.stdout}",
+        )
+
+    def test_R093_manual_link_detects_doctored_header_mismatch(self):
+        # R-093 例外边界：绕过 CMake package 手工链接时，运行期
+        # header/library 比较必须能发现被篡改的 header 组合（可诊断
+        # 不等于受支持）。
+        major, minor, patch = self._project_version()
+        doctored_include = self.workdir / "doctored-include"
+        shutil.copytree(self.static_install / "include", doctored_include)
+        doctored_header = doctored_include / "astra" / "version.hpp"
+        original = doctored_header.read_text(encoding="utf-8")
+        doctored_header.write_text(
+            re.sub(
+                r"#define ASTRA_VERSION_MINOR \d+",
+                "#define ASTRA_VERSION_MINOR 42",
+                original,
+            ),
+            encoding="utf-8",
+        )
+        doctored_text = doctored_header.read_text(encoding="utf-8")
+        self.assertIn(
+            "#define ASTRA_VERSION_MINOR 42", doctored_text,
+            "test fixture failed to doctor the installed header copy",
+        )
+        source = self.workdir / "version_mismatch_consumer.cpp"
+        source.write_text(
+            (CONSUMER_TEMPLATE / "version_mismatch.cpp").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        binary = self.workdir / "version_mismatch_consumer"
+        run_checked(
+            [CXX, "-std=c++20", "-I", str(doctored_include), str(source),
+             "-L", str(self.static_install / "lib"), "-lAstraScheduler",
+             "-o", str(binary)],
+            context="compile manual-link mismatch consumer",
+        )
+        proc = subprocess.run(
+            [str(binary)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(
+            proc.returncode, 1,
+            f"doctored header/library combination must be diagnosed at "
+            f"runtime:\n{proc.stdout}",
+        )
+        self.assertIn("mismatch", proc.stdout)
+        self.assertIn("42", proc.stdout)
+        self.assertIn(f"{major}.{minor}.{patch}", proc.stdout)
 
 
 if __name__ == "__main__":

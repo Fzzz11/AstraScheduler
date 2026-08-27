@@ -1,0 +1,50 @@
+#ifndef ASTRA_VERSION_HPP
+#define ASTRA_VERSION_HPP
+
+// AstraScheduler 版本契约（AST-003 / R-093 / D-145 / D-164）。
+// 本文件由 cmake/version.hpp.in 经 configure_file 从 CMake project
+// VERSION（单一版本源）生成：header 宏、CMake version file 与 library
+// 版本符号共享同一版本源，不得手工漂移。
+// Supported Configuration 仅 64-bit Linux（R-111，经 export.hpp 检查）。
+
+#include <astra/export.hpp>
+
+#include <compare>
+#include <cstdint>
+#include <string_view>
+
+// ASTRA_VERSION_* 只描述“编译 consumer 时看到的 header 版本”，不代表
+// 已链接 binary 的版本（后者经 library_version() 查询）。
+#define ASTRA_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define ASTRA_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define ASTRA_VERSION_PATCH @PROJECT_VERSION_PATCH@
+
+namespace astra {
+
+// 可比较的 trivially-copyable 版本三元组（D-164）；defaulted
+// operator<=> 提供全序比较与隐式 ==。
+struct Version {
+    std::uint32_t major;
+    std::uint32_t minor;
+    std::uint32_t patch;
+
+    friend constexpr auto operator<=>(const Version&, const Version&) = default;
+};
+
+// 编译期 header 版本，由同一 header 内的 ASTRA_VERSION_* 宏构造，
+// 可用于 constant evaluation。
+[[nodiscard]] constexpr Version header_version() noexcept {
+    return Version{ASTRA_VERSION_MAJOR, ASTRA_VERSION_MINOR, ASTRA_VERSION_PATCH};
+}
+
+// 已链接 compiled library 的版本三元组；无分配、无锁、不读取/创建
+// Scheduler、Runtime State、Reaper、Metrics 或 Trace。
+[[nodiscard]] ASTRA_EXPORT Version library_version() noexcept;
+
+// 指向进程期静态规范 SemVer 文本的 string_view（地址与内容在进程生命
+// 周期内稳定，调用方不得释放）；三元组与 library_version() 一致。
+[[nodiscard]] ASTRA_EXPORT std::string_view library_version_string() noexcept;
+
+}  // namespace astra
+
+#endif  // ASTRA_VERSION_HPP
