@@ -1,16 +1,23 @@
+#include <astra/capabilities.hpp>
+#include <astra/export.hpp>
+#include <astra/id.hpp>
+#include <astra/scheduler.hpp>
+#include <astra/scheduler_options.hpp>
+#include <astra/status.hpp>
 #include <astra/version.hpp>
 
 #include <cstdint>
 #include <cstdio>
+#include <stdexcept>
 #include <type_traits>
 
-// R-093 独立 consumer smoke（AST-003）：验证同一安装的 header/library
-// 版本一致，且版本查询无副作用——不启动 Runtime/Reaper/Worker 线程、
-// 不分配（返回类型均为非拥有值）、string_view 指向进程期静态规范
-// SemVer 文本。任何失败都打印诊断并以非零退出。
+// R-093 / R-098 / R-099 / R-100 / R-101 独立 consumer smoke（AST-003 / AST-004）：
+// 验证安装的 CMake package 暴露完整的 public headers，版本契约成立，
+// 且 SchedulerOptions、SchedulerStatus、强类型逻辑 ID、SchedulerCapabilities
+// 均符合规范契约。
 // 本模板由 tools/check_cmake_package.py 复制到仓库外构建运行。
 
-// 编译期契约：三个查询均 noexcept；Version 可平凡复制；header_version()
+// 编译期契约：三个版本查询均 noexcept；Version 可平凡复制；header_version()
 // 可用于常量求值（D-164）。
 static_assert(noexcept(astra::header_version()), "header_version() must be noexcept");
 static_assert(noexcept(astra::library_version()), "library_version() must be noexcept");
@@ -22,6 +29,16 @@ constexpr astra::Version kHeaderVersion = astra::header_version();
 static_assert(kHeaderVersion == astra::Version{ASTRA_VERSION_MAJOR, ASTRA_VERSION_MINOR, ASTRA_VERSION_PATCH});
 static_assert(astra::Version{0u, 1u, 0u} < astra::Version{0u, 1u, 1u});
 static_assert(astra::Version{0u, 2u, 0u} > astra::Version{0u, 1u, 9u});
+
+// AST-004 编译期契约（R-098 / R-099 / R-100 / R-101）：
+static_assert(noexcept(astra::recommended_worker_count()), "recommended_worker_count() must be noexcept");
+static_assert(std::is_trivially_copyable_v<astra::SchedulerStatus>, "SchedulerStatus must be trivially copyable");
+static_assert(std::is_trivially_copyable_v<astra::RuntimeId>, "RuntimeId must be trivially copyable");
+static_assert(std::is_trivially_copyable_v<astra::TaskId>, "TaskId must be trivially copyable");
+static_assert(std::is_trivially_copyable_v<astra::GraphRunId>, "GraphRunId must be trivially copyable");
+static_assert(std::is_trivially_copyable_v<astra::NodeId>, "NodeId must be trivially copyable");
+static_assert(std::is_trivially_copyable_v<astra::SchedulerCapabilities>, "SchedulerCapabilities must be trivially copyable");
+static_assert(!std::is_aggregate_v<astra::SchedulerCapabilities>, "SchedulerCapabilities must not be aggregate");
 
 namespace {
 
@@ -114,6 +131,64 @@ int main() {
     if (sink_version != library || !triple_matches(sink_string, library) ||
         !triple_matches(text_a, library)) {
         std::printf("library version string does not match the version triple\n");
+        return 1;
+    }
+
+    // 4. AST-004 consumer contract:
+    // R-098: SchedulerOptions
+    astra::SchedulerOptions opts{};
+    if (opts.worker_count < 1 || opts.external_pending_capacity != 65536 ||
+        opts.external_backpressure != astra::ExternalBackpressure::Reject ||
+        opts.max_helping_depth != 64 || opts.local_burst_limit != 64 ||
+        opts.steal_probe_limit != 8 || opts.metrics_level != astra::MetricsLevel::Basic) {
+        std::printf("SchedulerOptions defaults mismatch\n");
+        return 1;
+    }
+
+    // R-100: Strong IDs
+    astra::RuntimeId invalid_rid{};
+    if (invalid_rid.valid()) {
+        std::printf("Default RuntimeId must be invalid\n");
+        return 1;
+    }
+
+    // R-099 & R-101: Scheduler instance, status and capabilities
+    astra::Scheduler scheduler(opts);
+    if (!scheduler.valid()) {
+        std::printf("Scheduler should be valid\n");
+        return 1;
+    }
+    if (!scheduler.runtime_id().valid()) {
+        std::printf("Scheduler::runtime_id() must be valid\n");
+        return 1;
+    }
+    const astra::SchedulerStatus status = scheduler.status();
+    if (status.state != astra::SchedulerState::Running ||
+        status.shutdown_mode != astra::ShutdownMode::None) {
+        std::printf("Initial SchedulerStatus must be Running + None\n");
+        return 1;
+    }
+    const astra::SchedulerCapabilities caps = scheduler.capabilities();
+    if (caps.local_deque_backend() != astra::LocalDequeBackend::None ||
+        caps.lock_free_local_deque() != false) {
+        std::printf("v0.1.0 SchedulerCapabilities must report LocalDequeBackend::None\n");
+        return 1;
+    }
+
+    // Empty scheduler behavior
+    astra::Scheduler moved = std::move(scheduler);
+    if (scheduler.valid() || scheduler.runtime_id().valid()) {
+        std::printf("Moved-from Scheduler must be invalid\n");
+        return 1;
+    }
+    bool logic_error_caught = false;
+    try {
+        (void)scheduler.status();
+    } catch (const std::logic_error&) {
+        logic_error_caught = true;
+    }
+    if (!logic_error_caught) {
+        std::printf("scheduler.status() on empty Scheduler did not throw logic_error\n");
         return 1;
     }
 

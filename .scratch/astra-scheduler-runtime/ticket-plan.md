@@ -644,8 +644,8 @@ AST-055 <- AST-051, AST-053, AST-054
 - Tracker: local Markdown (`.scratch/astra-scheduler-runtime/issues/`).
 - Published at: 2026-08-27.
 - Published Tickets: 55 (`AST-001` through `AST-055`).
-- Status: `AST-001`、`AST-002`与`AST-003`为`done`；其余52个Ticket为`ready-for-agent`且`Claimed by: None`。
-- Frontier: `AST-004`（AST-003已完成；AST-002、AST-003两个blocker均已done）。
+- Status: `AST-001`、`AST-002`、`AST-003`与`AST-004`为`done`；其余51个Ticket为`ready-for-agent`且`Claimed by: None`。
+- Frontier: `AST-005`（AST-004已完成；AST-004 blocker已done）。
 - Unpublished or failed items: None.
 - Traceability validator: `decisions=168, rules=105, tickets=55, covered_rules=105`（WSL）。
 
@@ -654,7 +654,7 @@ AST-055 <- AST-051, AST-053, AST-054
 | AST-001 | Phase 0 | [01-release-rule-gates.md](issues/01-release-rule-gates.md) | done | None |
 | AST-002 | Phase 0 | [02-cmake-package.md](issues/02-cmake-package.md) | done | AST-001 |
 | AST-003 | Phase 0 | [03-version-contract.md](issues/03-version-contract.md) | done | AST-002 |
-| AST-004 | v0.1.0 | [04-scheduler-public-contract.md](issues/04-scheduler-public-contract.md) | ready-for-agent | AST-002, AST-003 |
+| AST-004 | v0.1.0 | [04-scheduler-public-contract.md](issues/04-scheduler-public-contract.md) | done | AST-002, AST-003 |
 | AST-005 | v0.1.0 | [05-startup-transaction.md](issues/05-startup-transaction.md) | ready-for-agent | AST-004 |
 | AST-006 | v0.1.0 | [06-runtime-state-handoff.md](issues/06-runtime-state-handoff.md) | ready-for-agent | AST-005 |
 | AST-007 | v0.1.0 | [07-reaper-coordinator.md](issues/07-reaper-coordinator.md) | ready-for-agent | AST-006 |

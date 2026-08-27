@@ -33,11 +33,17 @@ configure_file(
 # 选项在对应目录引入时按同一命名加入。作为子工程被消费时不构建测试。
 option(ASTRA_BUILD_TESTS "Build the AstraScheduler test entry points" ON)
 
-add_library(AstraScheduler src/version.cpp)
+find_package(Threads REQUIRED)
+
+add_library(AstraScheduler
+  src/version.cpp
+  src/scheduler.cpp
+)
 add_library(AstraScheduler::AstraScheduler ALIAS AstraScheduler)
 
 # R-110：CMake target 声明 cxx_std_20（通过 PUBLIC compile feature 传播给 consumer）。
 target_compile_features(AstraScheduler PUBLIC cxx_std_20)
+target_link_libraries(AstraScheduler PUBLIC Threads::Threads)
 
 target_include_directories(AstraScheduler
   PUBLIC
@@ -54,6 +60,7 @@ target_compile_options(AstraScheduler PRIVATE
   -Wextra
   -Werror
   -fvisibility=hidden
+  -fvisibility-inlines-hidden
 )
 
 set_target_properties(AstraScheduler PROPERTIES

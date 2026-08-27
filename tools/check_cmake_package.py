@@ -3,6 +3,7 @@
 Source tickets:
 - .scratch/astra-scheduler-runtime/issues/02-cmake-package.md（R-110 primary、R-111 supporting）
 - .scratch/astra-scheduler-runtime/issues/03-version-contract.md（R-093 primary）
+- .scratch/astra-scheduler-runtime/issues/04-scheduler-public-contract.md（R-098, R-099, R-100, R-101 primary）
 
 这些测试在 WSL/Linux 中构建 C++20 compiled library、安装为可消费的
 CMake package，并用仓库外的独立最小 consumer 工程执行 find_package/
@@ -190,8 +191,17 @@ class R110PackageConsumerGates(PackageBuildFixture):
     """R-110：CMake package 隐藏实现并验证独立 consumer。"""
 
     def test_R110_public_headers_install_only_under_include_astra(self):
-        header = self.static_install / "include" / "astra" / "export.hpp"
-        self.assertTrue(header.is_file(), f"public header missing: {header}")
+        for header_name in (
+            "export.hpp",
+            "version.hpp",
+            "capabilities.hpp",
+            "id.hpp",
+            "scheduler.hpp",
+            "scheduler_options.hpp",
+            "status.hpp",
+        ):
+            header = self.static_install / "include" / "astra" / header_name
+            self.assertTrue(header.is_file(), f"public header missing: {header}")
         allowed_prefixes = (("include", "astra"), ("lib",), ("bin",))
         for path in self._install_files(self.static_install):
             parts = path.relative_to(self.static_install).parts
@@ -260,22 +270,37 @@ class R110PackageConsumerGates(PackageBuildFixture):
             ["nm", "-D", "--defined-only", str(shared)],
             context="nm dynamic symbols",
         )
-        # AST-003 起，版本查询 API 取代 AST-002 的私有探针，成为首个
-        # 正式导出的 public symbol 集。
-        self.assertIn(
-            "_ZN5astra15library_versionEv", dynamic,
-            "export macro failed to publish astra::library_version()",
-        )
-        self.assertIn(
-            "_ZN5astra22library_version_stringEv", dynamic,
-            "export macro failed to publish astra::library_version_string()",
-        )
-        # 动态表中 astra 命名空间导出符号必须只有这两个版本查询；
-        # 其余符号（含版本字符串静态存储）保持 hidden。
-        exported = re.findall(r"_ZN5astra\w+", dynamic)
+        # AST-003 / AST-004：公开 API 经 export macro 导出，内部符号 hidden。
+        expected_symbols = [
+            "_ZN5astra15library_versionEv",
+            "_ZN5astra22library_version_stringEv",
+            "_ZN5astra24recommended_worker_countEv",
+            "_ZN5astra9SchedulerC1ENS_16SchedulerOptionsE",
+            "_ZN5astra9SchedulerC2ENS_16SchedulerOptionsE",
+            "_ZN5astra9SchedulerC1ERKS0_",
+            "_ZN5astra9SchedulerC2ERKS0_",
+            "_ZN5astra9SchedulerC1EOS0_",
+            "_ZN5astra9SchedulerC2EOS0_",
+            "_ZN5astra9SchedulerD1Ev",
+            "_ZN5astra9SchedulerD2Ev",
+            "_ZN5astra9ScheduleraSERKS0_",
+            "_ZN5astra9ScheduleraSEOS0_",
+            "_ZNK5astra9Scheduler5validEv",
+            "_ZNK5astra9Scheduler10runtime_idEv",
+            "_ZNK5astra9Scheduler6statusEv",
+            "_ZNK5astra9Scheduler12capabilitiesEv",
+        ]
+        for sym in expected_symbols:
+            self.assertIn(
+                sym, dynamic,
+                f"export macro failed to publish {sym}",
+            )
+        # 动态表中 astra 命名空间导出符号必须仅为公开 API 集合；
+        # 其余符号（含版本字符串静态存储、内部 Impl、Helper 等）保持 hidden。
+        exported = re.findall(r"_ZN5astra\w+|_ZNK5astra\w+", dynamic)
         self.assertCountEqual(
             exported,
-            ["_ZN5astra15library_versionEv", "_ZN5astra22library_version_stringEv"],
+            expected_symbols,
             f"unexpected astra dynamic symbols leaked: {dynamic}",
         )
 
@@ -503,6 +528,15 @@ class R093VersionContractGates(PackageBuildFixture):
         self.assertIn("mismatch", proc.stdout)
         self.assertIn("42", proc.stdout)
         self.assertIn(f"{major}.{minor}.{patch}", proc.stdout)
+
+
+class AST004PublicContractGates(PackageBuildFixture):
+    """AST-004：Scheduler 公共 options、状态、逻辑 ID 与 capability 契约（R-098/R-099/R-100/R-101）。"""
+
+    def test_AST004_consumer_runs_all_public_contract_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-098/R-099/R-100/R-101 契约
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
 
 
 if __name__ == "__main__":

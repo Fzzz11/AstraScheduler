@@ -4,3 +4,7 @@
 add_executable(astra_selftest selftest.cpp)
 target_link_libraries(astra_selftest PRIVATE AstraScheduler)
 add_test(NAME astra_selftest COMMAND astra_selftest)
+
+add_executable(astra_scheduler_contract_test test_scheduler_contract.cpp)
+target_link_libraries(astra_scheduler_contract_test PRIVATE AstraScheduler)
+add_test(NAME astra_scheduler_contract_test COMMAND astra_scheduler_contract_test)
