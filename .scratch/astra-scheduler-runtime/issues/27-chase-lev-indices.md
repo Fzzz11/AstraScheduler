@@ -1,0 +1,46 @@
+# AST-027 — 固定 Chase-Lev index 算术、边界状态与 backend truth
+
+Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
+Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-068, R-101)
+Milestone: v0.3.0
+Blocked by: AST-004, AST-025, AST-026
+Status: ready-for-agent
+Claimed by: None
+
+## Rules and decisions
+
+- R-068 [primary] — Deque index、状态与算术不得依赖wrap；source: D-101, D-102, D-103
+- R-101 [supporting] — SchedulerCapabilities 报告实际Local Deque backend；source: D-101, D-167, D-162
+
+## What to build
+
+使用不依赖整数 wrap 的索引/差值约束与受测 rebase/boundary 策略；仅真实启用实现时报告 `ChaseLevLockFree`。
+
+## Invariants
+
+- `[R-068]` Chase-Lev必须区分Success/Empty/Retry并对empty decrement、capacity doubling与索引执行checked arithmetic；接近高水位只能在quiescent状态rebase，不能依赖unsigned wrap，所需atomic不lock-free时选择Locked semantic fallback。 例外边界：backend报告由R-101固定。
+- `[R-101]` 有效Scheduler的 `capabilities()`必须返回不可由用户aggregate-initialize的trivially-copyable immutable `SchedulerCapabilities`，其 `local_deque_backend()`为 `LocalDequeBackend::{None,Locked,ChaseLevLockFree}`之一且 `lock_free_local_deque()`仅最后一种为true；v0.1为None、v0.2/fallback为Locked，Stopped后保留且不得运行时切换或按版本推断，空Scheduler抛logic_error。 例外边界：该能力不声称整个Runtime lock-free。
+
+## Test-first seam
+
+- Public seam: v0.3+ Local Deque backend。；Runtime、Trace metadata与Benchmark artifact。
+- RED evidence: 通过小位宽/偏置 seam 加速边界，覆盖 empty/one/full、rebase 并验证 capability 不按版本虚报。
+- 验证必须覆盖本 Ticket 的 primary 规则；supporting 规则只验证协作边界，不转移主实现责任。
+
+## Acceptance criteria
+
+- [ ] `[R-068]` 边界值测试不越界/ABA，Retry不被误报Empty。
+- [ ] `[R-101]` 只有实际启用经本 Ticket 边界验证的 Chase-Lev backend 才报告 `ChaseLevLockFree`；平台 fallback 必须继续报告 `Locked`。
+
+## Out of scope
+
+- 不引入 DAG、Coroutine、Priority/Deadline 或未批准的动态 backend 切换。
+- 未声明为 primary/supporting 的行为不在本 Ticket 内；可以建立最小私有 seam，但不得提前扩张 public API 或 observable semantics。
+- 不实现被本 Ticket 阻塞的后续 Ticket；本 Ticket 只提供其明确依赖的可验证事实。
+
+## Traceability
+
+- Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-068, R-101
+- Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-101, D-102, D-103, D-167, D-162
+- ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
+- Verification: Pending

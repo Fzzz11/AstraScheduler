@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  release-rule-gates:
+    name: Linux release rule gates (R-004, R-005, R-094, R-112)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Approved-spec and milestone release gate audit
+        run: python -X utf8 tools/check_release_gates.py
