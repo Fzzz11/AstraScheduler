@@ -54,3 +54,19 @@ target_include_directories(astra_reaper_coordinator_test PRIVATE
 target_compile_features(astra_reaper_coordinator_test PRIVATE cxx_std_20)
 add_test(NAME astra_reaper_coordinator_test COMMAND astra_reaper_coordinator_test)
 
+add_executable(astra_global_worker_runtime_test
+  test_global_worker_runtime.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_global_worker_runtime_test PRIVATE Threads::Threads)
+target_include_directories(astra_global_worker_runtime_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_global_worker_runtime_test PRIVATE cxx_std_20)
+add_test(NAME astra_global_worker_runtime_test COMMAND astra_global_worker_runtime_test)
+
+

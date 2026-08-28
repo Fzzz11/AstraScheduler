@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <mutex>
@@ -85,7 +86,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     std::size_t workers_ready{0};
     std::atomic<std::size_t> active_workers{0};
     std::vector<std::thread> worker_threads;
-    std::vector<std::function<void()>> worker_tasks;
+    std::deque<std::function<void()>> global_injection_queue;
 
     Impl(RuntimeId id, SchedulerOptions opts, SchedulerCapabilities caps)
         : runtime_id(id),
@@ -261,11 +262,11 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             {
                 std::unique_lock<std::mutex> lock(lifecycle_mutex);
                 work_cv.wait(lock, [this] {
-                    return stop_requested || !worker_tasks.empty();
+                    return stop_requested || !global_injection_queue.empty();
                 });
-                if (!worker_tasks.empty()) {
-                    task = std::move(worker_tasks.back());
-                    worker_tasks.pop_back();
+                if (!global_injection_queue.empty()) {
+                    task = std::move(global_injection_queue.front());
+                    global_injection_queue.pop_front();
                 } else if (stop_requested) {
                     break;
                 }
@@ -284,7 +285,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     void post_task_internal(std::function<void()> task) {
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex);
-            worker_tasks.push_back(std::move(task));
+            global_injection_queue.push_back(std::move(task));
         }
         work_cv.notify_one();
     }
@@ -323,6 +324,14 @@ void run_test_task_on_worker(Scheduler& s, std::function<void()> task) {
     if (s.impl_) {
         s.impl_->post_task_internal(std::move(task));
     }
+}
+
+std::size_t global_injection_queue_size(const Scheduler& s) {
+    if (s.impl_) {
+        std::lock_guard<std::mutex> lock(s.impl_->lifecycle_mutex);
+        return s.impl_->global_injection_queue.size();
+    }
+    return 0;
 }
 }  // namespace detail
 

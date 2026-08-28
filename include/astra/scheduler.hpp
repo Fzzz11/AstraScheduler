@@ -21,6 +21,7 @@ class Scheduler;
 
 namespace detail {
 void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
+std::size_t global_injection_queue_size(const Scheduler& s);
 }
 
 // 调度器共享 Handle（D-155）。
@@ -57,10 +58,12 @@ private:
     std::shared_ptr<Impl> impl_;
 
     friend void detail::run_test_task_on_worker(Scheduler&, std::function<void()>);
+    friend std::size_t detail::global_injection_queue_size(const Scheduler&);
 };
 
 namespace detail {
 void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
+std::size_t global_injection_queue_size(const Scheduler& s);
 }
 
 }  // namespace astra
