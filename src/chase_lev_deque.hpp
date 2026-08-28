@@ -242,6 +242,30 @@ public:
         return buf ? buf->capacity : 0;
     }
 
+    static constexpr bool is_lock_free() noexcept {
+        return std::atomic<std::int64_t>::is_always_lock_free &&
+               std::atomic<Buffer*>::is_always_lock_free &&
+               std::atomic<T>::is_always_lock_free;
+    }
+
+    // Quiescent Rebase (R-068 / D-101):
+    // 仅在队列静止为空时对高水位索引执行安全归零，不依赖无符号溢出环绕
+    bool maybe_quiescent_rebase(std::int64_t high_watermark = (1LL << 58)) noexcept {
+        std::int64_t b = bottom_.load(std::memory_order_relaxed);
+        std::int64_t t = top_.load(std::memory_order_relaxed);
+        if (b == t && b >= high_watermark) {
+            top_.store(0, std::memory_order_relaxed);
+            bottom_.store(0, std::memory_order_relaxed);
+            return true;
+        }
+        return false;
+    }
+
+    void set_test_indices(std::int64_t t, std::int64_t b) noexcept {
+        top_.store(t, std::memory_order_relaxed);
+        bottom_.store(b, std::memory_order_relaxed);
+    }
+
     void set_inject_growth_failure(bool inject) noexcept {
         inject_growth_failure_.store(inject, std::memory_order_relaxed);
     }
@@ -249,6 +273,10 @@ public:
 private:
     Buffer* grow(std::int64_t b, std::int64_t t, Buffer* old_buf) {
         if (inject_growth_failure_.load(std::memory_order_relaxed)) {
+            return nullptr;
+        }
+        // Checked capacity doubling (R-068 / D-103)
+        if (old_buf->capacity > (static_cast<std::size_t>(-1) / 2)) {
             return nullptr;
         }
         try {

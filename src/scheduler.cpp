@@ -1,4 +1,5 @@
 #include <astra/scheduler.hpp>
+#include "chase_lev_deque.hpp"
 #include "reaper_registry.hpp"
 
 #include <algorithm>
@@ -967,7 +968,10 @@ void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invok
 Scheduler::Scheduler(SchedulerOptions options) {
     validate_options(options);
     const RuntimeId id = allocate_runtime_id();
-    const SchedulerCapabilities caps{LocalDequeBackend::Locked};
+    const auto backend = detail::ChaseLevDeque<void*>::is_lock_free()
+                             ? LocalDequeBackend::ChaseLevLockFree
+                             : LocalDequeBackend::Locked;
+    const SchedulerCapabilities caps{backend};
     impl_ = std::make_shared<Impl>(id, std::move(options), caps);
 }
 

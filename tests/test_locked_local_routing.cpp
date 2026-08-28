@@ -31,12 +31,12 @@ void test_R101_capabilities_reports_locked() {
     astra::Scheduler s(opt);
 
     auto caps = s.capabilities();
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
-    TEST_ASSERT(!caps.lock_free_local_deque());
+    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::ChaseLevLockFree);
+    TEST_ASSERT(caps.lock_free_local_deque());
 
     s.shutdown();
     // Stopped 之后能力快照不变
-    TEST_ASSERT(s.capabilities().local_deque_backend() == astra::LocalDequeBackend::Locked);
+    TEST_ASSERT(s.capabilities().local_deque_backend() == astra::LocalDequeBackend::ChaseLevLockFree);
 
     // 空/moved-from Handle 抛出 logic_error
     astra::Scheduler moved = std::move(s);

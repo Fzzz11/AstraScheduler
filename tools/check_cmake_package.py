@@ -762,6 +762,15 @@ class AST026ChaseLevGrowthGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST027ChaseLevIndicesGates(PackageBuildFixture):
+    """AST-027：固定 Chase-Lev index 算术、边界状态与 backend truth（R-068 / R-101）。"""
+
+    def test_AST027_consumer_runs_all_chase_lev_indices_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-068 / R-101
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

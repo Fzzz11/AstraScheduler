@@ -179,9 +179,9 @@ int main() {
         return 1;
     }
     const astra::SchedulerCapabilities caps = scheduler.capabilities();
-    if (caps.local_deque_backend() != astra::LocalDequeBackend::Locked ||
-        caps.lock_free_local_deque() != false) {
-        std::printf("v0.2.0 SchedulerCapabilities must report LocalDequeBackend::Locked\n");
+    if (caps.local_deque_backend() != astra::LocalDequeBackend::ChaseLevLockFree ||
+        caps.lock_free_local_deque() != true) {
+        std::printf("v0.3.0 SchedulerCapabilities must report LocalDequeBackend::ChaseLevLockFree\n");
         return 1;
     }
 
@@ -435,11 +435,11 @@ int main() {
         return 1;
     }
 
-    // 14. AST-022: Locked Local Deque & Ready Routing Precedence (R-063 / R-101)
+    // 14. AST-022: Local Deque & Ready Routing Precedence (R-063 / R-101)
     astra::Scheduler s_locked;
-    if (s_locked.capabilities().local_deque_backend() != astra::LocalDequeBackend::Locked ||
-        s_locked.capabilities().lock_free_local_deque()) {
-        std::printf("AST-022 capability must be Locked and not lock_free\n");
+    if (s_locked.capabilities().local_deque_backend() != astra::LocalDequeBackend::ChaseLevLockFree ||
+        !s_locked.capabilities().lock_free_local_deque()) {
+        std::printf("AST-022 capability must be ChaseLevLockFree\n");
         return 1;
     }
     auto h_ext = s_locked.submit([&] {

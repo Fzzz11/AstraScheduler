@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-068, R-101)
 Milestone: v0.3.0
 Blocked by: AST-004, AST-025, AST-026
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -29,8 +29,8 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-068]` 边界值测试不越界/ABA，Retry不被误报Empty。
-- [ ] `[R-101]` 只有实际启用经本 Ticket 边界验证的 Chase-Lev backend 才报告 `ChaseLevLockFree`；平台 fallback 必须继续报告 `Locked`。
+- [x] `[R-068]` 边界值测试不越界/ABA，Retry不被误报Empty。
+- [x] `[R-101]` 只有实际启用经本 Ticket 边界验证的 Chase-Lev backend 才报告 `ChaseLevLockFree`；平台 fallback 必须继续报告 `Locked`。
 
 ## Out of scope
 
@@ -43,4 +43,10 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-068, R-101
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-101, D-102, D-103, D-167, D-162
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - 架构与实现：`src/chase_lev_deque.hpp` 实现了区分 `Success/Empty/Retry` 的三态结果状态、有符号索引 checked arithmetic（容量翻倍溢出检查、`maybe_quiescent_rebase` 高水位归零保护）、静态 `is_lock_free()` 查询；`src/scheduler.cpp` 严格依据当前平台的原子无锁能力动态注入 `ChaseLevLockFree` 或 `Locked` 能力快照。
+  - 单元测试：`tests/test_chase_lev_indices.cpp` 覆盖 R-068 / R-101（三态返回值区分、高水位 Quiescent Rebase 安全基线归零、v0.3.0 真实无锁能力报告与生命周期不可变性、空 Scheduler 抛 `logic_error`）。
+  - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 25/25 tests 全部 PASS。
+  - ASan / UBSan / LSan 内存安全与泄漏门禁：`build/wsl-gcc-asan` 25/25 tests 全部 PASS（0 leaks / 0 errors / 0 deadlocks）。
+  - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 42/42 tests 全部 OK。
+  - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。

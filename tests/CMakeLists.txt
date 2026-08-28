@@ -340,6 +340,23 @@ target_include_directories(astra_chase_lev_growth_test PRIVATE
 target_compile_features(astra_chase_lev_growth_test PRIVATE cxx_std_20)
 add_test(NAME astra_chase_lev_growth_test COMMAND astra_chase_lev_growth_test)
 
+add_executable(astra_chase_lev_indices_test
+  test_chase_lev_indices.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_chase_lev_indices_test PRIVATE Threads::Threads)
+target_include_directories(astra_chase_lev_indices_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_chase_lev_indices_test PRIVATE cxx_std_20)
+add_test(NAME astra_chase_lev_indices_test COMMAND astra_chase_lev_indices_test)
+
+
 
 
 
