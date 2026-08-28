@@ -708,6 +708,15 @@ class AST020FinalizationWaitGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST021FinalizationEscalationGates(PackageBuildFixture):
+    """AST-021：实现 Finalization escalation 与控制面 fail-fast（R-034/R-047）。"""
+
+    def test_AST021_consumer_runs_all_finalization_escalation_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-034/R-047
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

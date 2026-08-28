@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-034, R-047)
 Milestone: v0.1.0
 Blocked by: AST-016, AST-019, AST-020
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -29,8 +29,8 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-034]` 没有 Scheduler Handle 的 Pending Runtime 也收到 Immediate 请求，Completed Runtime 历史不变。
-- [ ] `[R-047]` 子进程故障注入确定性进入 terminate；任务异常、TimedOut 和 Pending 场景保持正常域语义。
+- [x] `[R-034]` 没有 Scheduler Handle 的 Pending Runtime 也收到 Immediate 请求，Completed Runtime 历史不变。
+- [x] `[R-047]` 子进程故障注入确定性进入 terminate；任务异常、TimedOut 和 Pending 场景保持正常域语义。
 
 ## Out of scope
 
@@ -43,5 +43,9 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-034, R-047
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-029, D-039, D-040
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - 单元测试：`tests/test_finalization_escalation.cpp` 覆盖全部 R-034（活动与 orphan Runtime 的 Immediate 广播升级）和 R-047（子进程隔离下 coordinator 控制面异常触发 std::terminate）。
+  - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 19/19 tests 全部 PASS。
+  - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 36/36 tests 全部 OK。
+  - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。
 

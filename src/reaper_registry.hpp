@@ -107,6 +107,7 @@ public:
     void reset_for_testing() noexcept;
     void inject_handoff_reservation_failure(bool fail) noexcept;
     void inject_worker_creation_failure_at(std::size_t index) noexcept;
+    void inject_coordinator_failure(bool fail) noexcept;
     [[nodiscard]] bool should_fail_reservation() const noexcept;
     [[nodiscard]] std::size_t worker_creation_failure_index() const noexcept;
     [[nodiscard]] std::size_t registered_count() const noexcept;
@@ -135,6 +136,7 @@ private:
 
     bool inject_reservation_fail_{false};
     std::size_t inject_worker_fail_at_{0}; // 0 表示不注入
+    bool inject_coordinator_fail_{false};
 };
 
 }  // namespace astra::detail

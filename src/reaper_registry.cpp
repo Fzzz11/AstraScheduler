@@ -160,63 +160,72 @@ bool ReaperRegistry::has_join_ready_slot_locked() const noexcept {
 }
 
 void ReaperRegistry::coordinator_loop() noexcept {
-    while (true) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        coordinator_cv_.wait(lock, [this] {
-            return coordinator_stop_ || has_join_ready_slot_locked() ||
-                   (state_ == RegistrationState::Finalizing && slots_.empty() && registered_ids_.empty());
-        });
+    try {
+        while (true) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            coordinator_cv_.wait(lock, [this] {
+                return coordinator_stop_ || inject_coordinator_fail_ || has_join_ready_slot_locked() ||
+                       (state_ == RegistrationState::Finalizing && slots_.empty() && registered_ids_.empty());
+            });
 
-        if (coordinator_stop_ && !has_join_ready_slot_locked()) {
-            coordinator_exited_ = true;
-            finalization_cv_.notify_all();
-            break;
-        }
+            if (inject_coordinator_fail_) {
+                throw std::runtime_error("Injected coordinator control plane fatal failure");
+            }
 
-        if (state_ == RegistrationState::Finalizing && slots_.empty() && registered_ids_.empty()) {
-            coordinator_exited_ = true;
-            finalization_cv_.notify_all();
-            break;
-        }
+            if (coordinator_stop_ && !has_join_ready_slot_locked()) {
+                coordinator_exited_ = true;
+                finalization_cv_.notify_all();
+                break;
+            }
 
-        struct ReadyWork {
-            RuntimeId runtime_id;
-            std::function<void()> cleanup_fn;
-            std::shared_ptr<void> retained_state;
-        };
-        std::vector<ReadyWork> works;
+            if (state_ == RegistrationState::Finalizing && slots_.empty() && registered_ids_.empty()) {
+                coordinator_exited_ = true;
+                finalization_cv_.notify_all();
+                break;
+            }
 
-        for (auto it = slots_.begin(); it != slots_.end(); ) {
-            auto& s = *it;
-            if ((s->handoff_executed.load(std::memory_order_acquire) || state_ == RegistrationState::Finalizing) &&
-                s->join_ready.load(std::memory_order_acquire) &&
-                !s->join_claimed.exchange(true, std::memory_order_acq_rel)) {
-                
-                works.push_back(ReadyWork{
-                    s->runtime_id,
-                    std::move(s->cleanup_fn),
-                    std::move(s->retained_state)
-                });
+            struct ReadyWork {
+                RuntimeId runtime_id;
+                std::function<void()> cleanup_fn;
+                std::shared_ptr<void> retained_state;
+            };
+            std::vector<ReadyWork> works;
 
-                auto rid_it = std::find(registered_ids_.begin(), registered_ids_.end(), s->runtime_id.value());
-                if (rid_it != registered_ids_.end()) {
-                    registered_ids_.erase(rid_it);
+            for (auto it = slots_.begin(); it != slots_.end(); ) {
+                auto& s = *it;
+                if ((s->handoff_executed.load(std::memory_order_acquire) || state_ == RegistrationState::Finalizing) &&
+                    s->join_ready.load(std::memory_order_acquire) &&
+                    !s->join_claimed.exchange(true, std::memory_order_acq_rel)) {
+                    
+                    works.push_back(ReadyWork{
+                        s->runtime_id,
+                        std::move(s->cleanup_fn),
+                        std::move(s->retained_state)
+                    });
+
+                    auto rid_it = std::find(registered_ids_.begin(), registered_ids_.end(), s->runtime_id.value());
+                    if (rid_it != registered_ids_.end()) {
+                        registered_ids_.erase(rid_it);
+                    }
+                    it = slots_.erase(it);
+                } else {
+                    ++it;
                 }
-                it = slots_.erase(it);
-            } else {
-                ++it;
+            }
+
+            lock.unlock();
+
+            // 锁外执行 join 与状态发布，防止 head-of-line 锁竞争
+            for (auto& work : works) {
+                if (work.cleanup_fn) {
+                    work.cleanup_fn();
+                }
+                work.retained_state.reset();
             }
         }
-
-        lock.unlock();
-
-        // 锁外执行 join 与状态发布，防止 head-of-line 锁竞争
-        for (auto& work : works) {
-            if (work.cleanup_fn) {
-                work.cleanup_fn();
-            }
-            work.retained_state.reset();
-        }
+    } catch (...) {
+        std::fputs("Fatal: Unhandled escaping exception in Reaper coordinator loop\n", stderr);
+        std::terminate();
     }
 }
 
@@ -372,6 +381,7 @@ void ReaperRegistry::reset_for_testing() noexcept {
         coordinator_stop_ = true;
         coordinator_exited_ = false;
         coordinator_join_in_progress_ = false;
+        inject_coordinator_fail_ = false;
         coordinator_cv_.notify_all();
         finalization_cv_.notify_all();
         thread_to_join = std::move(coordinator_thread_);
@@ -389,6 +399,14 @@ void ReaperRegistry::inject_handoff_reservation_failure(bool fail) noexcept {
 void ReaperRegistry::inject_worker_creation_failure_at(std::size_t index) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     inject_worker_fail_at_ = index;
+}
+
+void ReaperRegistry::inject_coordinator_failure(bool fail) noexcept {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        inject_coordinator_fail_ = fail;
+    }
+    coordinator_cv_.notify_all();
 }
 
 bool ReaperRegistry::should_fail_reservation() const noexcept {

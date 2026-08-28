@@ -484,5 +484,14 @@ int main() {
     }
     f_ctrl2.wait();
 
+    // 17. AST-021: Finalization Escalation (R-034 / R-047)
+    static_assert(noexcept(f_ctrl.request_immediate()), "request_immediate must be noexcept");
+    f_ctrl.request_immediate();
+    f_ctrl2.request_immediate();
+    if (f_ctrl.wait_for(std::chrono::milliseconds(0)) != astra::FinalizationWaitResult::Completed) {
+        std::printf("request_immediate idempotence check failed\n");
+        return 1;
+    }
+
     return 0;
 }
