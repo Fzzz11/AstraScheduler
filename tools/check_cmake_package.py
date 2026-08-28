@@ -753,6 +753,15 @@ class AST025ChaseLevOrderingGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST026ChaseLevGrowthGates(PackageBuildFixture):
+    """AST-026：实现 Chase-Lev growth、旧 buffer retention 与单一调度引用（R-067）。"""
+
+    def test_AST026_consumer_runs_all_chase_lev_growth_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-067
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

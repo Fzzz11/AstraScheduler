@@ -150,20 +150,26 @@ public:
     ChaseLevDeque(const ChaseLevDeque&) = delete;
     ChaseLevDeque& operator=(const ChaseLevDeque&) = delete;
 
-    // Owner Bottom Push (D-098):
+    // Owner Bottom Push (D-098 / D-099 / D-100):
     // relaxed load bottom -> acquire load top -> relaxed store cell -> release fence -> relaxed store bottom
-    void push(T item) {
+    // 若需要扩容且分配失败，返回 false，调用方回退至 Global Injection Queue (D-100)
+    bool push(T item) {
         std::int64_t b = bottom_.load(std::memory_order_relaxed);
         std::int64_t t = top_.load(std::memory_order_acquire);
         Buffer* buf = active_buffer_.load(std::memory_order_relaxed);
 
-        if (b - t >= static_cast<std::int64_t>(buf->capacity)) {
+        // 始终保留一个空 cell（D-099）
+        if (b - t >= static_cast<std::int64_t>(buf->capacity - 1)) {
             buf = grow(b, t, buf);
+            if (buf == nullptr) {
+                return false; // 扩容失败，触发 fallback 到 Global 队列 (D-100)
+            }
         }
 
         buf->store_cell(b, item, std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_release);
         bottom_.store(b + 1, std::memory_order_relaxed);
+        return true;
     }
 
     // Owner Bottom Pop (D-098):
@@ -227,24 +233,45 @@ public:
         return (b > t) ? static_cast<std::size_t>(b - t) : 0;
     }
 
+    std::size_t history_buffer_count() const noexcept {
+        return history_buffers_.size();
+    }
+
+    std::size_t current_capacity() const noexcept {
+        Buffer* buf = active_buffer_.load(std::memory_order_relaxed);
+        return buf ? buf->capacity : 0;
+    }
+
+    void set_inject_growth_failure(bool inject) noexcept {
+        inject_growth_failure_.store(inject, std::memory_order_relaxed);
+    }
+
 private:
     Buffer* grow(std::int64_t b, std::int64_t t, Buffer* old_buf) {
-        std::size_t new_cap = old_buf->capacity * 2;
-        auto new_buf = std::make_unique<Buffer>(new_cap);
-        for (std::int64_t i = t; i < b; ++i) {
-            T val = old_buf->load_cell(i, std::memory_order_relaxed);
-            new_buf->store_cell(i, val, std::memory_order_relaxed);
+        if (inject_growth_failure_.load(std::memory_order_relaxed)) {
+            return nullptr;
         }
-        Buffer* raw_ptr = new_buf.get();
-        history_buffers_.push_back(std::move(new_buf));
-        active_buffer_.store(raw_ptr, std::memory_order_release);
-        return raw_ptr;
+        try {
+            std::size_t new_cap = old_buf->capacity * 2;
+            auto new_buf = std::make_unique<Buffer>(new_cap);
+            for (std::int64_t i = t; i < b; ++i) {
+                T val = old_buf->load_cell(i, std::memory_order_relaxed);
+                new_buf->store_cell(i, val, std::memory_order_relaxed);
+            }
+            Buffer* raw_ptr = new_buf.get();
+            history_buffers_.push_back(std::move(new_buf));
+            active_buffer_.store(raw_ptr, std::memory_order_release);
+            return raw_ptr;
+        } catch (...) {
+            return nullptr;
+        }
     }
 
     std::atomic<std::int64_t> top_;
     std::atomic<std::int64_t> bottom_;
     std::atomic<Buffer*> active_buffer_;
     std::vector<std::unique_ptr<Buffer>> history_buffers_;
+    std::atomic<bool> inject_growth_failure_{false};
 };
 
 }  // namespace astra::detail
