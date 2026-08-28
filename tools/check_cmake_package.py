@@ -744,6 +744,15 @@ class AST024ParkHandshakeGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST025ChaseLevOrderingGates(PackageBuildFixture):
+    """AST-025：建立 Chase-Lev seq_cst oracle 与 portable memory order（R-066）。"""
+
+    def test_AST025_consumer_runs_all_chase_lev_ordering_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-066
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

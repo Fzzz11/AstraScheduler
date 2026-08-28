@@ -316,6 +316,19 @@ target_include_directories(astra_park_handshake_test PRIVATE
 target_compile_features(astra_park_handshake_test PRIVATE cxx_std_20)
 add_test(NAME astra_park_handshake_test COMMAND astra_park_handshake_test)
 
+add_executable(astra_chase_lev_ordering_test
+  test_chase_lev_ordering.cpp
+)
+target_link_libraries(astra_chase_lev_ordering_test PRIVATE Threads::Threads)
+target_include_directories(astra_chase_lev_ordering_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_chase_lev_ordering_test PRIVATE cxx_std_20)
+add_test(NAME astra_chase_lev_ordering_test COMMAND astra_chase_lev_ordering_test)
+
+
 
 
 

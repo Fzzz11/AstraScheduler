@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-066)
 Milestone: v0.3.0
 Blocked by: AST-022, AST-023
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-066]` oracle/production通过同一functional stress，native AArch64验证weak-memory路径。
+- [x] `[R-066]` oracle/production通过同一functional stress，native AArch64验证weak-memory路径。
 
 ## Out of scope
 
@@ -40,5 +40,11 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-066
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-097, D-098
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - 架构与实现：`src/chase_lev_deque.hpp` 实现了 `ChaseLevSeqCstOracle` 全序参考实现与严格符合 Lê et al. 2013 论文 portable memory-order 规范的生产级 `ChaseLevDeque`。
+  - 单元测试：`tests/test_chase_lev_ordering.cpp` 覆盖 R-066（单线程 LIFO pop / FIFO steal 契约验证、1000 轮 1 Owner + 4 Thieves 针对单个元素的 last-item CAS 决胜仲裁、10000 任务高并发多 Thief 差分压测）。
+  - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 23/23 tests 全部 PASS。
+  - ASan / UBSan / LSan 内存安全与泄漏门禁：`build/wsl-gcc-asan` 23/23 tests 全部 PASS（0 leaks / 0 errors / 0 deadlocks）。
+  - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 40/40 tests 全部 OK。
+  - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。
 
