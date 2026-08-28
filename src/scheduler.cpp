@@ -79,14 +79,21 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     std::mutex lifecycle_mutex;
     std::condition_variable startup_cv;
     std::condition_variable work_cv;
+    std::condition_variable slot_cv;
     bool startup_done{false};
     bool startup_failed{false};
     bool stop_requested{false};
     bool handoff_dispatched{false};
     std::size_t workers_ready{0};
+    std::size_t external_pending_count{0};
     std::atomic<std::size_t> active_workers{0};
     std::vector<std::thread> worker_threads;
-    std::deque<std::unique_ptr<detail::TaskInvokerBase>> global_injection_queue;
+
+    struct QueuedTask {
+        std::unique_ptr<detail::TaskInvokerBase> invoker;
+        bool is_external{false};
+    };
+    std::deque<QueuedTask> global_injection_queue;
 
     Impl(RuntimeId id, SchedulerOptions opts, SchedulerCapabilities caps)
         : runtime_id(id),
@@ -182,6 +189,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             worker_threads.clear();
             const auto current_mode = get_status().shutdown_mode;
             packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
+            slot_cv.notify_all();
             detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
         }
     }
@@ -194,6 +202,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             if (st.state == SchedulerState::Running) {
                 uint16_t next = pack(SchedulerState::Stopping, requested_mode);
                 if (packed_status.compare_exchange_weak(current, next, std::memory_order_acq_rel)) {
+                    slot_cv.notify_all();
                     break;
                 }
             } else {
@@ -234,6 +243,53 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         worker_threads.clear();
         const auto current_mode = get_status().shutdown_mode;
         packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
+        slot_cv.notify_all();
+    }
+
+    detail::AdmissionDecision acquire_admission_slot(bool block, bool is_internal) {
+        std::unique_lock<std::mutex> lock(lifecycle_mutex);
+        while (true) {
+            const auto st = unpack(packed_status.load(std::memory_order_acquire));
+            if (st.state == SchedulerState::Stopped) {
+                return detail::AdmissionDecision::Stopped;
+            }
+            if (st.state == SchedulerState::Stopping) {
+                if (is_internal && st.shutdown_mode == ShutdownMode::Graceful) {
+                    return detail::AdmissionDecision::Success;
+                }
+                return detail::AdmissionDecision::Stopping;
+            }
+
+            if (is_internal) {
+                return detail::AdmissionDecision::Success;
+            }
+
+            if (external_pending_count < options.external_pending_capacity) {
+                ++external_pending_count;
+                return detail::AdmissionDecision::Success;
+            }
+
+            if (!block || options.external_backpressure != ExternalBackpressure::Block) {
+                return detail::AdmissionDecision::CapacityExhausted;
+            }
+
+            // Ordinary thread waiting on slot_cv (R-061 / D-086)
+            slot_cv.wait(lock, [this] {
+                const auto current_st = unpack(packed_status.load(std::memory_order_acquire));
+                return current_st.state != SchedulerState::Running ||
+                       external_pending_count < options.external_pending_capacity;
+            });
+        }
+    }
+
+    void release_external_slot() {
+        {
+            std::lock_guard<std::mutex> lock(lifecycle_mutex);
+            if (external_pending_count > 0) {
+                --external_pending_count;
+            }
+        }
+        slot_cv.notify_one();
     }
 
     void worker_main(std::size_t /*worker_index*/) {
@@ -258,7 +314,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
         // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested）
         while (true) {
-            std::unique_ptr<detail::TaskInvokerBase> task;
+            QueuedTask task;
             {
                 std::unique_lock<std::mutex> lock(lifecycle_mutex);
                 work_cv.wait(lock, [this] {
@@ -267,12 +323,16 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 if (!global_injection_queue.empty()) {
                     task = std::move(global_injection_queue.front());
                     global_injection_queue.pop_front();
+                    if (task.is_external && external_pending_count > 0) {
+                        --external_pending_count;
+                        slot_cv.notify_one();
+                    }
                 } else if (stop_requested) {
                     break;
                 }
             }
-            if (task) {
-                task->execute();
+            if (task.invoker) {
+                task.invoker->execute();
             }
         }
 
@@ -282,10 +342,10 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
     }
 
-    void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task) {
+    void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task, bool is_external) {
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex);
-            global_injection_queue.push_back(std::move(task));
+            global_injection_queue.push_back({std::move(task), is_external});
         }
         work_cv.notify_one();
     }
@@ -313,14 +373,31 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 };
 
-void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker) const {
+detail::AdmissionDecision Scheduler::acquire_admission(bool block, bool is_internal) const {
     if (!impl_) {
         throw std::logic_error("operating on empty/moved-from Scheduler");
     }
-    impl_->post_task_internal(std::move(invoker));
+    return impl_->acquire_admission_slot(block, is_internal);
+}
+
+void Scheduler::rollback_external_slot() const {
+    if (impl_) {
+        impl_->release_external_slot();
+    }
+}
+
+void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const {
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    impl_->post_task_internal(std::move(invoker), is_external);
 }
 
 namespace detail {
+
+RuntimeId current_worker_runtime_id() noexcept {
+    return t_current_worker_runtime_id;
+}
 
 namespace {
 class FunctionTaskInvoker : public TaskInvokerBase {
@@ -338,7 +415,7 @@ private:
 
 void run_test_task_on_worker(Scheduler& s, std::function<void()> task) {
     if (s.impl_) {
-        s.impl_->post_task_internal(std::make_unique<FunctionTaskInvoker>(std::move(task)));
+        s.impl_->post_task_internal(std::make_unique<FunctionTaskInvoker>(std::move(task)), false /* not external */);
     }
 }
 
@@ -346,6 +423,14 @@ std::size_t global_injection_queue_size(const Scheduler& s) {
     if (s.impl_) {
         std::lock_guard<std::mutex> lock(s.impl_->lifecycle_mutex);
         return s.impl_->global_injection_queue.size();
+    }
+    return 0;
+}
+
+std::size_t external_pending_count(const Scheduler& s) {
+    if (s.impl_) {
+        std::lock_guard<std::mutex> lock(s.impl_->lifecycle_mutex);
+        return s.impl_->external_pending_count;
     }
     return 0;
 }

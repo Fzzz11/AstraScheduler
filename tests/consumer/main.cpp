@@ -212,5 +212,29 @@ int main() {
         return 1;
     }
 
+    // 6. AST-009 & AST-010: submit and try_submit
+    astra::Scheduler s_active;
+    auto h = s_active.submit([]() { return 42; });
+    if (h.get() != 42) {
+        std::printf("submit task execution failed\n");
+        return 1;
+    }
+
+    auto try_res = s_active.try_submit([]() { return 100; });
+    if (!std::holds_alternative<astra::TaskHandle<int>>(try_res)) {
+        std::printf("try_submit failed\n");
+        return 1;
+    }
+    if (std::get<astra::TaskHandle<int>>(try_res).get() != 100) {
+        std::printf("try_submit result mismatch\n");
+        return 1;
+    }
+
+    astra::submission_rejected sub_ex(astra::SubmissionError::CapacityExhausted);
+    if (sub_ex.reason() != astra::SubmissionError::CapacityExhausted) {
+        std::printf("submission_rejected::reason() mismatch\n");
+        return 1;
+    }
+
     return 0;
 }

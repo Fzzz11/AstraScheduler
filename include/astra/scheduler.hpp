@@ -23,8 +23,17 @@ namespace astra {
 class Scheduler;
 
 namespace detail {
+enum class AdmissionDecision : std::uint8_t {
+    Success,
+    Stopping,
+    Stopped,
+    CapacityExhausted,
+};
+
+ASTRA_EXPORT RuntimeId current_worker_runtime_id() noexcept;
 void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
 std::size_t global_injection_queue_size(const Scheduler& s);
+std::size_t external_pending_count(const Scheduler& s);
 }
 
 // 调度器共享 Handle（D-155）。
@@ -56,7 +65,7 @@ public:
     // 获取当前 Runtime 冻结的能力快照；空 Handle 抛 std::logic_error（D-162）。
     [[nodiscard]] SchedulerCapabilities capabilities() const;
 
-    // 提交任务（R-048 / R-058 / R-102 / D-041 / D-042 / D-059 / D-074 / D-075 / D-076 / D-165）。
+    // 阻塞/按策略提交任务（R-048 / R-058 / R-061 / R-062 / R-102）。
     template <typename F, typename... Args>
     auto submit(F&& f, Args&&... args) -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
         using Traits = detail::InvocationTraits<F, Args...>;
@@ -74,29 +83,110 @@ public:
             throw std::logic_error("operating on empty/moved-from Scheduler");
         }
 
+        const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+        const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
+        const bool can_block = !is_worker; // R-061 / D-085: 仅普通非 Worker 线程可 Block
+
+        const auto decision = acquire_admission(can_block, is_internal);
+        if (decision == detail::AdmissionDecision::Stopping) {
+            throw submission_rejected(SubmissionError::Stopping);
+        }
+        if (decision == detail::AdmissionDecision::Stopped) {
+            throw submission_rejected(SubmissionError::Stopped);
+        }
+        if (decision == detail::AdmissionDecision::CapacityExhausted) {
+            throw submission_rejected(SubmissionError::CapacityExhausted);
+        }
+
+        // 强异常安全事务：构造过程抛出异常则回滚 slot
         const TaskId tid = detail::allocate_task_id(runtime_id());
-        auto state = std::make_shared<detail::TaskSharedState<ResultType>>(tid);
+        std::shared_ptr<detail::TaskSharedState<ResultType>> state;
+        std::unique_ptr<detail::TaskInvokerBase> invoker;
 
-        auto invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
-            state, std::forward<F>(f), std::forward<Args>(args)...);
+        try {
+            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid);
+            invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
+                state, std::forward<F>(f), std::forward<Args>(args)...);
+        } catch (...) {
+            if (!is_internal) {
+                rollback_external_slot();
+            }
+            throw;
+        }
 
-        post_task_invoker(std::move(invoker));
+        post_task_invoker(std::move(invoker), !is_internal);
         return TaskHandle<ResultType>(std::move(state));
+    }
+
+    // 非阻塞尝试提交任务（R-061 / R-062 / D-088）。
+    template <typename F, typename... Args>
+    auto try_submit(F&& f, Args&&... args) -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
+        using Traits = detail::InvocationTraits<F, Args...>;
+
+        static_assert(Traits::is_valid,
+            "Callable must be invocable as f(args...) or f(std::stop_token, args...)");
+        static_assert(!Traits::returns_reference,
+            "AstraScheduler tasks cannot return raw references (R-058 / D-074). Wrap in std::reference_wrapper if needed.");
+        static_assert(Traits::is_move_constructible,
+            "Task result type must be move-constructible (R-058 / D-075).");
+
+        using ResultType = typename Traits::ResultType;
+
+        if (!valid()) {
+            throw std::logic_error("operating on empty/moved-from Scheduler");
+        }
+
+        const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+
+        // try_submit 永不等待 capacity（R-061 / D-088）
+        const auto decision = acquire_admission(false /* no block */, is_internal);
+        if (decision == detail::AdmissionDecision::Stopping) {
+            return SubmissionResult<ResultType>(SubmissionError::Stopping);
+        }
+        if (decision == detail::AdmissionDecision::Stopped) {
+            return SubmissionResult<ResultType>(SubmissionError::Stopped);
+        }
+        if (decision == detail::AdmissionDecision::CapacityExhausted) {
+            return SubmissionResult<ResultType>(SubmissionError::CapacityExhausted);
+        }
+
+        // 强异常安全事务：构造过程抛出异常则回滚 slot
+        const TaskId tid = detail::allocate_task_id(runtime_id());
+        std::shared_ptr<detail::TaskSharedState<ResultType>> state;
+        std::unique_ptr<detail::TaskInvokerBase> invoker;
+
+        try {
+            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid);
+            invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
+                state, std::forward<F>(f), std::forward<Args>(args)...);
+        } catch (...) {
+            if (!is_internal) {
+                rollback_external_slot();
+            }
+            throw;
+        }
+
+        post_task_invoker(std::move(invoker), !is_internal);
+        return SubmissionResult<ResultType>(TaskHandle<ResultType>(std::move(state)));
     }
 
 private:
     struct ASTRA_NO_EXPORT Impl;
     std::shared_ptr<Impl> impl_;
 
-    void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker) const;
+    detail::AdmissionDecision acquire_admission(bool block, bool is_internal) const;
+    void rollback_external_slot() const;
+    void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const;
 
     friend void detail::run_test_task_on_worker(Scheduler&, std::function<void()>);
     friend std::size_t detail::global_injection_queue_size(const Scheduler&);
+    friend std::size_t detail::external_pending_count(const Scheduler&);
 };
 
 namespace detail {
 void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
 std::size_t global_injection_queue_size(const Scheduler& s);
+std::size_t external_pending_count(const Scheduler& s);
 }
 
 }  // namespace astra

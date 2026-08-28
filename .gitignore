@@ -1,2 +1,4 @@
 # WSL/Linux build directories (ADR-0047 / R-112: 环境隔离)
 build/
+cmake-build-*/
+.idea/

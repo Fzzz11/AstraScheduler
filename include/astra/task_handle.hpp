@@ -1,6 +1,7 @@
 #ifndef ASTRA_TASK_HANDLE_HPP
 #define ASTRA_TASK_HANDLE_HPP
 
+#include <astra/error.hpp>
 #include <astra/export.hpp>
 #include <astra/id.hpp>
 
@@ -15,6 +16,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace astra {
 
@@ -347,6 +349,10 @@ public:
 private:
     std::shared_ptr<detail::TaskSharedState<void>> state_;
 };
+
+// 任务提交结果类型（R-062 / D-088）。
+template <typename T>
+using SubmissionResult = std::variant<TaskHandle<T>, SubmissionError>;
 
 }  // namespace astra
 

@@ -281,6 +281,7 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "_ZN5astra15library_versionEv",
             "_ZN5astra22library_version_stringEv",
             "_ZN5astra24recommended_worker_countEv",
+            "_ZN5astra6detail25current_worker_runtime_idEv",
             "_ZN5astra9SchedulerC1ENS_16SchedulerOptionsE",
             "_ZN5astra9SchedulerC2ENS_16SchedulerOptionsE",
             "_ZN5astra9SchedulerC1ERKS0_",
@@ -295,7 +296,9 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "_ZNK5astra9Scheduler10runtime_idEv",
             "_ZNK5astra9Scheduler6statusEv",
             "_ZNK5astra9Scheduler12capabilitiesEv",
-            "_ZNK5astra9Scheduler17post_task_invokerESt10unique_ptrINS_6detail15TaskInvokerBaseESt14default_deleteIS3_EE",
+            "_ZNK5astra9Scheduler17acquire_admissionEbb",
+            "_ZNK5astra9Scheduler17post_task_invokerESt10unique_ptrINS_6detail15TaskInvokerBaseESt14default_deleteIS3_EEb",
+            "_ZNK5astra9Scheduler22rollback_external_slotEv",
         ]
         for sym in expected_symbols:
             self.assertIn(
@@ -591,5 +594,15 @@ class AST009MoveOnlySubmitGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST010AdmissionBackpressureGates(PackageBuildFixture):
+    """AST-010：实现 External Pending Capacity 与强 admission transaction（R-061/R-062）。"""
+
+    def test_AST010_consumer_runs_all_admission_backpressure_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-061/R-062
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

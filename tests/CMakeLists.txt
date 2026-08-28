@@ -84,5 +84,17 @@ target_include_directories(astra_move_only_submit_test PRIVATE
 target_compile_features(astra_move_only_submit_test PRIVATE cxx_std_20)
 add_test(NAME astra_move_only_submit_test COMMAND astra_move_only_submit_test)
 
-
-
+add_executable(astra_admission_backpressure_test
+  test_admission_backpressure.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_admission_backpressure_test PRIVATE Threads::Threads)
+target_include_directories(astra_admission_backpressure_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_admission_backpressure_test PRIVATE cxx_std_20)
+add_test(NAME astra_admission_backpressure_test COMMAND astra_admission_backpressure_test)
