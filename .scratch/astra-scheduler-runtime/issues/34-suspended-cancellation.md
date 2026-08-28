@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-075)
 Milestone: v0.5.0
 Blocked by: AST-016, AST-033
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-075]` frame不在suspend点被异步销毁，Immediate仍可执行必要unwind segment。
+- [x] `[R-075]` frame不在suspend点被异步销毁，Immediate仍可执行必要unwind segment。
 
 ## Out of scope
 
@@ -40,5 +40,9 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-075
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-119, D-154
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - In-tree Debug Tests: `tests/test_suspended_cancellation.cpp` (5/5 assertions, ctest 32/32 passed)
+  - Address/Undefined/Leak Sanitizer: `build/wsl-gcc-asan` (ctest 32/32 passed, 0 leaks, 0 data races)
+  - Independent Consumer Package Gates: `tools/check_cmake_package.py` (`AST034SuspendedCancellationGates`, 49/49 passed)
+  - Release Milestone Gates: `tools/check_release_gates.py` (15/15 passed)
 

@@ -56,6 +56,7 @@ struct TaskInvokerBase {
     virtual ~TaskInvokerBase() = default;
     virtual void execute() = 0;
     virtual void cancel_pre_start() noexcept = 0;
+    [[nodiscard]] virtual bool is_resume_segment() const noexcept { return false; }
 };
 
 struct ASTRA_EXPORT TaskExecutionContextGuard {

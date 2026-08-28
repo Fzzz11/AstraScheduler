@@ -33,7 +33,13 @@ struct TaskPromiseBase {
 
     void unhandled_exception() {
         if (shared_state) {
-            shared_state->set_exception(std::current_exception());
+            try {
+                std::rethrow_exception(std::current_exception());
+            } catch (const task_cancelled&) {
+                shared_state->set_cancelled();
+            } catch (...) {
+                shared_state->set_exception(std::current_exception());
+            }
         }
     }
 };
@@ -133,8 +139,8 @@ private:
 };
 
 // -----------------------------------------------------------------------------
-// AwaitHandshake (R-074 / D-118)
-// 线性化内建 awaiter 的挂起与触发唤醒竞争，保证恰好发布一个 Ready ticket，
+// AwaitHandshake (R-074 / R-075 / D-118 / D-119)
+// 线性化内建 awaiter 的挂起与触发/取消唤醒竞争，保证恰好发布一个 Ready ticket，
 // 且不在 await_suspend 返回前发生并发 resume。
 // -----------------------------------------------------------------------------
 class AwaitHandshake {
@@ -143,12 +149,13 @@ public:
         kInit = 0,
         kTriggered = 1 << 0,
         kArmed = 1 << 1,
-        kResolved = 1 << 2
+        kResolved = 1 << 2,
+        kCancelled = 1 << 3
     };
 
     AwaitHandshake() noexcept = default;
 
-    // 目标完成/取消时触发（可在 await_suspend 注册期间或之后发生）
+    // 目标完成时触发（可在 await_suspend 注册期间或之后发生）
     template <typename PostFn>
     void trigger(PostFn&& post_fn) {
         const std::uint32_t prev = state_.fetch_or(kTriggered, std::memory_order_acq_rel);
@@ -156,6 +163,24 @@ public:
             std::uint32_t expected = prev | kTriggered;
             if (state_.compare_exchange_strong(expected, expected | kResolved, std::memory_order_acq_rel)) {
                 post_fn();
+            }
+        }
+    }
+
+    // 收到取消/stop 信号时触发（R-075 / D-119）
+    template <typename PostFn>
+    void trigger_cancel(PostFn&& post_fn) {
+        std::uint32_t current = state_.load(std::memory_order_acquire);
+        while ((current & (kTriggered | kResolved)) == 0) {
+            std::uint32_t next = current | kTriggered | kCancelled;
+            if (current & kArmed) {
+                next |= kResolved;
+            }
+            if (state_.compare_exchange_weak(current, next, std::memory_order_acq_rel)) {
+                if (current & kArmed) {
+                    post_fn();
+                }
+                return;
             }
         }
     }
@@ -184,6 +209,10 @@ public:
         return (state_.load(std::memory_order_acquire) & kResolved) != 0;
     }
 
+    [[nodiscard]] bool is_cancelled() const noexcept {
+        return (state_.load(std::memory_order_acquire) & kCancelled) != 0;
+    }
+
 private:
     std::atomic<std::uint32_t> state_{kInit};
 };
@@ -199,7 +228,7 @@ inline Task<void> TaskPromise<void>::get_return_object() noexcept {
     return Task<void>{std::coroutine_handle<TaskPromise<void>>::from_promise(*this)};
 }
 
-// 首次启动 Coroutine Task Invoker（D-114 / D-115 / D-116）
+// 首次启动 Coroutine Task Invoker（D-114 / D-115 / D-116 / D-154）
 template <typename T>
 struct CoroutineTaskInvokerModel final : TaskInvokerBase {
     std::coroutine_handle<TaskPromise<T>> coro;
@@ -252,9 +281,13 @@ struct CoroutineTaskInvokerModel final : TaskInvokerBase {
             state->request_cancel();
         }
     }
+
+    [[nodiscard]] bool is_resume_segment() const noexcept override {
+        return false;
+    }
 };
 
-// 后续恢复 Coroutine Resume Invoker（R-074 / D-116 / D-117 / D-118）
+// 后续恢复 Coroutine Resume Invoker（R-074 / R-075 / D-116 / D-117 / D-118 / D-154）
 template <typename T>
 struct CoroutineResumeInvokerModel final : TaskInvokerBase {
     std::coroutine_handle<TaskPromise<T>> coro;
@@ -288,9 +321,11 @@ struct CoroutineResumeInvokerModel final : TaskInvokerBase {
     }
 
     void cancel_pre_start() noexcept override {
-        if (state) {
-            state->request_cancel();
-        }
+        // R-075 / D-154: Resume segment 不属于 never-started 任务
+    }
+
+    [[nodiscard]] bool is_resume_segment() const noexcept override {
+        return true;
     }
 };
 

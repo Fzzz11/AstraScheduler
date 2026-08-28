@@ -835,6 +835,15 @@ class AST033CoroutineResumeHandshakeGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST034SuspendedCancellationGates(PackageBuildFixture):
+    """AST-034：实现 Suspended cancellation 与 Immediate cooperative resume（R-075）。"""
+
+    def test_AST034_consumer_runs_all_suspended_cancellation_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-075
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

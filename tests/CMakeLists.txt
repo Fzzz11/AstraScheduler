@@ -456,6 +456,23 @@ target_include_directories(astra_coroutine_resume_handshake_test PRIVATE
 target_compile_features(astra_coroutine_resume_handshake_test PRIVATE cxx_std_20)
 add_test(NAME astra_coroutine_resume_handshake_test COMMAND astra_coroutine_resume_handshake_test)
 
+add_executable(astra_suspended_cancellation_test
+  test_suspended_cancellation.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_suspended_cancellation_test PRIVATE Threads::Threads)
+target_include_directories(astra_suspended_cancellation_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_suspended_cancellation_test PRIVATE cxx_std_20)
+add_test(NAME astra_suspended_cancellation_test COMMAND astra_suspended_cancellation_test)
+
+
 
 
 

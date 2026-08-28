@@ -642,7 +642,21 @@ int main() {
         return 1;
     }
 
-    // 23. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 23. AST-034: Suspended cancellation & trigger_cancel (R-075 / D-119 / D-154)
+    astra::AwaitHandshake hs_cancel_test;
+    bool hs_cancel_ran = false;
+    hs_cancel_test.trigger_cancel([&] { hs_cancel_ran = true; });
+    if (hs_cancel_ran) {
+        std::printf("Trigger cancel before arm must not run callback\n");
+        return 1;
+    }
+    hs_cancel_test.arm([&] { hs_cancel_ran = true; });
+    if (!hs_cancel_ran || !hs_cancel_test.is_resolved() || !hs_cancel_test.is_cancelled()) {
+        std::printf("Arm after trigger_cancel must resolve, mark cancelled, and run callback\n");
+        return 1;
+    }
+
+    // 24. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,

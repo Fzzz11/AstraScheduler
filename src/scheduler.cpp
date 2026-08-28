@@ -307,27 +307,41 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     void cancel_all_unstarted_tasks_locked() noexcept {
+        std::deque<QueuedTask> remaining_global;
         while (!global_injection_queue.empty()) {
             auto task = std::move(global_injection_queue.front());
             global_injection_queue.pop_front();
-            if (task.invoker) {
-                task.invoker->cancel_pre_start();
-            }
-            if (task.is_external && external_pending_count > 0) {
-                --external_pending_count;
-                slot_cv.notify_one();
+            if (task.invoker && task.invoker->is_resume_segment()) {
+                // R-075 / D-154: 保留已启动的 resume segment，允许其恢复执行合作取消或自然完成
+                remaining_global.push_back(std::move(task));
+            } else {
+                if (task.invoker) {
+                    task.invoker->cancel_pre_start();
+                }
+                if (task.is_external && external_pending_count > 0) {
+                    --external_pending_count;
+                    slot_cv.notify_one();
+                }
             }
         }
+        global_injection_queue = std::move(remaining_global);
+
         for (auto& d : local_deques) {
             if (d) {
                 std::lock_guard<std::mutex> lk(d->mutex);
+                std::deque<QueuedTask> remaining_local;
                 while (!d->tasks.empty()) {
                     auto task = std::move(d->tasks.front());
                     d->tasks.pop_front();
-                    if (task.invoker) {
-                        task.invoker->cancel_pre_start();
+                    if (task.invoker && task.invoker->is_resume_segment()) {
+                        remaining_local.push_back(std::move(task));
+                    } else {
+                        if (task.invoker) {
+                            task.invoker->cancel_pre_start();
+                        }
                     }
                 }
+                d->tasks = std::move(remaining_local);
             }
         }
     }
@@ -1079,21 +1093,46 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
                 if (!found_task && stop_requested) {
                     const auto st = unpack(packed_status.load(std::memory_order_acquire));
-                    if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
+                    if (st.state == SchedulerState::Stopped) {
                         break;
                     }
-                    bool any_tasks = !global_injection_queue.empty() || !my_local_deque.empty();
-                    if (!any_tasks) {
-                        for (const auto& d : local_deques) {
-                            if (d && !d->empty()) {
-                                any_tasks = true;
+                    if (st.shutdown_mode == ShutdownMode::Immediate) {
+                        bool any_resumes = false;
+                        for (const auto& entry : global_injection_queue) {
+                            if (entry.invoker && entry.invoker->is_resume_segment()) {
+                                any_resumes = true;
                                 break;
                             }
                         }
-                    }
-                    if (!any_tasks && active_task_count == 0) {
-                        work_cv.notify_all();
-                        break;
+                        if (!any_resumes && !my_local_deque.empty()) {
+                            any_resumes = true;
+                        }
+                        if (!any_resumes) {
+                            for (const auto& d : local_deques) {
+                                if (d && !d->empty()) {
+                                    any_resumes = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!any_resumes && active_task_count == 0) {
+                            work_cv.notify_all();
+                            break;
+                        }
+                    } else {
+                        bool any_tasks = !global_injection_queue.empty() || !my_local_deque.empty();
+                        if (!any_tasks) {
+                            for (const auto& d : local_deques) {
+                                if (d && !d->empty()) {
+                                    any_tasks = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!any_tasks && active_task_count == 0) {
+                            work_cv.notify_all();
+                            break;
+                        }
                     }
                 }
             }
@@ -1101,7 +1140,12 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
         // 5. 执行获取到的任务
         if (found_task && task.invoker) {
-            task.invoker->execute();
+            const auto st = get_status();
+            if (st.shutdown_mode == ShutdownMode::Immediate && !task.invoker->is_resume_segment()) {
+                task.invoker->cancel_pre_start();
+            } else {
+                task.invoker->execute();
+            }
             {
                 std::lock_guard<std::mutex> lock(lifecycle_mutex);
                 --active_task_count;
