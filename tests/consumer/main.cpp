@@ -346,5 +346,23 @@ int main() {
         return 1;
     }
 
+    // 11. AST-015: Shutdown Guards (R-011 / R-013 / R-108)
+    astra::Scheduler s_guard;
+    std::atomic<bool> caught_self_shutdown{false};
+    auto h_guard = s_guard.submit([&s_guard, &caught_self_shutdown]() {
+        try {
+            s_guard.shutdown();
+        } catch (const std::logic_error&) {
+            caught_self_shutdown.store(true);
+        }
+        return 1;
+    });
+    h_guard.wait();
+    if (!caught_self_shutdown.load()) {
+        std::printf("self-shutdown from worker must throw std::logic_error\n");
+        return 1;
+    }
+    s_guard.shutdown();
+
     return 0;
 }

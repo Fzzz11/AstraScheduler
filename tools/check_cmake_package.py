@@ -646,6 +646,15 @@ class AST014GracefulDrainGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST015ShutdownGuardsGates(PackageBuildFixture):
+    """AST-015：实现 shutdown caller guard 与共享完成边界（R-010/R-011/R-013/R-016/R-108）。"""
+
+    def test_AST015_consumer_runs_all_shutdown_guards_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-010/R-011/R-013/R-016/R-108
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

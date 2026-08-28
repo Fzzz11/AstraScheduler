@@ -180,8 +180,16 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
     }
 
-    // 同步关闭并在全部 Worker 退出并 join 后发布 Stopped（R-012 / R-019）
+    std::mutex shutdown_mutex;
+    std::condition_variable shutdown_done_cv;
+    bool shutdown_in_progress{false};
+
+    // 同步关闭并在全部 Worker 退出并 join 后发布 Stopped（R-010 / R-012 / R-016 / R-019）
     void shutdown_sync(ShutdownMode mode) {
+        if (get_status().state == SchedulerState::Stopped) {
+            return;
+        }
+
         request_shutdown_mode(mode);
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex);
@@ -189,17 +197,38 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
         work_cv.notify_all();
 
-        for (auto& t : worker_threads) {
-            if (t.joinable()) {
-                t.join();
-            }
+        // 共享 Shutdown Completion（R-016 / D-013）：Leader-Waiter 模式
+        std::unique_lock<std::mutex> s_lock(shutdown_mutex);
+        if (get_status().state == SchedulerState::Stopped) {
+            return;
         }
-        worker_threads.clear();
 
-        const auto current_mode = get_status().shutdown_mode;
-        packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
-        slot_cv.notify_all();
-        detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
+        if (!shutdown_in_progress) {
+            shutdown_in_progress = true;
+            s_lock.unlock();
+
+            // Leader 负责 join 全部 worker 线程（恰好 join 一次）
+            for (auto& t : worker_threads) {
+                if (t.joinable()) {
+                    t.join();
+                }
+            }
+            worker_threads.clear();
+
+            const auto current_mode = get_status().shutdown_mode;
+            packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
+            slot_cv.notify_all();
+            detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
+
+            s_lock.lock();
+            shutdown_in_progress = false;
+            shutdown_done_cv.notify_all();
+        } else {
+            // Waiter 等待 Leader 完成 join 并发布 Stopped
+            shutdown_done_cv.wait(s_lock, [this] {
+                return get_status().state == SchedulerState::Stopped;
+            });
+        }
     }
 
     // 状态转换与模式保持（R-022）
@@ -659,8 +688,13 @@ void Scheduler::shutdown() {
     if (!impl_) {
         throw std::logic_error("operating on empty/moved-from Scheduler");
     }
+    // R-019: 如果已经处于 Stopped 状态，立即成功返回且无任何副作用
     if (impl_->get_status().state == SchedulerState::Stopped) {
         return;
+    }
+    // R-013 / R-108 / D-011 / D-166: 目标 Worker 调用 self-shutdown 必须在副作用前抛 std::logic_error
+    if (detail::current_worker_runtime_id() == impl_->runtime_id) {
+        throw std::logic_error("self-shutdown attempted from worker of the same runtime");
     }
     impl_->shutdown_sync(ShutdownMode::Graceful);
 }
@@ -669,8 +703,13 @@ void Scheduler::shutdown_now() {
     if (!impl_) {
         throw std::logic_error("operating on empty/moved-from Scheduler");
     }
+    // R-019: 如果已经处于 Stopped 状态，立即成功返回且无任何副作用
     if (impl_->get_status().state == SchedulerState::Stopped) {
         return;
+    }
+    // R-011 / R-108 / D-009 / D-166: 目标 Worker 调用 self-shutdown_now 必须在副作用前抛 std::logic_error
+    if (detail::current_worker_runtime_id() == impl_->runtime_id) {
+        throw std::logic_error("self-shutdown_now attempted from worker of the same runtime");
     }
     impl_->shutdown_sync(ShutdownMode::Immediate);
 }
