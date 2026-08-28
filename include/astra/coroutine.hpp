@@ -3,11 +3,14 @@
 
 #include <astra/error.hpp>
 #include <astra/export.hpp>
+#include <astra/graph.hpp>
 #include <astra/task_handle.hpp>
 
 #include <coroutine>
 #include <exception>
 #include <memory>
+#include <optional>
+#include <stop_token>
 #include <type_traits>
 #include <utility>
 
@@ -44,22 +47,27 @@ struct TaskPromiseBase {
     }
 };
 
-template <typename T>
-struct TaskPromise : TaskPromiseBase<T> {
+}  // namespace detail
+
+template <typename T = void>
+class TaskPromise final : public detail::TaskPromiseBase<T> {
+public:
     using value_type = T;
 
     Task<T> get_return_object() noexcept;
 
     template <typename U>
-    void return_value(U&& value) {
+        requires std::convertible_to<U, T>
+    void return_value(U&& val) {
         if (this->shared_state) {
-            this->shared_state->set_value(std::forward<U>(value));
+            this->shared_state->set_value(std::forward<U>(val));
         }
     }
 };
 
 template <>
-struct TaskPromise<void> : TaskPromiseBase<void> {
+class TaskPromise<void> final : public detail::TaskPromiseBase<void> {
+public:
     using value_type = void;
 
     Task<void> get_return_object() noexcept;
@@ -71,53 +79,44 @@ struct TaskPromise<void> : TaskPromiseBase<void> {
     }
 };
 
-}  // namespace detail
-
 // -----------------------------------------------------------------------------
-// astra::Task<T> (R-073 / D-114 / D-115)
-// cold、move-only、single-shot coroutine frame owner
+// Task<T> (R-073 / D-114 / D-115)
+// Cold C++20 Coroutine Task handle
 // -----------------------------------------------------------------------------
 template <typename T>
-class [[nodiscard]] Task {
+class Task {
 public:
-    static_assert(!std::is_reference_v<T>,
-        "Task<T> does not support raw reference types (R-058 / D-074 / D-114)");
-    static_assert(std::is_move_constructible_v<T> || std::is_void_v<T>,
-        "Task<T> result type must be move-constructible or void (R-058 / D-075 / D-114)");
-
-    using promise_type = detail::TaskPromise<T>;
+    using promise_type = TaskPromise<T>;
     using handle_type = std::coroutine_handle<promise_type>;
 
     Task() noexcept = default;
 
-    explicit Task(handle_type h) noexcept : handle_(h) {}
+    explicit Task(handle_type h) noexcept : coro_(h) {}
 
     ~Task() {
-        if (handle_) {
-            handle_.destroy();
+        if (coro_) {
+            coro_.destroy();
+            coro_ = nullptr;
         }
+    }
+
+    Task(Task&& other) noexcept : coro_(std::exchange(other.coro_, nullptr)) {}
+
+    Task& operator=(Task&& other) noexcept {
+        if (this != &other) {
+            if (coro_) {
+                coro_.destroy();
+            }
+            coro_ = std::exchange(other.coro_, nullptr);
+        }
+        return *this;
     }
 
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
 
-    Task(Task&& other) noexcept : handle_(other.handle_) {
-        other.handle_ = nullptr;
-    }
-
-    Task& operator=(Task&& other) noexcept {
-        if (this != &other) {
-            if (handle_) {
-                handle_.destroy();
-            }
-            handle_ = other.handle_;
-            other.handle_ = nullptr;
-        }
-        return *this;
-    }
-
     [[nodiscard]] bool valid() const noexcept {
-        return static_cast<bool>(handle_);
+        return static_cast<bool>(coro_);
     }
 
     [[nodiscard]] explicit operator bool() const noexcept {
@@ -125,99 +124,16 @@ public:
     }
 
     [[nodiscard]] handle_type handle() const noexcept {
-        return handle_;
+        return coro_;
     }
 
     [[nodiscard]] handle_type release_handle() noexcept {
-        handle_type h = handle_;
-        handle_ = nullptr;
-        return h;
+        return std::exchange(coro_, nullptr);
     }
 
 private:
-    handle_type handle_{nullptr};
+    handle_type coro_{nullptr};
 };
-
-// -----------------------------------------------------------------------------
-// AwaitHandshake (R-074 / R-075 / D-118 / D-119)
-// 线性化内建 awaiter 的挂起与触发/取消唤醒竞争，保证恰好发布一个 Ready ticket，
-// 且不在 await_suspend 返回前发生并发 resume。
-// -----------------------------------------------------------------------------
-class AwaitHandshake {
-public:
-    enum Flag : std::uint32_t {
-        kInit = 0,
-        kTriggered = 1 << 0,
-        kArmed = 1 << 1,
-        kResolved = 1 << 2,
-        kCancelled = 1 << 3
-    };
-
-    AwaitHandshake() noexcept = default;
-
-    // 目标完成时触发（可在 await_suspend 注册期间或之后发生）
-    template <typename PostFn>
-    void trigger(PostFn&& post_fn) {
-        const std::uint32_t prev = state_.fetch_or(kTriggered, std::memory_order_acq_rel);
-        if ((prev & kArmed) != 0 && (prev & kResolved) == 0) {
-            std::uint32_t expected = prev | kTriggered;
-            if (state_.compare_exchange_strong(expected, expected | kResolved, std::memory_order_acq_rel)) {
-                post_fn();
-            }
-        }
-    }
-
-    // 收到取消/stop 信号时触发（R-075 / D-119）
-    template <typename PostFn>
-    void trigger_cancel(PostFn&& post_fn) {
-        std::uint32_t current = state_.load(std::memory_order_acquire);
-        while ((current & (kTriggered | kResolved)) == 0) {
-            std::uint32_t next = current | kTriggered | kCancelled;
-            if (current & kArmed) {
-                next |= kResolved;
-            }
-            if (state_.compare_exchange_weak(current, next, std::memory_order_acq_rel)) {
-                if (current & kArmed) {
-                    post_fn();
-                }
-                return;
-            }
-        }
-    }
-
-    // await_suspend 完成注册并提交 Suspended 状态后 arm
-    template <typename PostFn>
-    void arm(PostFn&& post_fn) {
-        const std::uint32_t prev = state_.fetch_or(kArmed, std::memory_order_acq_rel);
-        if ((prev & kTriggered) != 0 && (prev & kResolved) == 0) {
-            std::uint32_t expected = prev | kArmed;
-            if (state_.compare_exchange_strong(expected, expected | kResolved, std::memory_order_acq_rel)) {
-                post_fn();
-            }
-        }
-    }
-
-    [[nodiscard]] bool is_triggered() const noexcept {
-        return (state_.load(std::memory_order_acquire) & kTriggered) != 0;
-    }
-
-    [[nodiscard]] bool is_armed() const noexcept {
-        return (state_.load(std::memory_order_acquire) & kArmed) != 0;
-    }
-
-    [[nodiscard]] bool is_resolved() const noexcept {
-        return (state_.load(std::memory_order_acquire) & kResolved) != 0;
-    }
-
-    [[nodiscard]] bool is_cancelled() const noexcept {
-        return (state_.load(std::memory_order_acquire) & kCancelled) != 0;
-    }
-
-private:
-    std::atomic<std::uint32_t> state_{kInit};
-};
-
-namespace detail {
 
 template <typename T>
 inline Task<T> TaskPromise<T>::get_return_object() noexcept {
@@ -228,28 +144,119 @@ inline Task<void> TaskPromise<void>::get_return_object() noexcept {
     return Task<void>{std::coroutine_handle<TaskPromise<void>>::from_promise(*this)};
 }
 
-// 首次启动 Coroutine Task Invoker（D-114 / D-115 / D-116 / D-154）
-template <typename T>
-struct CoroutineTaskInvokerModel final : TaskInvokerBase {
-    std::coroutine_handle<TaskPromise<T>> coro;
-    std::shared_ptr<TaskSharedState<T>> state;
-    bool executed{false};
+// -----------------------------------------------------------------------------
+// AwaitHandshake (R-074 / R-075 / D-118 / D-119)
+// -----------------------------------------------------------------------------
+class AwaitHandshake {
+public:
+    enum class State : std::uint8_t {
+        Init = 0,
+        Triggered = 1,
+        Armed = 2,
+        Resolved = 3,
+    };
 
-    explicit CoroutineTaskInvokerModel(
-        std::coroutine_handle<TaskPromise<T>> h,
-        std::shared_ptr<TaskSharedState<T>> st) noexcept
-        : coro(h), state(std::move(st)) {}
+    static constexpr std::uint8_t kStateMask = 0x0F;
+    static constexpr std::uint8_t kCancelled = 0x80;
 
-    ~CoroutineTaskInvokerModel() override {
-        if (!executed && coro && state && state->is_completed()) {
-            coro.destroy();
-            coro = nullptr;
+    AwaitHandshake() noexcept = default;
+
+    template <typename PostAction>
+    void trigger(PostAction&& post_action) {
+        std::uint8_t expected = static_cast<std::uint8_t>(State::Init);
+        if (raw_state_.compare_exchange_strong(expected, static_cast<std::uint8_t>(State::Triggered),
+                                                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return;
+        }
+
+        if ((expected & kStateMask) == static_cast<std::uint8_t>(State::Armed)) {
+            std::uint8_t new_state = static_cast<std::uint8_t>(State::Resolved) | (expected & kCancelled);
+            if (raw_state_.compare_exchange_strong(expected, new_state,
+                                                    std::memory_order_acq_rel, std::memory_order_acquire)) {
+                post_action();
+            }
         }
     }
 
+    template <typename PostAction>
+    void trigger_cancel(PostAction&& post_action) {
+        std::uint8_t current = raw_state_.load(std::memory_order_acquire);
+        while (true) {
+            if ((current & kStateMask) == static_cast<std::uint8_t>(State::Resolved)) {
+                return;
+            }
+            if ((current & kStateMask) == static_cast<std::uint8_t>(State::Triggered)) {
+                return;
+            }
+            if ((current & kStateMask) == static_cast<std::uint8_t>(State::Init)) {
+                std::uint8_t next = static_cast<std::uint8_t>(State::Triggered) | kCancelled;
+                if (raw_state_.compare_exchange_weak(current, next,
+                                                      std::memory_order_acq_rel, std::memory_order_acquire)) {
+                    return;
+                }
+                continue;
+            }
+            if ((current & kStateMask) == static_cast<std::uint8_t>(State::Armed)) {
+                std::uint8_t next = static_cast<std::uint8_t>(State::Resolved) | kCancelled;
+                if (raw_state_.compare_exchange_weak(current, next,
+                                                      std::memory_order_acq_rel, std::memory_order_acquire)) {
+                    post_action();
+                    return;
+                }
+                continue;
+            }
+            break;
+        }
+    }
+
+    template <typename PostAction>
+    void arm(PostAction&& post_action) {
+        std::uint8_t expected = static_cast<std::uint8_t>(State::Init);
+        if (raw_state_.compare_exchange_strong(expected, static_cast<std::uint8_t>(State::Armed),
+                                                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return;
+        }
+
+        if ((expected & kStateMask) == static_cast<std::uint8_t>(State::Triggered)) {
+            std::uint8_t new_state = static_cast<std::uint8_t>(State::Resolved) | (expected & kCancelled);
+            if (raw_state_.compare_exchange_strong(expected, new_state,
+                                                    std::memory_order_acq_rel, std::memory_order_acquire)) {
+                post_action();
+            }
+        }
+    }
+
+    [[nodiscard]] bool is_resolved() const noexcept {
+        return (raw_state_.load(std::memory_order_acquire) & kStateMask) == static_cast<std::uint8_t>(State::Resolved);
+    }
+
+    [[nodiscard]] bool is_cancelled() const noexcept {
+        return (raw_state_.load(std::memory_order_acquire) & kCancelled) != 0;
+    }
+
+    [[nodiscard]] State state() const noexcept {
+        return static_cast<State>(raw_state_.load(std::memory_order_acquire) & kStateMask);
+    }
+
+private:
+    std::atomic<std::uint8_t> raw_state_{static_cast<std::uint8_t>(State::Init)};
+};
+
+namespace detail {
+
+template <typename T>
+class CoroutineTaskInvokerModel final : public TaskInvokerBase {
+public:
+    std::coroutine_handle<TaskPromise<T>> coro;
+    std::shared_ptr<TaskSharedState<T>> state;
+
+    CoroutineTaskInvokerModel(std::coroutine_handle<TaskPromise<T>> h,
+                              std::shared_ptr<TaskSharedState<T>> s)
+        : coro(h), state(std::move(s)) {}
+
+    ~CoroutineTaskInvokerModel() override = default;
+
     void execute() override {
-        executed = true;
-        // 首次 start 竞争（R-053 / D-052）
         if (!state->try_start()) {
             if (coro) {
                 coro.destroy();
@@ -281,22 +288,17 @@ struct CoroutineTaskInvokerModel final : TaskInvokerBase {
             state->request_cancel();
         }
     }
-
-    [[nodiscard]] bool is_resume_segment() const noexcept override {
-        return false;
-    }
 };
 
-// 后续恢复 Coroutine Resume Invoker（R-074 / R-075 / D-116 / D-117 / D-118 / D-154）
 template <typename T>
-struct CoroutineResumeInvokerModel final : TaskInvokerBase {
+class CoroutineResumeInvokerModel final : public TaskInvokerBase {
+public:
     std::coroutine_handle<TaskPromise<T>> coro;
     std::shared_ptr<TaskSharedState<T>> state;
 
-    explicit CoroutineResumeInvokerModel(
-        std::coroutine_handle<TaskPromise<T>> h,
-        std::shared_ptr<TaskSharedState<T>> st) noexcept
-        : coro(h), state(std::move(st)) {}
+    CoroutineResumeInvokerModel(std::coroutine_handle<TaskPromise<T>> h,
+                                std::shared_ptr<TaskSharedState<T>> s)
+        : coro(h), state(std::move(s)) {}
 
     ~CoroutineResumeInvokerModel() override = default;
 
@@ -321,7 +323,6 @@ struct CoroutineResumeInvokerModel final : TaskInvokerBase {
     }
 
     void cancel_pre_start() noexcept override {
-        // R-075 / D-154: Resume segment 不属于 never-started 任务
     }
 
     [[nodiscard]] bool is_resume_segment() const noexcept override {
@@ -329,7 +330,244 @@ struct CoroutineResumeInvokerModel final : TaskInvokerBase {
     }
 };
 
+// -----------------------------------------------------------------------------
+// TaskHandle Awaiter (R-076 / D-120)
+// -----------------------------------------------------------------------------
+template <typename T>
+struct TaskHandleAwaiter {
+    TaskHandle<T> handle;
+    std::shared_ptr<AwaitHandshake> handshake{std::make_shared<AwaitHandshake>()};
+    std::optional<std::stop_callback<std::function<void()>>> stop_cb;
+
+    explicit TaskHandleAwaiter(const TaskHandle<T>& h) : handle(h) {}
+
+    bool await_ready() const {
+        if (!handle.valid()) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        if (current_executing_task_id() == handle.task_id()) {
+            throw std::logic_error("direct self-await detected (D-120 / R-076)");
+        }
+        const auto st = handle.state();
+        return st == TaskState::Succeeded || st == TaskState::Failed || st == TaskState::Cancelled;
+    }
+
+    template <typename PromiseType>
+    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+        static_assert(requires { coro.promise().shared_state; },
+                      "co_await TaskHandle is only permitted within astra::Task coroutines (D-120)");
+
+        auto task_state = coro.promise().shared_state;
+        if (!task_state) {
+            throw std::logic_error("invalid coroutine shared_state");
+        }
+
+        if (task_state->id() == handle.task_id()) {
+            throw std::logic_error("direct self-await detected (D-120 / R-076)");
+        }
+
+        if (task_state->stop_token().stop_requested()) {
+            throw task_cancelled{};
+        }
+
+        auto rescheduler = task_state->get_rescheduler();
+
+        auto post_action = [coro, task_state, rescheduler]() mutable {
+            if (rescheduler) {
+                auto invoker = std::make_unique<CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
+                    coro, std::move(task_state));
+                rescheduler(std::move(invoker));
+            }
+        };
+
+        auto hs = handshake;
+        handle.shared_state_internal()->add_completion_callback([hs, post_action]() mutable {
+            hs->trigger(post_action);
+        });
+
+        stop_cb.emplace(task_state->stop_token(), [hs, post_action]() mutable {
+            hs->trigger_cancel(post_action);
+        });
+
+        task_state->transition_to_suspended();
+        hs->arm(std::move(post_action));
+        return true;
+    }
+
+    decltype(auto) await_resume() {
+        stop_cb.reset();
+        if (handshake->is_cancelled()) {
+            throw task_cancelled{};
+        }
+        if constexpr (std::is_void_v<T>) {
+            handle.get();
+        } else {
+            return handle.get();
+        }
+    }
+};
+
+// -----------------------------------------------------------------------------
+// GraphRun Awaiter (R-076 / D-121)
+// -----------------------------------------------------------------------------
+struct GraphRunAwaiter {
+    GraphRun run;
+    std::shared_ptr<AwaitHandshake> handshake{std::make_shared<AwaitHandshake>()};
+    std::optional<std::stop_callback<std::function<void()>>> stop_cb;
+
+    explicit GraphRunAwaiter(const GraphRun& r) : run(r) {}
+
+    bool await_ready() const {
+        if (!run.valid()) {
+            throw std::logic_error("operating on empty/moved-from GraphRun");
+        }
+        if (current_executing_graph_run_id() == run.id()) {
+            throw std::logic_error("self-run await detected (D-121 / R-076)");
+        }
+        return run.is_completed();
+    }
+
+    template <typename PromiseType>
+    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+        static_assert(requires { coro.promise().shared_state; },
+                      "co_await GraphRun is only permitted within astra::Task coroutines (D-121)");
+
+        auto task_state = coro.promise().shared_state;
+        if (!task_state) {
+            throw std::logic_error("invalid coroutine shared_state");
+        }
+
+        if (current_executing_graph_run_id() == run.id()) {
+            throw std::logic_error("self-run await detected (D-121 / R-076)");
+        }
+
+        if (task_state->stop_token().stop_requested()) {
+            throw task_cancelled{};
+        }
+
+        auto rescheduler = task_state->get_rescheduler();
+
+        auto post_action = [coro, task_state, rescheduler]() mutable {
+            if (rescheduler) {
+                auto invoker = std::make_unique<CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
+                    coro, std::move(task_state));
+                rescheduler(std::move(invoker));
+            }
+        };
+
+        auto hs = handshake;
+        run.add_completion_callback_internal([hs, post_action]() mutable {
+            hs->trigger(post_action);
+        });
+
+        stop_cb.emplace(task_state->stop_token(), [hs, post_action]() mutable {
+            hs->trigger_cancel(post_action);
+        });
+
+        task_state->transition_to_suspended();
+        hs->arm(std::move(post_action));
+        return true;
+    }
+
+    const GraphReport& await_resume() {
+        stop_cb.reset();
+        if (handshake->is_cancelled()) {
+            throw task_cancelled{};
+        }
+        return run.get_report();
+    }
+};
+
 }  // namespace detail
+
+template <typename T>
+inline detail::TaskHandleAwaiter<T> TaskHandle<T>::operator co_await() const & {
+    if (!state_) {
+        throw std::logic_error("operating on empty/moved-from TaskHandle");
+    }
+    return detail::TaskHandleAwaiter<T>(*this);
+}
+
+inline detail::TaskHandleAwaiter<void> TaskHandle<void>::operator co_await() const & {
+    if (!state_) {
+        throw std::logic_error("operating on empty/moved-from TaskHandle");
+    }
+    return detail::TaskHandleAwaiter<void>(*this);
+}
+
+inline detail::GraphRunAwaiter GraphRun::operator co_await() const & {
+    if (!state_) {
+        throw std::logic_error("operating on empty/moved-from GraphRun");
+    }
+    return detail::GraphRunAwaiter(*this);
+}
+
+// -----------------------------------------------------------------------------
+// cancellation_point (R-076 / D-122)
+// -----------------------------------------------------------------------------
+struct CancellationPointAwaiter {
+    constexpr bool await_ready() const noexcept {
+        return false;
+    }
+
+    template <typename PromiseType>
+    bool await_suspend(std::coroutine_handle<PromiseType> coro) const {
+        static_assert(requires { coro.promise().shared_state; },
+                      "cancellation_point is only permitted within astra::Task coroutines (D-122)");
+        auto task_state = coro.promise().shared_state;
+        if (task_state && task_state->stop_token().stop_requested()) {
+            throw task_cancelled{};
+        }
+        return false;
+    }
+
+    constexpr void await_resume() const noexcept {}
+};
+
+[[nodiscard]] inline CancellationPointAwaiter cancellation_point() noexcept {
+    return CancellationPointAwaiter{};
+}
+
+// -----------------------------------------------------------------------------
+// yield (R-076 / D-122 / D-147)
+// -----------------------------------------------------------------------------
+struct YieldAwaiter {
+    constexpr bool await_ready() const noexcept {
+        return false;
+    }
+
+    template <typename PromiseType>
+    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+        static_assert(requires { coro.promise().shared_state; },
+                      "yield is only permitted within astra::Task coroutines (D-122)");
+
+        auto task_state = coro.promise().shared_state;
+        if (!task_state) {
+            throw std::logic_error("invalid coroutine shared_state");
+        }
+
+        if (task_state->stop_token().stop_requested()) {
+            throw task_cancelled{};
+        }
+
+        task_state->transition_to_suspended();
+
+        auto rescheduler = task_state->get_rescheduler();
+        if (rescheduler) {
+            auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
+                coro, std::move(task_state));
+            rescheduler(std::move(invoker));
+        }
+
+        return true;
+    }
+
+    constexpr void await_resume() const noexcept {}
+};
+
+[[nodiscard]] inline YieldAwaiter yield() noexcept {
+    return YieldAwaiter{};
+}
 
 }  // namespace astra
 

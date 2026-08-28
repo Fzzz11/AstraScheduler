@@ -210,4 +210,11 @@ void GraphRun::request_cancel() const noexcept {
     }
 }
 
+void GraphRun::add_completion_callback_internal(std::function<void()> cb) const {
+    if (state_) {
+        state_->add_completion_callback(std::move(cb));
+    }
+}
+
 }  // namespace astra
+

@@ -218,6 +218,8 @@ public:
 
 namespace detail {
 class GraphRunSharedState;
+struct GraphRunAwaiter;
+ASTRA_EXPORT GraphRunId current_executing_graph_run_id() noexcept;
 }
 
 // -----------------------------------------------------------------------------
@@ -259,6 +261,17 @@ public:
     const GraphReport& get_report() const && = delete;
 
     void request_cancel() const noexcept;
+
+    // R-076 / D-121: co_await 左值 GraphRun（rvalue deleted）
+    [[nodiscard]] detail::GraphRunAwaiter operator co_await() const &;
+    void operator co_await() const && = delete;
+    void operator co_await() && = delete;
+
+    void add_completion_callback_internal(std::function<void()> cb) const;
+
+    [[nodiscard]] std::shared_ptr<detail::GraphRunSharedState> shared_state_internal() const noexcept {
+        return state_;
+    }
 
 private:
     friend class Scheduler;

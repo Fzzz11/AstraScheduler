@@ -656,7 +656,17 @@ int main() {
         return 1;
     }
 
-    // 24. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 24. AST-035: Source-Runtime await & Restricted API Surface (R-076 / R-078 / D-120 / D-121 / D-122 / D-147 / D-125)
+    static_assert(requires(astra::TaskHandle<int> h) {
+        h.operator co_await();
+    }, "TaskHandle must support operator co_await() const &");
+    static_assert(requires(astra::GraphRun r) {
+        r.operator co_await();
+    }, "GraphRun must support operator co_await() const &");
+    static_assert(noexcept(astra::cancellation_point()), "cancellation_point must be noexcept");
+    static_assert(noexcept(astra::yield()), "yield must be noexcept");
+
+    // 25. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,

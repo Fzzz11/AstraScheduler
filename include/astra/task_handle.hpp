@@ -59,6 +59,11 @@ struct TaskInvokerBase {
     [[nodiscard]] virtual bool is_resume_segment() const noexcept { return false; }
 };
 
+ASTRA_EXPORT TaskId current_executing_task_id() noexcept;
+
+template <typename T>
+struct TaskHandleAwaiter;
+
 struct ASTRA_EXPORT TaskExecutionContextGuard {
     TaskId prev_id;
     explicit TaskExecutionContextGuard(TaskId new_id) noexcept;
@@ -493,6 +498,15 @@ public:
         }
     }
 
+    // R-076 / D-120: co_await 左值 TaskHandle（rvalue deleted）
+    [[nodiscard]] detail::TaskHandleAwaiter<T> operator co_await() const &;
+    void operator co_await() const && = delete;
+    void operator co_await() && = delete;
+
+    [[nodiscard]] std::shared_ptr<detail::TaskSharedState<T>> shared_state_internal() const noexcept {
+        return state_;
+    }
+
 private:
     std::shared_ptr<detail::TaskSharedState<T>> state_;
 };
@@ -563,6 +577,15 @@ public:
         if (state_) {
             state_->request_cancel();
         }
+    }
+
+    // R-076 / D-120: co_await 左值 TaskHandle<void>（rvalue deleted）
+    [[nodiscard]] detail::TaskHandleAwaiter<void> operator co_await() const &;
+    void operator co_await() const && = delete;
+    void operator co_await() && = delete;
+
+    [[nodiscard]] std::shared_ptr<detail::TaskSharedState<void>> shared_state_internal() const noexcept {
+        return state_;
     }
 
 private:

@@ -39,6 +39,7 @@ public:
     mutable std::mutex mutex;
     mutable std::condition_variable cv;
     GraphReport report;
+    std::vector<std::function<void()>> completion_callbacks;
 
     std::vector<NodeEntry> node_entries;
 
@@ -46,6 +47,21 @@ public:
         : id(gid), total_node_count(n), remaining_nodes(n), node_entries(n + 1) {
         report.run_id = gid;
         report.total_nodes = n;
+    }
+
+    void add_completion_callback(std::function<void()> cb) {
+        bool completed = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (remaining_nodes.load(std::memory_order_acquire) == 0) {
+                completed = true;
+            } else {
+                completion_callbacks.push_back(std::move(cb));
+            }
+        }
+        if (completed && cb) {
+            cb();
+        }
     }
 
     void mark_node_terminal(std::size_t node_idx, TaskState outcome, std::exception_ptr ex = nullptr) {
@@ -66,6 +82,7 @@ public:
 
         if (remaining_nodes.fetch_sub(1) == 1) {
             // 所有 Node 已处于 Terminal 状态（D-112）
+            std::vector<std::function<void()>> cbs;
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 std::sort(report.failed_node_exceptions.begin(), report.failed_node_exceptions.end(),
@@ -80,8 +97,14 @@ public:
                 } else {
                     run_state.store(GraphRunState::Succeeded, std::memory_order_release);
                 }
+                cbs = std::move(completion_callbacks);
             }
             cv.notify_all();
+            for (auto& cb : cbs) {
+                if (cb) {
+                    cb();
+                }
+            }
         }
     }
 };

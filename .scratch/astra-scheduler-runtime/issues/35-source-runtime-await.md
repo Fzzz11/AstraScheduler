@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-076, R-078)
 Milestone: v0.5.0
 Blocked by: AST-012, AST-033
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Agent
 
 ## Rules and decisions
 
@@ -29,8 +29,8 @@ TaskHandle/GraphRun await completion 只向 source Runtime 发布 continuation�
 
 ## Acceptance criteria
 
-- [ ] `[R-076]` await不形成跨Runtimesteal或递归resume，yield产生可见调度边界。
-- [ ] `[R-078]` public API inventory只有wait/wait_for/get/co_await等已批准入口。
+- [x] `[R-076]` await不形成跨Runtimesteal或递归resume，yield产生可见调度边界。
+- [x] `[R-078]` public API inventory只有wait/wait_for/get/co_await等已批准入口。
 
 ## Out of scope
 
@@ -43,5 +43,9 @@ TaskHandle/GraphRun await completion 只向 source Runtime 发布 continuation�
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-076, R-078
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-120, D-121, D-122, D-147, D-125
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - In-tree Debug Tests: `tests/test_source_runtime_await.cpp` (9/9 assertions, ctest 33/33 passed)
+  - Address/Undefined/Leak Sanitizer: `build/wsl-gcc-asan` (ctest 33/33 passed, 0 leaks, 0 data races)
+  - Consumer API Compile Gates: `tests/consumer/main.cpp`
+  - Release Milestone Gates: `tools/check_release_gates.py` (15/15 passed)
 

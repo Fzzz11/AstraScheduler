@@ -580,6 +580,14 @@ TaskExecutionContextGuard::~TaskExecutionContextGuard() noexcept {
     t_current_executing_task_id = prev_id;
 }
 
+TaskId current_executing_task_id() noexcept {
+    return t_current_executing_task_id;
+}
+
+GraphRunId current_executing_graph_run_id() noexcept {
+    return t_current_executing_graph_run_id;
+}
+
 struct GraphNodeExecutionContextGuard {
     GraphRunId prev_id;
     explicit GraphNodeExecutionContextGuard(GraphRunId new_id) noexcept

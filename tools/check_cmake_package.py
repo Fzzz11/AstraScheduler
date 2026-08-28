@@ -844,6 +844,15 @@ class AST034SuspendedCancellationGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST035SourceRuntimeAwaitGates(PackageBuildFixture):
+    """AST-035：实现 source-Runtime await 与受限组合 API（R-076 / R-078）。"""
+
+    def test_AST035_consumer_runs_all_source_runtime_await_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-076 / R-078
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
