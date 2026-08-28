@@ -682,7 +682,7 @@ AST-055 <- AST-051, AST-053, AST-054
 | AST-029 | v0.4.0 | [29-graph-admission.md](issues/29-graph-admission.md) | done | AST-010, AST-022, AST-028 |
 | AST-030 | v0.4.0 | [30-graph-edge-policies.md](issues/30-graph-edge-policies.md) | done | AST-029 |
 | AST-031 | v0.4.0 | [31-graph-run-control.md](issues/31-graph-run-control.md) | done | AST-012, AST-013, AST-030 |
-| AST-032 | v0.5.0 | [32-coroutine-spawn.md](issues/32-coroutine-spawn.md) | ready-for-agent | AST-009, AST-013 |
+| AST-032 | v0.5.0 | [32-coroutine-spawn.md](issues/32-coroutine-spawn.md) | done | AST-009, AST-013 |
 | AST-033 | v0.5.0 | [33-coroutine-resume-handshake.md](issues/33-coroutine-resume-handshake.md) | ready-for-agent | AST-024, AST-032 |
 | AST-034 | v0.5.0 | [34-suspended-cancellation.md](issues/34-suspended-cancellation.md) | ready-for-agent | AST-016, AST-033 |
 | AST-035 | v0.5.0 | [35-source-runtime-await.md](issues/35-source-runtime-await.md) | ready-for-agent | AST-012, AST-033 |
@@ -715,4 +715,4 @@ Approved at: 2026-08-27
 Revision approved by: project owner（user）
 Revision approved at: 2026-08-27（Linux-only/WSL Spec）
 
-本计划及Linux-only/WSL修订均已获明确批准。具体 Ticket 按依赖顺序发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；发布不等于实现。AST-001 至 AST-031 已全部完成（Milestone v0.4.0 交付达成），当前就绪执行前沿为 AST-032（Milestone v0.5.0）。
+本计划及Linux-only/WSL修订均已获明确批准。具体 Ticket 按依赖顺序发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；发布不等于实现。AST-001 至 AST-032 已全部完成，当前就绪执行前沿为 AST-033（Milestone v0.5.0）。

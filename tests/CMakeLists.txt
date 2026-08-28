@@ -424,6 +424,22 @@ target_include_directories(astra_graph_run_control_test PRIVATE
 target_compile_features(astra_graph_run_control_test PRIVATE cxx_std_20)
 add_test(NAME astra_graph_run_control_test COMMAND astra_graph_run_control_test)
 
+add_executable(astra_coroutine_spawn_test
+  test_coroutine_spawn.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_coroutine_spawn_test PRIVATE Threads::Threads)
+target_include_directories(astra_coroutine_spawn_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_coroutine_spawn_test PRIVATE cxx_std_20)
+add_test(NAME astra_coroutine_spawn_test COMMAND astra_coroutine_spawn_test)
+
 
 
 

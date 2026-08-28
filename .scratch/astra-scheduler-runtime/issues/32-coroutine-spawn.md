@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-073)
 Milestone: v0.5.0
 Blocked by: AST-009, AST-013
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-073]` body只在Worker首次resume执行，frame始终恰有一个owner。
+- [x] `[R-073]` body只在Worker首次resume执行，frame始终恰有一个owner。
 
 ## Out of scope
 
@@ -40,5 +40,8 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-073
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-114, D-115
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - In-tree unit tests: `tests/test_coroutine_spawn.cpp` (30/30 ctest passed in debug and ASan/UBSan/LSan)
+  - Package consumer gates: `tools/check_cmake_package.py` (AST032CoroutineSpawnGates, 47/47 tests passed)
+  - Release gates: `tools/check_release_gates.py` (15/15 tests passed)
  

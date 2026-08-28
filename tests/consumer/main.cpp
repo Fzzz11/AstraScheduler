@@ -1,4 +1,5 @@
 #include <astra/capabilities.hpp>
+#include <astra/coroutine.hpp>
 #include <astra/error.hpp>
 #include <astra/export.hpp>
 #include <astra/graph.hpp>
@@ -44,6 +45,14 @@ static_assert(std::is_trivially_copyable_v<astra::GraphRunId>, "GraphRunId must 
 static_assert(std::is_trivially_copyable_v<astra::NodeId>, "NodeId must be trivially copyable");
 static_assert(std::is_trivially_copyable_v<astra::SchedulerCapabilities>, "SchedulerCapabilities must be trivially copyable");
 static_assert(!std::is_aggregate_v<astra::SchedulerCapabilities>, "SchedulerCapabilities must not be aggregate");
+
+inline astra::Task<int> consumer_coro_val(int val) {
+    co_return val * 2;
+}
+
+inline astra::Task<void> consumer_coro_void() {
+    co_return;
+}
 
 // AST-005 编译期契约（R-097）：
 static_assert(std::is_base_of_v<std::runtime_error, astra::scheduler_creation_rejected>,
@@ -593,7 +602,29 @@ int main() {
     }
     sched_run_ctrl.shutdown();
 
-    // 21. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 21. AST-032: cold Coroutine Task & spawn (R-073)
+    astra::Scheduler sched_coro;
+    auto coro_t1 = consumer_coro_val(21);
+    if (!coro_t1.valid()) {
+        std::printf("Newly returned Task must be valid\n");
+        return 1;
+    }
+    auto coro_h1 = sched_coro.spawn(std::move(coro_t1));
+    if (coro_t1.valid() || !coro_h1.valid() || coro_h1.get() != 42) {
+        std::printf("AST-032 spawn Task<int> failed\n");
+        return 1;
+    }
+
+    auto coro_t2 = consumer_coro_void();
+    auto coro_h2 = sched_coro.spawn(std::move(coro_t2));
+    coro_h2.get();
+    if (coro_h2.state() != astra::TaskState::Succeeded) {
+        std::printf("AST-032 spawn Task<void> failed\n");
+        return 1;
+    }
+    sched_coro.shutdown();
+
+    // 22. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,

@@ -817,6 +817,15 @@ class AST031GraphRunControlGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST032CoroutineSpawnGates(PackageBuildFixture):
+    """AST-032：实现 cold Coroutine Task 与 spawn 强保证（R-073）。"""
+
+    def test_AST032_consumer_runs_all_coroutine_spawn_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-073
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

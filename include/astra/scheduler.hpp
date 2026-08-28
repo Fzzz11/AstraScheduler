@@ -7,6 +7,7 @@
 
 #include <astra/export.hpp>
 #include <astra/capabilities.hpp>
+#include <astra/coroutine.hpp>
 #include <astra/error.hpp>
 #include <astra/graph.hpp>
 #include <astra/id.hpp>
@@ -185,6 +186,94 @@ public:
 
         post_task_invoker(std::move(invoker), !is_internal);
         return SubmissionResult<ResultType>(TaskHandle<ResultType>(std::move(state)));
+    }
+
+    // 异步提交 C++20 Coroutine Task（R-073 / D-114 / D-115）
+    template <typename T>
+    TaskHandle<T> spawn(Task<T>&& task) {
+        if (!valid()) {
+            throw std::logic_error("operating on empty/moved-from Scheduler");
+        }
+        if (!task.valid()) {
+            throw std::logic_error("cannot spawn empty/invalid Task");
+        }
+
+        const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+        const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
+        const bool can_block = !is_worker;
+
+        const auto decision = acquire_admission(can_block, is_internal);
+        if (decision == detail::AdmissionDecision::Stopping) {
+            throw submission_rejected(SubmissionError::Stopping);
+        }
+        if (decision == detail::AdmissionDecision::Stopped) {
+            throw submission_rejected(SubmissionError::Stopped);
+        }
+        if (decision == detail::AdmissionDecision::CapacityExhausted) {
+            throw submission_rejected(SubmissionError::CapacityExhausted);
+        }
+
+        const TaskId tid = detail::allocate_task_id(runtime_id());
+        std::shared_ptr<detail::TaskSharedState<T>> state;
+        std::unique_ptr<detail::TaskInvokerBase> invoker;
+
+        try {
+            state = std::make_shared<detail::TaskSharedState<T>>(tid);
+            task.handle().promise().shared_state = state;
+            auto coro_h = task.release_handle();
+            invoker = std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state);
+        } catch (...) {
+            if (!is_internal) {
+                rollback_external_slot();
+            }
+            throw;
+        }
+
+        post_task_invoker(std::move(invoker), !is_internal);
+        return TaskHandle<T>(std::move(state));
+    }
+
+    // 非阻塞尝试提交 C++20 Coroutine Task（R-073 / D-114 / D-115）
+    template <typename T>
+    SubmissionResult<T> try_spawn(Task<T>&& task) {
+        if (!valid()) {
+            throw std::logic_error("operating on empty/moved-from Scheduler");
+        }
+        if (!task.valid()) {
+            throw std::logic_error("cannot spawn empty/invalid Task");
+        }
+
+        const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+
+        const auto decision = acquire_admission(false /* no block */, is_internal);
+        if (decision == detail::AdmissionDecision::Stopping) {
+            return SubmissionResult<T>(SubmissionError::Stopping);
+        }
+        if (decision == detail::AdmissionDecision::Stopped) {
+            return SubmissionResult<T>(SubmissionError::Stopped);
+        }
+        if (decision == detail::AdmissionDecision::CapacityExhausted) {
+            return SubmissionResult<T>(SubmissionError::CapacityExhausted);
+        }
+
+        const TaskId tid = detail::allocate_task_id(runtime_id());
+        std::shared_ptr<detail::TaskSharedState<T>> state;
+        std::unique_ptr<detail::TaskInvokerBase> invoker;
+
+        try {
+            state = std::make_shared<detail::TaskSharedState<T>>(tid);
+            task.handle().promise().shared_state = state;
+            auto coro_h = task.release_handle();
+            invoker = std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state);
+        } catch (...) {
+            if (!is_internal) {
+                rollback_external_slot();
+            }
+            throw;
+        }
+
+        post_task_invoker(std::move(invoker), !is_internal);
+        return SubmissionResult<T>(TaskHandle<T>(std::move(state)));
     }
 
 private:
