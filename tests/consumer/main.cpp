@@ -364,5 +364,48 @@ int main() {
     }
     s_guard.shutdown();
 
+    // 12. AST-016: Immediate Escalation & Unstarted Task Cancellation (R-014 / R-106)
+    astra::SchedulerOptions s_esc_opt{};
+    s_esc_opt.worker_count = 1;
+    astra::Scheduler s_esc(s_esc_opt);
+
+    std::promise<void> hold_esc_p;
+    std::shared_future<void> hold_esc_f = hold_esc_p.get_future().share();
+    std::atomic<bool> blocker_esc_started{false};
+
+    auto h_esc_block = s_esc.submit([hold_esc_f, &blocker_esc_started]() {
+        blocker_esc_started.store(true);
+        hold_esc_f.wait();
+    });
+    while (!blocker_esc_started.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    std::atomic<int> esc_unstarted_count{0};
+    auto h_esc_unstarted = s_esc.submit([&esc_unstarted_count]() {
+        esc_unstarted_count.fetch_add(1);
+        return 555;
+    });
+
+    std::thread th_esc([&s_esc]() {
+        s_esc.shutdown_now();
+    });
+    while (s_esc.status().shutdown_mode != astra::ShutdownMode::Immediate) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    h_esc_unstarted.wait();
+    if (h_esc_unstarted.state() != astra::TaskState::Cancelled) {
+        std::printf("h_esc_unstarted must be Cancelled\n");
+        return 1;
+    }
+    if (esc_unstarted_count.load() != 0) {
+        std::printf("unstarted task under Immediate must not execute\n");
+        return 1;
+    }
+
+    hold_esc_p.set_value();
+    th_esc.join();
+
     return 0;
 }

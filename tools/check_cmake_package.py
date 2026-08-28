@@ -655,6 +655,15 @@ class AST015ShutdownGuardsGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST016ImmediateEscalationGates(PackageBuildFixture):
+    """AST-016：实现单向 Immediate escalation 与启动状态分类（R-009/R-014/R-015/R-106）。"""
+
+    def test_AST016_consumer_runs_all_immediate_escalation_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-009/R-014/R-015/R-106
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

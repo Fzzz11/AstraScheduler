@@ -72,6 +72,7 @@ struct ASTRA_EXPORT TaskExecutionContextGuard {
 struct TaskInvokerBase {
     virtual ~TaskInvokerBase() = default;
     virtual void execute() = 0;
+    virtual void cancel_pre_start() noexcept = 0;
 };
 
 template <typename T>
@@ -372,6 +373,12 @@ public:
 
         constexpr std::size_t tuple_size = std::tuple_size_v<decltype(args_)>;
         invoke_impl(std::make_index_sequence<tuple_size>{});
+    }
+
+    void cancel_pre_start() noexcept override {
+        if (state_) {
+            state_->request_cancel();
+        }
     }
 
 private:

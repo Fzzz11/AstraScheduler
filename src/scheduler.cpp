@@ -231,7 +231,21 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
     }
 
-    // 状态转换与模式保持（R-022）
+    void cancel_all_unstarted_tasks_locked() noexcept {
+        while (!global_injection_queue.empty()) {
+            auto task = std::move(global_injection_queue.front());
+            global_injection_queue.pop_front();
+            if (task.invoker) {
+                task.invoker->cancel_pre_start();
+            }
+            if (task.is_external && external_pending_count > 0) {
+                --external_pending_count;
+                slot_cv.notify_one();
+            }
+        }
+    }
+
+    // 状态转换与模式保持（R-014 / R-015 / R-022）
     void request_shutdown_mode(ShutdownMode requested_mode) noexcept {
         uint16_t current = packed_status.load(std::memory_order_acquire);
         while (true) {
@@ -239,15 +253,25 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             if (st.state == SchedulerState::Running) {
                 uint16_t next = pack(SchedulerState::Stopping, requested_mode);
                 if (packed_status.compare_exchange_weak(current, next, std::memory_order_acq_rel)) {
+                    if (requested_mode == ShutdownMode::Immediate) {
+                        std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                        cancel_all_unstarted_tasks_locked();
+                    }
                     slot_cv.notify_all();
+                    work_cv.notify_all();
                     break;
                 }
             } else if (st.state == SchedulerState::Stopping) {
-                // Immediate 升级（D-014）
+                // Immediate 升级（D-012 / D-014 / R-014）
                 if (requested_mode == ShutdownMode::Immediate && st.shutdown_mode != ShutdownMode::Immediate) {
                     uint16_t next = pack(SchedulerState::Stopping, ShutdownMode::Immediate);
                     if (packed_status.compare_exchange_weak(current, next, std::memory_order_acq_rel)) {
+                        {
+                            std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                            cancel_all_unstarted_tasks_locked();
+                        }
                         slot_cv.notify_all();
+                        work_cv.notify_all();
                         break;
                     }
                 } else {
@@ -504,6 +528,7 @@ public:
             fn_();
         }
     }
+    void cancel_pre_start() noexcept override {}
 private:
     std::function<void()> fn_;
 };
