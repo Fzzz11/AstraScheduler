@@ -4,7 +4,10 @@
 #include <astra/error.hpp>
 #include <astra/export.hpp>
 #include <astra/id.hpp>
+#include <astra/status.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <exception>
 #include <functional>
@@ -19,6 +22,13 @@
 #include <variant>
 
 namespace astra {
+
+// 检查并抛出取消异常辅助函数（R-054 / D-060）。
+inline void throw_if_stop_requested(std::stop_token token) {
+    if (token.stop_requested()) {
+        throw task_cancelled{};
+    }
+}
 
 namespace detail {
 
@@ -46,11 +56,15 @@ class TaskSharedState {
 public:
     explicit TaskSharedState(TaskId id) : id_(id) {}
 
-    TaskId id() const noexcept {
+    ~TaskSharedState() {
+        // R-060: 未观察异常析构时不抛出、不终止
+    }
+
+    [[nodiscard]] TaskId id() const noexcept {
         return id_;
     }
 
-    std::stop_token stop_token() noexcept {
+    [[nodiscard]] std::stop_token stop_token() noexcept {
         return stop_source_.get_token();
     }
 
@@ -58,20 +72,22 @@ public:
         stop_source_.request_stop();
     }
 
-    void set_value(T&& val) {
+    [[nodiscard]] TaskState state() const noexcept {
+        return state_.load(std::memory_order_acquire);
+    }
+
+    void mark_running() noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
+            state_.store(TaskState::Running, std::memory_order_release);
+        }
+    }
+
+    void set_value(T val) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             value_.emplace(std::move(val));
-            completed_ = true;
-        }
-        cv_.notify_all();
-    }
-
-    void set_value(const T& val) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            value_.emplace(val);
-            completed_ = true;
+            state_.store(TaskState::Succeeded, std::memory_order_release);
         }
         cv_.notify_all();
     }
@@ -79,24 +95,63 @@ public:
     void set_exception(std::exception_ptr ex) noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            exception_ = ex;
-            completed_ = true;
+            exception_ = std::move(ex);
+            state_.store(TaskState::Failed, std::memory_order_release);
+        }
+        cv_.notify_all();
+    }
+
+    void set_cancelled() noexcept {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            state_.store(TaskState::Cancelled, std::memory_order_release);
         }
         cv_.notify_all();
     }
 
     const T& get() const {
         std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this] { return completed_; });
-        if (exception_) {
+        cv_.wait(lock, [this] {
+            const auto s = state_.load(std::memory_order_acquire);
+            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
+        });
+        const auto s = state_.load(std::memory_order_acquire);
+        if (s == TaskState::Failed) {
+            observed_.store(true, std::memory_order_relaxed);
             std::rethrow_exception(exception_);
+        }
+        if (s == TaskState::Cancelled) {
+            throw task_cancelled{};
         }
         return *value_;
     }
 
-    bool is_completed() const noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return completed_;
+    void wait() const {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this] {
+            const auto s = state_.load(std::memory_order_acquire);
+            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
+        });
+    }
+
+    template <typename Rep, typename Period>
+    WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
+        if (duration <= std::chrono::duration<Rep, Period>::zero()) {
+            const auto s = state_.load(std::memory_order_acquire);
+            return (s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled)
+                ? WaitResult::Completed : WaitResult::TimedOut;
+        }
+        std::unique_lock<std::mutex> lock(mutex_);
+        const bool completed = cv_.wait_for(lock, duration, [this] {
+            const auto s = state_.load(std::memory_order_acquire);
+            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
+        });
+        return completed ? WaitResult::Completed : WaitResult::TimedOut;
+    }
+
+    [[nodiscard]] bool is_completed() const noexcept {
+        const auto s = state_.load(std::memory_order_acquire);
+        return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
     }
 
 private:
@@ -104,9 +159,10 @@ private:
     std::stop_source stop_source_;
     mutable std::mutex mutex_;
     mutable std::condition_variable cv_;
-    bool completed_{false};
+    std::atomic<TaskState> state_{TaskState::Ready};
     std::optional<T> value_;
     std::exception_ptr exception_{nullptr};
+    mutable std::atomic<bool> observed_{false};
 };
 
 template <>
@@ -114,11 +170,15 @@ class TaskSharedState<void> {
 public:
     explicit TaskSharedState(TaskId id) : id_(id) {}
 
-    TaskId id() const noexcept {
+    ~TaskSharedState() {
+        // R-060: 未观察异常析构时不抛出、不终止
+    }
+
+    [[nodiscard]] TaskId id() const noexcept {
         return id_;
     }
 
-    std::stop_token stop_token() noexcept {
+    [[nodiscard]] std::stop_token stop_token() noexcept {
         return stop_source_.get_token();
     }
 
@@ -126,10 +186,21 @@ public:
         stop_source_.request_stop();
     }
 
+    [[nodiscard]] TaskState state() const noexcept {
+        return state_.load(std::memory_order_acquire);
+    }
+
+    void mark_running() noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
+            state_.store(TaskState::Running, std::memory_order_release);
+        }
+    }
+
     void set_value() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            completed_ = true;
+            state_.store(TaskState::Succeeded, std::memory_order_release);
         }
         cv_.notify_all();
     }
@@ -137,23 +208,62 @@ public:
     void set_exception(std::exception_ptr ex) noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            exception_ = ex;
-            completed_ = true;
+            exception_ = std::move(ex);
+            state_.store(TaskState::Failed, std::memory_order_release);
+        }
+        cv_.notify_all();
+    }
+
+    void set_cancelled() noexcept {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            state_.store(TaskState::Cancelled, std::memory_order_release);
         }
         cv_.notify_all();
     }
 
     void get() const {
         std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this] { return completed_; });
-        if (exception_) {
+        cv_.wait(lock, [this] {
+            const auto s = state_.load(std::memory_order_acquire);
+            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
+        });
+        const auto s = state_.load(std::memory_order_acquire);
+        if (s == TaskState::Failed) {
+            observed_.store(true, std::memory_order_relaxed);
             std::rethrow_exception(exception_);
+        }
+        if (s == TaskState::Cancelled) {
+            throw task_cancelled{};
         }
     }
 
-    bool is_completed() const noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return completed_;
+    void wait() const {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this] {
+            const auto s = state_.load(std::memory_order_acquire);
+            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
+        });
+    }
+
+    template <typename Rep, typename Period>
+    WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
+        if (duration <= std::chrono::duration<Rep, Period>::zero()) {
+            const auto s = state_.load(std::memory_order_acquire);
+            return (s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled)
+                ? WaitResult::Completed : WaitResult::TimedOut;
+        }
+        std::unique_lock<std::mutex> lock(mutex_);
+        const bool completed = cv_.wait_for(lock, duration, [this] {
+            const auto s = state_.load(std::memory_order_acquire);
+            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
+        });
+        return completed ? WaitResult::Completed : WaitResult::TimedOut;
+    }
+
+    [[nodiscard]] bool is_completed() const noexcept {
+        const auto s = state_.load(std::memory_order_acquire);
+        return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
     }
 
 private:
@@ -161,8 +271,9 @@ private:
     std::stop_source stop_source_;
     mutable std::mutex mutex_;
     mutable std::condition_variable cv_;
-    bool completed_{false};
+    std::atomic<TaskState> state_{TaskState::Ready};
     std::exception_ptr exception_{nullptr};
+    mutable std::atomic<bool> observed_{false};
 };
 
 template <bool Ordinary, bool StopAware, typename DF, typename... DArgs>
@@ -233,6 +344,7 @@ public:
 private:
     template <std::size_t... Is>
     void invoke_impl(std::index_sequence<Is...>) {
+        state_->mark_running();
         try {
             if constexpr (Ordinary) {
                 if constexpr (std::is_void_v<ResultType>) {
@@ -249,6 +361,8 @@ private:
                     state_->set_value(std::invoke(std::move(fn_), state_->stop_token(), std::get<Is>(std::move(args_))...));
                 }
             }
+        } catch (const task_cancelled&) {
+            state_->set_cancelled();
         } catch (...) {
             state_->set_exception(std::current_exception());
         }
@@ -270,7 +384,7 @@ std::unique_ptr<TaskInvokerBase> make_task_invoker(
 
 }  // namespace detail
 
-// TaskHandle<T> — 共享任务结果句柄（R-048 / R-058 / D-041 / D-042 / D-076）。
+// TaskHandle<T> — 共享任务结果句柄（R-048 / R-049 / R-050 / R-051 / R-057 / R-058 / D-041 / D-042 / D-076）。
 template <typename T>
 class TaskHandle {
 public:
@@ -293,11 +407,21 @@ public:
         return static_cast<bool>(state_);
     }
 
-    [[nodiscard]] TaskId task_id() const noexcept {
-        return state_ ? state_->id() : TaskId{};
+    [[nodiscard]] TaskId task_id() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->id();
     }
 
-    // R-058 / D-076: 仅允许左值 Handle 显式调用（get() const &）
+    [[nodiscard]] TaskState state() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->state();
+    }
+
+    // R-051 / D-076: 仅允许左值 Handle 显式调用（get() const &）返回 const T&
     // 临时对象 / rvalue 在编译期被 delete 拒绝以防止悬垂引用
     const T& get() const & {
         if (!state_) {
@@ -308,11 +432,35 @@ public:
 
     void get() const && = delete;
 
+    // R-055 / D-061: 同步等待完成
+    void wait() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        state_->wait();
+    }
+
+    // R-056 / D-063: 有界等待
+    template <typename Rep, typename Period>
+    [[nodiscard]] WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->wait_for(duration);
+    }
+
+    // R-053 / R-057: 请求取消（空 Handle 为 no-op）
+    void request_cancel() const noexcept {
+        if (state_) {
+            state_->request_stop();
+        }
+    }
+
 private:
     std::shared_ptr<detail::TaskSharedState<T>> state_;
 };
 
-// TaskHandle<void> 特化（R-048 / R-058 / D-075 / D-076）。
+// TaskHandle<void> 特化（R-048 / R-049 / R-050 / R-051 / R-057 / R-058 / D-075 / D-076）。
 template <>
 class TaskHandle<void> {
 public:
@@ -332,11 +480,21 @@ public:
         return static_cast<bool>(state_);
     }
 
-    [[nodiscard]] TaskId task_id() const noexcept {
-        return state_ ? state_->id() : TaskId{};
+    [[nodiscard]] TaskId task_id() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->id();
     }
 
-    // R-058 / D-076: 仅允许左值 Handle 显式调用（get() const &）
+    [[nodiscard]] TaskState state() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->state();
+    }
+
+    // R-051 / D-076: 仅允许左值 Handle 显式调用（get() const &）返回 void
     void get() const & {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -345,6 +503,30 @@ public:
     }
 
     void get() const && = delete;
+
+    // R-055 / D-061: 同步等待完成
+    void wait() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        state_->wait();
+    }
+
+    // R-056 / D-063: 有界等待
+    template <typename Rep, typename Period>
+    [[nodiscard]] WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->wait_for(duration);
+    }
+
+    // R-053 / R-057: 请求取消（空 Handle 为 no-op）
+    void request_cancel() const noexcept {
+        if (state_) {
+            state_->request_stop();
+        }
+    }
 
 private:
     std::shared_ptr<detail::TaskSharedState<void>> state_;

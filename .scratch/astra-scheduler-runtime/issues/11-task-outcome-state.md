@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-049, R-050, R-051, R-057, R-060)
 Milestone: v0.1.0
 Blocked by: AST-009
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity agent (2026-08-28)
 
 ## Rules and decisions
 
@@ -35,11 +35,11 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-049]` 不存在已见终态却读不到Outcome或同一Task副本看到不同Outcome的窗口。
-- [ ] `[R-050]` 多个Handle副本可重复观察相同异常或取消，不会终止Worker线程。
-- [ ] `[R-051]` 保留任一Handle即可稳定引用Value；临时Handle调用get在编译期失败。
-- [ ] `[R-057]` 空对象不会伪装Task状态，有效副本并发观察同一单调生命周期。
-- [ ] `[R-060]` v0.1 尚未启用 Metrics/Trace 时，未观察异常不会产生隐藏输出、调用终止处理或改变 Task/Worker 执行；启用观测面后的计数与 Trace 证据留给 AST-048。
+- [x] `[R-049]` 不存在已见终态却读不到Outcome或同一Task副本看到不同Outcome的窗口。
+- [x] `[R-050]` 多个Handle副本可重复观察相同异常或取消，不会终止Worker线程。
+- [x] `[R-051]` 保留任一Handle即可稳定引用Value；临时Handle调用get在编译期失败。
+- [x] `[R-057]` 空对象不会伪装Task状态，有效副本并发观察同一单调生命周期。
+- [x] `[R-060]` v0.1 尚未启用 Metrics/Trace 时，未观察异常不会产生隐藏输出、调用终止处理或改变 Task/Worker 执行；启用观测面后的计数与 Trace 证据留给 AST-048。
 
 ## Out of scope
 
@@ -52,4 +52,28 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-049, R-050, R-051, R-057, R-060
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-044, D-071, D-045, D-057, D-076, D-067, D-068, D-069, D-070, D-072, D-073, D-153, D-081, D-082, D-120, D-151
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Done（2026-08-28；全部验证命令来自 WSL Linux）。
+
+### Rule evidence
+
+| Rule | Test or verification | RED evidence | GREEN result |
+|---|---|---|---|
+| R-049 | `tests/test_task_outcome_state.cpp::test_R049_R051_value_outcome_and_state_consistency` — 证明 Value/Exception/Cancelled 与 `Succeeded/Failed/Cancelled` 状态在同一原子操作中发布，多个 Handle 副本观察结果严格一致。 | 编译期 RED：未定义不可变结果与状态发布一致性通道。 | Value/Exception/Cancelled 与 Succeeded/Failed/Cancelled 原子发布全部通过。 |
+| R-050 | `tests/test_task_outcome_state.cpp::test_R050_exception_repeated_propagation`、`test_R050_R054_task_cancelled_propagation` — 证明用户异常与 `task_cancelled` 被 Worker 边界安全捕获不逃逸，多 Handle 副本调用 `get()` 可重复按原动态类型抛出相同异常或 `task_cancelled`。 | 编译期 RED：缺乏 exception_ptr 重复重抛机制与 task_cancelled 传播。 | 多 Handle 重复 get 保持抛出同一异常与取消类，Worker 存活。 |
+| R-051 | `tests/test_task_outcome_state.cpp::test_R049_R051_value_outcome_and_state_consistency` — 证明 `TaskHandle<T>::get() const &` 返回指向共享不可变内存的 `const T&`，`TaskHandle<void>::get() const &` 返回 `void`，右值重载编译期 delete。 | 编译期 RED：无左值引用限定返回与 const T& 语义。 | 稳定引用底层存储且地址一致，临时调用在编译期拒绝。 |
+| R-057 | `tests/test_task_outcome_state.cpp::test_R057_empty_handle_contract`、`test_R057_concurrent_observers`、`test_R055_R056_wait_and_wait_for` — 证明空/moved-from Handle 统一抛 `std::logic_error`，`request_cancel()` 为 no-op；`TaskState` 七态模型非阻塞读取线性化；`wait()` 与 `wait_for()` 稳定支持无界/有界观察。 | 编译期 RED：无 TaskState 七态枚举、wait/wait_for 及空对象契约。 | 空对象严格抛出 logic_error，wait/wait_for/state 观察及多线程并发全部通过。 |
+| R-060 | `tests/test_task_outcome_state.cpp::test_R060_unobserved_exception_safe_destruction` — 证明丢弃带有未观察异常的 Handle 析构时不触发 `std::terminate` 或未定义异常泄露。 | 运行期 RED：未观察异常可能在析构时导致进程中止。 | 析构未观察异常句柄安全，无 terminate 发生。 |
+
+### Verification commands
+
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_cmake_package.py"` → `Ran 26 tests in 38.879s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_release_gates.py"` → `Ran 15 tests in 0.270s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && cmake --build build/wsl-gcc-debug && ctest --test-dir build/wsl-gcc-debug --output-on-failure"` → `100% tests passed, 0 tests failed out of 9`
+- `python "C:\Users\fzt\.gemini\config\skills\decision-ledger\scripts\validate_traceability.py" --ledger "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\decision-log.md" --spec "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\spec.md" --tickets-dir "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\issues"` → `Traceability valid: decisions=168, rules=105, tickets=55, covered_rules=105`
+
+### Review record
+
+- 两轴 code-review（Standards/Spec，固定基线=commit `0268e99248630e48a3246a8948bbb8517503cf8c`）：
+  - Standards 轴：`TaskState` 七态枚举与 `WaitResult` 布局严谨；`TaskSharedState` 实现单次终态原子发布；`get() const &` 左值限定返回 `const T&` 消除临时悬垂；Worker 异常边界捕获彻底；`wait()`/`wait_for()` 语义标准。
+  - Spec 轴：R-049（不可变 Outcome 与状态发布一致性）、R-050（异常与取消重复传播）、R-051（const T& 引用）、R-057（空 Handle 契约与 TaskState 快照）、R-060（未观察异常安全析构）100% 符合 Approved Spec 与对应架构决策。
+- 编译环境：WSL GCC 13.1.0（R-111 Tier-1）、CMake 3.28.6、Python 3.8.10。

@@ -37,6 +37,23 @@ struct SchedulerStatus {
                                      const SchedulerStatus&) = default;
 };
 
+// Task 稳定生命周期状态（R-057 / D-069 / D-070）。
+enum class TaskState : std::uint8_t {
+    Waiting,
+    Ready,
+    Running,
+    Suspended,
+    Succeeded,
+    Failed,
+    Cancelled
+};
+
+// 有界等待结果枚举（R-056 / D-063）。
+enum class WaitResult : std::uint8_t {
+    Completed,
+    TimedOut,
+};
+
 }  // namespace astra
 
 #endif  // ASTRA_STATUS_HPP

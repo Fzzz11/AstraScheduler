@@ -603,6 +603,16 @@ class AST010AdmissionBackpressureGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST011TaskOutcomeStateGates(PackageBuildFixture):
+    """AST-011：发布一致的 TaskState、Terminal Outcome 与重复 get（R-049/R-050/R-051/R-057/R-060）。"""
+
+    def test_AST011_consumer_runs_all_task_outcome_state_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-049/R-050/R-051/R-057/R-060
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

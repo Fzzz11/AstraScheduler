@@ -69,6 +69,15 @@ private:
     SubmissionError reason_;
 };
 
+// 任务取消异常（R-050 / D-057 / D-058）。
+class ASTRA_EXPORT task_cancelled : public std::exception {
+public:
+    task_cancelled() noexcept = default;
+    [[nodiscard]] const char* what() const noexcept override {
+        return "AstraScheduler task was cancelled";
+    }
+};
+
 }  // namespace astra
 
 #endif  // ASTRA_ERROR_HPP

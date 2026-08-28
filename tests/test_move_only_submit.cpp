@@ -79,9 +79,16 @@ void test_R048_shared_task_handle_and_lifetime() {
     TEST_ASSERT(h_moved.valid());
     TEST_ASSERT(h_moved.task_id() == tid);
     TEST_ASSERT(!h3.valid());
-    TEST_ASSERT(h3.task_id() == astra::TaskId{});
 
     bool threw_on_empty = false;
+    try {
+        (void)h3.task_id();
+    } catch (const std::logic_error&) {
+        threw_on_empty = true;
+    }
+    TEST_ASSERT(threw_on_empty);
+
+    threw_on_empty = false;
     try {
         (void)h3.get();
     } catch (const std::logic_error&) {

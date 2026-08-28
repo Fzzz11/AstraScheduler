@@ -236,5 +236,44 @@ int main() {
         return 1;
     }
 
+    // 7. AST-011: TaskState, wait, wait_for, and task_cancelled
+    if (h.state() != astra::TaskState::Succeeded) {
+        std::printf("h.state() must be Succeeded\n");
+        return 1;
+    }
+    h.wait();
+    if (h.wait_for(std::chrono::milliseconds(0)) != astra::WaitResult::Completed) {
+        std::printf("h.wait_for() must be Completed\n");
+        return 1;
+    }
+
+    std::atomic<bool> cancel_started{false};
+    auto h_cancel = s_active.submit([&cancel_started](std::stop_token token) {
+        cancel_started.store(true);
+        while (!token.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        astra::throw_if_stop_requested(token);
+    });
+    while (!cancel_started.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    h_cancel.request_cancel();
+    h_cancel.wait();
+    if (h_cancel.state() != astra::TaskState::Cancelled) {
+        std::printf("h_cancel.state() must be Cancelled\n");
+        return 1;
+    }
+    bool caught_cancel = false;
+    try {
+        h_cancel.get();
+    } catch (const astra::task_cancelled&) {
+        caught_cancel = true;
+    }
+    if (!caught_cancel) {
+        std::printf("h_cancel.get() did not throw task_cancelled\n");
+        return 1;
+    }
+
     return 0;
 }
