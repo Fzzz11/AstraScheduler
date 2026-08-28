@@ -57,6 +57,7 @@ struct TaskInvokerBase {
     virtual void execute() = 0;
     virtual void cancel_pre_start() noexcept = 0;
     [[nodiscard]] virtual bool is_resume_segment() const noexcept { return false; }
+    [[nodiscard]] virtual bool is_coroutine_node() const noexcept { return false; }
 };
 
 ASTRA_EXPORT TaskId current_executing_task_id() noexcept;
@@ -195,6 +196,11 @@ public:
                 cb();
             }
         }
+    }
+
+    [[nodiscard]] std::exception_ptr exception() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return exception_;
     }
 
     void wait() const {

@@ -330,6 +330,34 @@ public:
     }
 };
 
+class GraphCoroutineNodeInvoker final : public TaskInvokerBase {
+public:
+    std::coroutine_handle<TaskPromise<void>> coro;
+    std::shared_ptr<TaskSharedState<void>> task_state{nullptr};
+
+    explicit GraphCoroutineNodeInvoker(std::coroutine_handle<TaskPromise<void>> h)
+        : coro(h) {}
+
+    ~GraphCoroutineNodeInvoker() override {
+        if (coro) {
+            coro.destroy();
+            coro = nullptr;
+        }
+    }
+
+    void execute() override {}
+
+    void cancel_pre_start() noexcept override {
+        if (task_state) {
+            task_state->request_cancel();
+        }
+    }
+
+    [[nodiscard]] bool is_coroutine_node() const noexcept override {
+        return true;
+    }
+};
+
 // -----------------------------------------------------------------------------
 // TaskHandle Awaiter (R-076 / D-120)
 // -----------------------------------------------------------------------------
@@ -567,6 +595,22 @@ struct YieldAwaiter {
 
 [[nodiscard]] inline YieldAwaiter yield() noexcept {
     return YieldAwaiter{};
+}
+
+// -----------------------------------------------------------------------------
+// TaskGraph::emplace_coroutine (R-077 / D-123)
+// -----------------------------------------------------------------------------
+inline NodeId TaskGraph::emplace_coroutine(Task<void>&& task) {
+    if (!task.valid()) {
+        throw std::logic_error("cannot emplace empty/invalid Task<void> into TaskGraph");
+    }
+    const std::uint64_t seq = nodes_.size() + 1;
+    const NodeId id{seq};
+    nodes_.push_back(FrozenTaskGraph::NodeData{
+        id,
+        std::make_unique<detail::GraphCoroutineNodeInvoker>(task.release_handle())
+    });
+    return id;
 }
 
 }  // namespace astra

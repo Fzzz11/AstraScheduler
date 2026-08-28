@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-077)
 Milestone: v0.5.0
 Blocked by: AST-028, AST-029, AST-032, AST-035
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Graph coroutine node 从首次运行到多次 resume 复用同一 GraphRunId+Nod
 
 ## Acceptance criteria
 
-- [ ] `[R-077]` Graph coroutine node在Metrics/Trace/Outcome中只计一个Task identity。
+- [x] `[R-077]` Graph coroutine node在Metrics/Trace/Outcome中只计一个Task identity。
 
 ## Out of scope
 
@@ -40,5 +40,5 @@ Graph coroutine node 从首次运行到多次 resume 复用同一 GraphRunId+Nod
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-077
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-123, D-124
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tests/test_graph_coroutine_identity.cpp` (34/34 tests passed in `build/wsl-gcc-debug` and `build/wsl-gcc-asan`, 0 leaks, 0 data races).
 

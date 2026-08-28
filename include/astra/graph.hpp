@@ -19,6 +19,8 @@ namespace astra {
 // 前向声明
 class Scheduler;
 class FrozenTaskGraph;
+template <typename T>
+class Task;
 
 namespace detail {
 template <bool Ordinary, typename F>
@@ -165,6 +167,9 @@ public:
         });
         return id;
     }
+
+    // R-077 / D-123: 显式添加 Task<void> 协程节点
+    NodeId emplace_coroutine(Task<void>&& task);
 
     // 添加有向边 (from -> to)
     void add_edge(NodeId from, NodeId to, EdgePolicy policy = EdgePolicy::RequireSuccess) {

@@ -599,6 +599,48 @@ struct GraphNodeExecutionContextGuard {
     }
 };
 
+struct GraphCoroutineResumeWrapper final : TaskInvokerBase {
+    std::unique_ptr<TaskInvokerBase> inner;
+    std::shared_ptr<GraphRunSharedState> graph_state;
+    std::shared_ptr<TaskSharedState<void>> task_state;
+    NodeId node_id;
+    std::function<void(NodeId)> trigger_fn;
+
+    GraphCoroutineResumeWrapper(
+        std::unique_ptr<TaskInvokerBase> in,
+        std::shared_ptr<GraphRunSharedState> gs,
+        std::shared_ptr<TaskSharedState<void>> ts,
+        NodeId nid,
+        std::function<void(NodeId)> tfn)
+        : inner(std::move(in)), graph_state(std::move(gs)), task_state(std::move(ts)),
+          node_id(nid), trigger_fn(std::move(tfn)) {}
+
+    void execute() override {
+        GraphNodeExecutionContextGuard node_guard(graph_state->id);
+        if (inner) {
+            inner->execute();
+        }
+        if (task_state && task_state->is_completed()) {
+            TaskState outcome = task_state->state();
+            std::exception_ptr ex = (outcome == TaskState::Failed) ? task_state->exception() : nullptr;
+            graph_state->mark_node_terminal(node_id.value(), outcome, ex);
+            if (trigger_fn) {
+                trigger_fn(node_id);
+            }
+        }
+    }
+
+    void cancel_pre_start() noexcept override {
+        if (inner) {
+            inner->cancel_pre_start();
+        }
+    }
+
+    [[nodiscard]] bool is_resume_segment() const noexcept override {
+        return true;
+    }
+};
+
 inline std::uint64_t next_random(std::uint64_t& state) noexcept {
     state ^= state >> 12;
     state ^= state << 25;
@@ -1327,6 +1369,13 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
         const std::size_t idx = node_data.id.value();
         state->node_entries[idx].id = node_data.id;
         state->node_entries[idx].invoker = std::move(node_data.invoker);
+        if (state->node_entries[idx].invoker && state->node_entries[idx].invoker->is_coroutine_node()) {
+            auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(state->node_entries[idx].invoker.get());
+            const TaskId task_id = detail::allocate_task_id(impl_->runtime_id);
+            auto task_state = std::make_shared<detail::TaskSharedState<void>>(task_id);
+            coro_node->coro.promise().shared_state = task_state;
+            coro_node->task_state = task_state;
+        }
     }
 
     for (const auto& edge : graph.edges()) {
@@ -1367,12 +1416,57 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
     };
 
     auto post_node = [impl = impl_.get(), state, is_internal, trigger_successors](auto self, NodeId u_id) -> void {
+        const std::size_t node_idx = u_id.value();
+        auto& entry = state->node_entries[node_idx];
+
+        if (entry.invoker && entry.invoker->is_coroutine_node()) {
+            auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(entry.invoker.get());
+            auto task_state = coro_node->task_state;
+            auto coro = coro_node->coro;
+            coro_node->coro = nullptr;
+
+            task_state->set_rescheduler([impl, state, u_id, is_internal, task_state, trigger_successors, self](std::unique_ptr<detail::TaskInvokerBase> invoker) {
+                auto trigger_fn = [trigger_successors, self](NodeId id) {
+                    trigger_successors(trigger_successors, self, id);
+                };
+                auto wrapper = std::make_unique<detail::GraphCoroutineResumeWrapper>(
+                    std::move(invoker), state, task_state, u_id, std::move(trigger_fn));
+                impl->post_task_internal(std::move(wrapper), !is_internal);
+            });
+
+            auto task_fn = [impl, state, u_id, is_internal, self, trigger_successors, task_state, coro] {
+                const std::size_t n_idx = u_id.value();
+
+                if (state->cancel_requested.load(std::memory_order_acquire)) {
+                    task_state->request_cancel();
+                }
+
+                detail::GraphNodeExecutionContextGuard node_guard(state->id);
+
+                auto start_invoker = std::make_unique<detail::CoroutineTaskInvokerModel<void>>(
+                    coro, task_state);
+                start_invoker->execute();
+
+                if (task_state->is_completed()) {
+                    TaskState outcome = task_state->state();
+                    std::exception_ptr ex = (outcome == TaskState::Failed) ? task_state->exception() : nullptr;
+                    state->mark_node_terminal(n_idx, outcome, ex);
+                    trigger_successors(trigger_successors, self, u_id);
+                }
+            };
+
+            impl->post_task_internal(
+                detail::make_graph_node_invoker<true>(std::move(task_fn)),
+                !is_internal);
+            return;
+        }
+
         auto task_fn = [impl, state, u_id, is_internal, self, trigger_successors] {
-            const std::size_t node_idx = u_id.value();
-            auto& entry = state->node_entries[node_idx];
+            const std::size_t n_idx = u_id.value();
+            auto& node_entry = state->node_entries[n_idx];
 
             if (state->cancel_requested.load(std::memory_order_acquire)) {
-                state->mark_node_terminal(node_idx, TaskState::Cancelled);
+                state->mark_node_terminal(n_idx, TaskState::Cancelled);
                 trigger_successors(trigger_successors, self, u_id);
                 return;
             }
@@ -1380,14 +1474,14 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
             detail::GraphNodeExecutionContextGuard node_guard(state->id);
 
             try {
-                if (entry.invoker) {
-                    entry.invoker->execute();
+                if (node_entry.invoker) {
+                    node_entry.invoker->execute();
                 }
-                state->mark_node_terminal(node_idx, TaskState::Succeeded);
+                state->mark_node_terminal(n_idx, TaskState::Succeeded);
             } catch (const astra::task_cancelled&) {
-                state->mark_node_terminal(node_idx, TaskState::Cancelled);
+                state->mark_node_terminal(n_idx, TaskState::Cancelled);
             } catch (...) {
-                state->mark_node_terminal(node_idx, TaskState::Failed, std::current_exception());
+                state->mark_node_terminal(n_idx, TaskState::Failed, std::current_exception());
             }
 
             trigger_successors(trigger_successors, self, u_id);
