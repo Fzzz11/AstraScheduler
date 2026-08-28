@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-074)
 Milestone: v0.5.0
 Blocked by: AST-024, AST-032
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-074]` 无并发/递归double-resume、lost wake或double-destroy。
+- [x] `[R-074]` 无并发/递归double-resume、lost wake或double-destroy。
 
 ## Out of scope
 
@@ -40,5 +40,8 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-074
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-116, D-117, D-118
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - In-tree unit tests: `tests/test_coroutine_resume_handshake.cpp` (31/31 ctest passed in debug and ASan/UBSan/LSan)
+  - Package consumer gates: `tools/check_cmake_package.py` (AST033CoroutineResumeHandshakeGates, 48/48 tests passed)
+  - Release gates: `tools/check_release_gates.py` (15/15 tests passed)
 

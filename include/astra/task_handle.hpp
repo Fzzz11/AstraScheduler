@@ -46,28 +46,11 @@ inline TaskId allocate_task_id(RuntimeId runtime_id) noexcept {
     }
 }
 
-class ASTRA_EXPORT TaskSharedStateBase {
-public:
-    virtual ~TaskSharedStateBase() = default;
-    [[nodiscard]] virtual TaskId id() const noexcept = 0;
-    [[nodiscard]] virtual TaskState state() const noexcept = 0;
-    [[nodiscard]] virtual bool is_completed() const noexcept = 0;
-    virtual void request_cancel() noexcept = 0;
-    virtual bool try_start() noexcept = 0;
-    [[nodiscard]] virtual std::stop_token stop_token() noexcept = 0;
-    [[nodiscard]] virtual std::condition_variable& cv() const noexcept = 0;
-    [[nodiscard]] virtual std::mutex& mutex() const noexcept = 0;
-};
+class ASTRA_EXPORT TaskSharedStateBase;
 
 ASTRA_EXPORT void perform_caller_wait(
     const TaskSharedStateBase& target,
     std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
-
-struct ASTRA_EXPORT TaskExecutionContextGuard {
-    TaskId prev_id;
-    explicit TaskExecutionContextGuard(TaskId new_id) noexcept;
-    ~TaskExecutionContextGuard() noexcept;
-};
 
 struct TaskInvokerBase {
     virtual ~TaskInvokerBase() = default;
@@ -75,33 +58,86 @@ struct TaskInvokerBase {
     virtual void cancel_pre_start() noexcept = 0;
 };
 
-template <typename T>
-class TaskSharedState : public TaskSharedStateBase {
+struct ASTRA_EXPORT TaskExecutionContextGuard {
+    TaskId prev_id;
+    explicit TaskExecutionContextGuard(TaskId new_id) noexcept;
+    ~TaskExecutionContextGuard() noexcept;
+};
+
+class ASTRA_EXPORT TaskSharedStateBase {
 public:
-    explicit TaskSharedState(TaskId id) : id_(id) {}
+    explicit TaskSharedStateBase(TaskId id) : id_(id) {}
+    virtual ~TaskSharedStateBase() = default;
 
-    ~TaskSharedState() override {
-        // R-060: 未观察异常析构时不抛出、不终止
-    }
-
-    [[nodiscard]] TaskId id() const noexcept override {
+    [[nodiscard]] TaskId id() const noexcept {
         return id_;
     }
 
-    [[nodiscard]] std::stop_token stop_token() noexcept override {
+    [[nodiscard]] std::stop_token stop_token() noexcept {
         return stop_source_.get_token();
     }
 
-    void request_cancel() noexcept override {
+    using ReschedulerFunc = std::function<void(std::unique_ptr<TaskInvokerBase>)>;
+
+    void set_rescheduler(ReschedulerFunc rescheduler) {
         std::lock_guard<std::mutex> lock(mutex_);
-        stop_source_.request_stop();
-        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
-            state_.store(TaskState::Cancelled, std::memory_order_release);
-            cv_.notify_all();
+        rescheduler_ = std::move(rescheduler);
+    }
+
+    [[nodiscard]] ReschedulerFunc get_rescheduler() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return rescheduler_;
+    }
+
+    void transition_to_suspended() noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_.load(std::memory_order_relaxed) == TaskState::Running) {
+            state_.store(TaskState::Suspended, std::memory_order_release);
         }
     }
 
-    bool try_start() noexcept override {
+    void transition_to_running() noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_.load(std::memory_order_relaxed) == TaskState::Suspended ||
+            state_.load(std::memory_order_relaxed) == TaskState::Ready) {
+            state_.store(TaskState::Running, std::memory_order_release);
+        }
+    }
+
+    void add_completion_callback(std::function<void()> cb) {
+        bool run_immediately = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (is_completed_locked()) {
+                run_immediately = true;
+            } else {
+                completion_callbacks_.push_back(std::move(cb));
+            }
+        }
+        if (run_immediately && cb) {
+            cb();
+        }
+    }
+
+    void request_cancel() noexcept {
+        std::vector<std::function<void()>> callbacks;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_source_.request_stop();
+            if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
+                state_.store(TaskState::Cancelled, std::memory_order_release);
+                callbacks = std::move(completion_callbacks_);
+            }
+        }
+        cv_.notify_all();
+        for (auto& cb : callbacks) {
+            if (cb) {
+                cb();
+            }
+        }
+    }
+
+    bool try_start() noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
             state_.store(TaskState::Running, std::memory_order_release);
@@ -110,42 +146,107 @@ public:
         return false;
     }
 
-    [[nodiscard]] TaskState state() const noexcept override {
+    [[nodiscard]] TaskState state() const noexcept {
         return state_.load(std::memory_order_acquire);
     }
 
-    [[nodiscard]] std::condition_variable& cv() const noexcept override {
+    [[nodiscard]] std::condition_variable& cv() const noexcept {
         return cv_;
     }
 
-    [[nodiscard]] std::mutex& mutex() const noexcept override {
+    [[nodiscard]] std::mutex& mutex() const noexcept {
         return mutex_;
     }
 
-    void set_value(T val) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            value_.emplace(std::move(val));
-            state_.store(TaskState::Succeeded, std::memory_order_release);
-        }
-        cv_.notify_all();
-    }
-
     void set_exception(std::exception_ptr ex) noexcept {
+        std::vector<std::function<void()>> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             exception_ = std::move(ex);
             state_.store(TaskState::Failed, std::memory_order_release);
+            callbacks = std::move(completion_callbacks_);
+            rescheduler_ = nullptr;
         }
         cv_.notify_all();
+        for (auto& cb : callbacks) {
+            if (cb) {
+                cb();
+            }
+        }
     }
 
     void set_cancelled() noexcept {
+        std::vector<std::function<void()>> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             state_.store(TaskState::Cancelled, std::memory_order_release);
+            callbacks = std::move(completion_callbacks_);
+            rescheduler_ = nullptr;
         }
         cv_.notify_all();
+        for (auto& cb : callbacks) {
+            if (cb) {
+                cb();
+            }
+        }
+    }
+
+    void wait() const {
+        perform_caller_wait(*this);
+    }
+
+    template <typename Rep, typename Period>
+    WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
+        if (duration <= std::chrono::duration<Rep, Period>::zero()) {
+            return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
+        }
+        const auto deadline = std::chrono::steady_clock::now() + duration;
+        perform_caller_wait(*this, deadline);
+        return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
+    }
+
+    [[nodiscard]] bool is_completed() const noexcept {
+        const auto s = state_.load(std::memory_order_acquire);
+        return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
+    }
+
+    [[nodiscard]] bool is_completed_locked() const noexcept {
+        const auto s = state_.load(std::memory_order_relaxed);
+        return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
+    }
+
+protected:
+    TaskId id_;
+    std::stop_source stop_source_;
+    mutable std::mutex mutex_;
+    mutable std::condition_variable cv_;
+    std::atomic<TaskState> state_{TaskState::Ready};
+    std::exception_ptr exception_{nullptr};
+    mutable std::atomic<bool> observed_{false};
+    std::vector<std::function<void()>> completion_callbacks_;
+    ReschedulerFunc rescheduler_;
+};
+
+template <typename T>
+class TaskSharedState : public TaskSharedStateBase {
+public:
+    explicit TaskSharedState(TaskId id) : TaskSharedStateBase(id) {}
+
+    void set_value(T val) {
+        std::vector<std::function<void()>> callbacks;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            value_.emplace(std::move(val));
+            state_.store(TaskState::Succeeded, std::memory_order_release);
+            callbacks = std::move(completion_callbacks_);
+            rescheduler_ = nullptr;
+        }
+        cv_.notify_all();
+        for (auto& cb : callbacks) {
+            if (cb) {
+                cb();
+            }
+        }
     }
 
     const T& get() const {
@@ -161,106 +262,29 @@ public:
         return *value_;
     }
 
-    void wait() const {
-        perform_caller_wait(*this);
-    }
-
-    template <typename Rep, typename Period>
-    WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
-        if (duration <= std::chrono::duration<Rep, Period>::zero()) {
-            return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
-        }
-        const auto deadline = std::chrono::steady_clock::now() + duration;
-        perform_caller_wait(*this, deadline);
-        return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
-    }
-
-    [[nodiscard]] bool is_completed() const noexcept override {
-        const auto s = state_.load(std::memory_order_acquire);
-        return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
-    }
-
 private:
-    TaskId id_;
-    std::stop_source stop_source_;
-    mutable std::mutex mutex_;
-    mutable std::condition_variable cv_;
-    std::atomic<TaskState> state_{TaskState::Ready};
     std::optional<T> value_;
-    std::exception_ptr exception_{nullptr};
-    mutable std::atomic<bool> observed_{false};
 };
 
 template <>
 class TaskSharedState<void> : public TaskSharedStateBase {
 public:
-    explicit TaskSharedState(TaskId id) : id_(id) {}
-
-    ~TaskSharedState() override {
-        // R-060: 未观察异常析构时不抛出、不终止
-    }
-
-    [[nodiscard]] TaskId id() const noexcept override {
-        return id_;
-    }
-
-    [[nodiscard]] std::stop_token stop_token() noexcept override {
-        return stop_source_.get_token();
-    }
-
-    void request_cancel() noexcept override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        stop_source_.request_stop();
-        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
-            state_.store(TaskState::Cancelled, std::memory_order_release);
-            cv_.notify_all();
-        }
-    }
-
-    bool try_start() noexcept override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
-            state_.store(TaskState::Running, std::memory_order_release);
-            return true;
-        }
-        return false;
-    }
-
-    [[nodiscard]] TaskState state() const noexcept override {
-        return state_.load(std::memory_order_acquire);
-    }
-
-    [[nodiscard]] std::condition_variable& cv() const noexcept override {
-        return cv_;
-    }
-
-    [[nodiscard]] std::mutex& mutex() const noexcept override {
-        return mutex_;
-    }
+    explicit TaskSharedState(TaskId id) : TaskSharedStateBase(id) {}
 
     void set_value() {
+        std::vector<std::function<void()>> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             state_.store(TaskState::Succeeded, std::memory_order_release);
+            callbacks = std::move(completion_callbacks_);
+            rescheduler_ = nullptr;
         }
         cv_.notify_all();
-    }
-
-    void set_exception(std::exception_ptr ex) noexcept {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            exception_ = std::move(ex);
-            state_.store(TaskState::Failed, std::memory_order_release);
+        for (auto& cb : callbacks) {
+            if (cb) {
+                cb();
+            }
         }
-        cv_.notify_all();
-    }
-
-    void set_cancelled() noexcept {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            state_.store(TaskState::Cancelled, std::memory_order_release);
-        }
-        cv_.notify_all();
     }
 
     void get() const {
@@ -274,34 +298,6 @@ public:
             throw task_cancelled{};
         }
     }
-
-    void wait() const {
-        perform_caller_wait(*this);
-    }
-
-    template <typename Rep, typename Period>
-    WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
-        if (duration <= std::chrono::duration<Rep, Period>::zero()) {
-            return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
-        }
-        const auto deadline = std::chrono::steady_clock::now() + duration;
-        perform_caller_wait(*this, deadline);
-        return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
-    }
-
-    [[nodiscard]] bool is_completed() const noexcept override {
-        const auto s = state_.load(std::memory_order_acquire);
-        return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
-    }
-
-private:
-    TaskId id_;
-    std::stop_source stop_source_;
-    mutable std::mutex mutex_;
-    mutable std::condition_variable cv_;
-    std::atomic<TaskState> state_{TaskState::Ready};
-    std::exception_ptr exception_{nullptr};
-    mutable std::atomic<bool> observed_{false};
 };
 
 template <bool Ordinary, bool StopAware, typename DF, typename... DArgs>

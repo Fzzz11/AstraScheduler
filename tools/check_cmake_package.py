@@ -826,6 +826,15 @@ class AST032CoroutineSpawnGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST033CoroutineResumeHandshakeGates(PackageBuildFixture):
+    """AST-033：实现唯一 resume ownership 与 await handshake（R-074）。"""
+
+    def test_AST033_consumer_runs_all_coroutine_resume_handshake_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-074
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

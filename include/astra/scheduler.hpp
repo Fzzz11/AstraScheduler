@@ -219,6 +219,10 @@ public:
 
         try {
             state = std::make_shared<detail::TaskSharedState<T>>(tid);
+            auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
+                sched.post_task_invoker(std::move(inv), false /* is_external */);
+            };
+            state->set_rescheduler(std::move(rescheduler));
             task.handle().promise().shared_state = state;
             auto coro_h = task.release_handle();
             invoker = std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state);
@@ -262,6 +266,10 @@ public:
 
         try {
             state = std::make_shared<detail::TaskSharedState<T>>(tid);
+            auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
+                sched.post_task_invoker(std::move(inv), false /* is_external */);
+            };
+            state->set_rescheduler(std::move(rescheduler));
             task.handle().promise().shared_state = state;
             auto coro_h = task.release_handle();
             invoker = std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state);

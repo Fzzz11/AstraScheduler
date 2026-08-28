@@ -40,6 +40,8 @@ struct TaskPromiseBase {
 
 template <typename T>
 struct TaskPromise : TaskPromiseBase<T> {
+    using value_type = T;
+
     Task<T> get_return_object() noexcept;
 
     template <typename U>
@@ -52,6 +54,8 @@ struct TaskPromise : TaskPromiseBase<T> {
 
 template <>
 struct TaskPromise<void> : TaskPromiseBase<void> {
+    using value_type = void;
+
     Task<void> get_return_object() noexcept;
 
     void return_void() {
@@ -128,6 +132,62 @@ private:
     handle_type handle_{nullptr};
 };
 
+// -----------------------------------------------------------------------------
+// AwaitHandshake (R-074 / D-118)
+// 线性化内建 awaiter 的挂起与触发唤醒竞争，保证恰好发布一个 Ready ticket，
+// 且不在 await_suspend 返回前发生并发 resume。
+// -----------------------------------------------------------------------------
+class AwaitHandshake {
+public:
+    enum Flag : std::uint32_t {
+        kInit = 0,
+        kTriggered = 1 << 0,
+        kArmed = 1 << 1,
+        kResolved = 1 << 2
+    };
+
+    AwaitHandshake() noexcept = default;
+
+    // 目标完成/取消时触发（可在 await_suspend 注册期间或之后发生）
+    template <typename PostFn>
+    void trigger(PostFn&& post_fn) {
+        const std::uint32_t prev = state_.fetch_or(kTriggered, std::memory_order_acq_rel);
+        if ((prev & kArmed) != 0 && (prev & kResolved) == 0) {
+            std::uint32_t expected = prev | kTriggered;
+            if (state_.compare_exchange_strong(expected, expected | kResolved, std::memory_order_acq_rel)) {
+                post_fn();
+            }
+        }
+    }
+
+    // await_suspend 完成注册并提交 Suspended 状态后 arm
+    template <typename PostFn>
+    void arm(PostFn&& post_fn) {
+        const std::uint32_t prev = state_.fetch_or(kArmed, std::memory_order_acq_rel);
+        if ((prev & kTriggered) != 0 && (prev & kResolved) == 0) {
+            std::uint32_t expected = prev | kArmed;
+            if (state_.compare_exchange_strong(expected, expected | kResolved, std::memory_order_acq_rel)) {
+                post_fn();
+            }
+        }
+    }
+
+    [[nodiscard]] bool is_triggered() const noexcept {
+        return (state_.load(std::memory_order_acquire) & kTriggered) != 0;
+    }
+
+    [[nodiscard]] bool is_armed() const noexcept {
+        return (state_.load(std::memory_order_acquire) & kArmed) != 0;
+    }
+
+    [[nodiscard]] bool is_resolved() const noexcept {
+        return (state_.load(std::memory_order_acquire) & kResolved) != 0;
+    }
+
+private:
+    std::atomic<std::uint32_t> state_{kInit};
+};
+
 namespace detail {
 
 template <typename T>
@@ -139,11 +199,12 @@ inline Task<void> TaskPromise<void>::get_return_object() noexcept {
     return Task<void>{std::coroutine_handle<TaskPromise<void>>::from_promise(*this)};
 }
 
-// Coroutine Task Invoker（D-114 / D-115）
+// 首次启动 Coroutine Task Invoker（D-114 / D-115 / D-116）
 template <typename T>
 struct CoroutineTaskInvokerModel final : TaskInvokerBase {
     std::coroutine_handle<TaskPromise<T>> coro;
     std::shared_ptr<TaskSharedState<T>> state;
+    bool executed{false};
 
     explicit CoroutineTaskInvokerModel(
         std::coroutine_handle<TaskPromise<T>> h,
@@ -151,13 +212,14 @@ struct CoroutineTaskInvokerModel final : TaskInvokerBase {
         : coro(h), state(std::move(st)) {}
 
     ~CoroutineTaskInvokerModel() override {
-        if (coro) {
+        if (!executed && coro && state && state->is_completed()) {
             coro.destroy();
             coro = nullptr;
         }
     }
 
     void execute() override {
+        executed = true;
         // 首次 start 竞争（R-053 / D-052）
         if (!state->try_start()) {
             if (coro) {
@@ -167,6 +229,46 @@ struct CoroutineTaskInvokerModel final : TaskInvokerBase {
             return;
         }
 
+        TaskExecutionContextGuard guard(state->id());
+
+        try {
+            if (coro && !coro.done()) {
+                coro.resume();
+            }
+        } catch (const task_cancelled&) {
+            state->set_cancelled();
+        } catch (...) {
+            state->set_exception(std::current_exception());
+        }
+
+        if (coro && coro.done()) {
+            coro.destroy();
+            coro = nullptr;
+        }
+    }
+
+    void cancel_pre_start() noexcept override {
+        if (state) {
+            state->request_cancel();
+        }
+    }
+};
+
+// 后续恢复 Coroutine Resume Invoker（R-074 / D-116 / D-117 / D-118）
+template <typename T>
+struct CoroutineResumeInvokerModel final : TaskInvokerBase {
+    std::coroutine_handle<TaskPromise<T>> coro;
+    std::shared_ptr<TaskSharedState<T>> state;
+
+    explicit CoroutineResumeInvokerModel(
+        std::coroutine_handle<TaskPromise<T>> h,
+        std::shared_ptr<TaskSharedState<T>> st) noexcept
+        : coro(h), state(std::move(st)) {}
+
+    ~CoroutineResumeInvokerModel() override = default;
+
+    void execute() override {
+        state->transition_to_running();
         TaskExecutionContextGuard guard(state->id());
 
         try {

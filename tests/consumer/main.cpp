@@ -624,7 +624,25 @@ int main() {
     }
     sched_coro.shutdown();
 
-    // 22. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 22. AST-033: Coroutine resume ownership & AwaitHandshake (R-074)
+    astra::AwaitHandshake hs_test;
+    if (hs_test.is_armed() || hs_test.is_triggered() || hs_test.is_resolved()) {
+        std::printf("AwaitHandshake initial state must be 0\n");
+        return 1;
+    }
+    bool hs_ran = false;
+    hs_test.trigger([&] { hs_ran = true; });
+    if (hs_ran) {
+        std::printf("Trigger before arm must not run callback\n");
+        return 1;
+    }
+    hs_test.arm([&] { hs_ran = true; });
+    if (!hs_ran || !hs_test.is_resolved()) {
+        std::printf("Arm after trigger must resolve and run callback\n");
+        return 1;
+    }
+
+    // 23. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,
