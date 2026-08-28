@@ -5,6 +5,7 @@
 #include <astra/id.hpp>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -13,50 +14,25 @@
 #include <vector>
 
 // ============================================================================
-// Reaper 设计思想（为什么需要 ReaperRegistry）
+// Reaper 设计思想与 Coordinator 拓扑（AST-007 / D-020 / D-021 / D-022 / R-107）
 // ----------------------------------------------------------------------------
-// 1. 问题：最后一个 Handle 在自己的 Worker 上析构
-//    Scheduler 是 copyable/movable 共享 Handle，Runtime State 被 Handle、
-//    Worker 执行路径与 Reaper 回收路径三方共享。若最后一个关联 Handle
-//    恰好在本 Scheduler 的某个 Worker 线程上析构，析构者不能同步等待
-//    自己所在 Runtime 的全部 Worker join（self-join 死锁），也不能直接
-//    销毁仍被兄弟 Worker 引用的 Runtime State（use-after-free）。因此
-//    需要一个不属于任何 Scheduler 的执行上下文接管所有权并完成最终回收
-//    —— 这就是进程级 Reaper Service（D-021 / ADR-0011）。
+// 1. 进程级单协调线程拓扑（D-021 / R-107）
+//    一个进程内有且仅有一个逻辑 Reaper Service，由恰好一个不属于任何
+//    Scheduler 的专用 coordinator thread 驱动全部 Runtime 的回收。
+//    不得为单个 Scheduler 或单次 handoff 创建额外 Reaper thread，
+//    coordinator 不得执行用户任务、参与 work stealing 或形成 Internal Submission。
 //
-// 2. 约束：析构边界的 handoff 必须 noexcept、零分配、零线程创建（R-024）
-//    析构无法报告失败、无法恢复，所以所有权移交只能在"最后一个 Handle"
-//    析构的瞬间做原子级轻量操作。任何可失败的资源准备（注册、堆分配、
-//    coordinator 建立）都必须提前到仍有正常错误通道的启动阶段完成
-//    （D-019 / R-023），否则失败将无处安放。
+// 2. Pending 与 Join Ready 状态分离（D-020 / R-025 / R-026）
+//    - Pending 阶段：Worker handoff 发生后，Reaper 立即持有 Runtime State
+//      强引用，但绝不同步等待活动任务或 Drain Work Closure；
+//    - Join Ready 阶段：仅当全部 Worker 不可逆地退出工作循环后，单调进入
+//      Join Ready；coordinator 认领唯一 join 权并执行非阻塞 join 与发布 Stopped。
+//    - Head-of-Line 隔离：长期处于 Pending 状态的 Runtime 绝不阻塞其他
+//      Join Ready Runtime 的及时回收（R-025）。
 //
-// 3. 由此固定的启动顺序（D-155, D-156, R-097）
-//    ① 校验 options；
-//    ② 向 ReaperRegistry 注册 Runtime 并预留 HandoffCapabilitySlot；
-//    ③ 创建全部 Worker，经 startup barrier 后一次发布 Running。
-//    任一步失败则完整回滚：join 已启动 Worker、撤销注册，保证 0 活跃
-//    Worker、0 注册泄漏，不返回可观察的半启动 Handle。
-//
-// 4. ReaperRegistry 的职责
-//    - 进程级注册门禁（单例）：记录哪些 Runtime 已纳入 Reaper 核算；
-//    - Finalization 状态机 Open -> Finalizing -> Finalized：begin_finalization()
-//      线性化地永久关门（D-023 / ADR-0013）。关门前已注册的 Runtime 纳入
-//      终结核算，关门后的新构造在创建 Worker 前失败（D-156）；
-//    - 预留 HandoffCapabilitySlot：把运行期 noexcept 移交所需的最小能力
-//      提前分配，保证 Worker 上孤儿 handoff 不申请新资源（R-023, R-024）；
-//    - 服务空闲不自动退出，只在进程级 Finalization 阶段由 coordinator
-//      收尾（D-022 / ADR-0012）。
-//
-// 5. 与 registry 配合的运行时回收语义
-//    - 可长期持有 Pending Runtime State，但不得阻塞其他 Join Ready
-//      Runtime 的回收（head-of-line 隔离，D-020 / R-025）；
-//    - 仅当 Runtime 单调进入 Join Ready 后认领唯一 join 并发布 Stopped
-//      （D-020 / R-026）；
-//    - Finalization 对核算集合内全部 Runtime 请求 Graceful，允许显式
-//      shutdown_now() 单向升级为 Immediate（D-024 / ADR-0014）；
-//    - 控制面不可恢复故障 fail-fast：noexcept 尽力诊断后 std::terminate()，
-//      不得伪装成 TimedOut/Stopped/Finalized，也不得 detach/restart
-//      （D-040 / ADR-0018）。
+// 3. 空闲保持与无反复停启（D-022 / R-028）
+//    Reaper Service 首次建立后，在全部 Runtime 回收完毕时进入阻塞空闲等待，
+//    保持同一 coordinator 线程，不因队列为空而自动停止或重建。
 // ============================================================================
 
 namespace astra::detail {
@@ -68,14 +44,14 @@ enum class RegistrationState : std::uint8_t {
     Finalized = 2,
 };
 
-// 预留的 Handoff 能力槽位（R-023, R-024）。
-// 在 Worker 启动前预分配并持有，保证运行期移交 noexcept 且不申请新资源。
+// 预留的 Handoff 能力槽位（R-023, R-024, R-025, R-026）。
 struct ASTRA_NO_EXPORT HandoffCapabilitySlot {
     RuntimeId runtime_id{};
     std::atomic<bool> handoff_executed{false};
     std::atomic<bool> join_ready{false};
+    std::atomic<bool> join_claimed{false};
     std::shared_ptr<void> retained_state{};
-    std::unique_ptr<std::thread> reaper_thread{};
+    std::function<void()> cleanup_fn{};
 };
 
 class ASTRA_NO_EXPORT ReaperRegistry {
@@ -83,10 +59,10 @@ public:
     static ReaperRegistry& instance() noexcept;
 
     // 尝试在 Worker 启动前注册 Runtime 并预留 Reaper handoff 能力（R-023, R-097）。
-    // 若 Finalization 已启动或预留失败，返回 false。
+    // 同时确保单例 coordinator 线程已启动（D-021 / R-107）。
     bool register_runtime(RuntimeId id);
 
-    // 撤销注册并释放预留能力（用于 startup rollback 或正常生命周期结束）。
+    // 撤销注册并释放预留能力（用于 startup rollback 或正常非 Worker 析构）。
     void unregister_runtime(RuntimeId id) noexcept;
 
     // 检查注册门禁是否开放。
@@ -99,10 +75,17 @@ public:
     [[nodiscard]] HandoffCapabilitySlot* find_slot(RuntimeId id) noexcept;
 
     // 执行 Worker 端的孤儿所有权移交（R-021, R-022, R-024）。
+    // 将 Runtime State 强所有权与 cleanup 回调保存入已预留的 slot，进入 Pending 状态（R-025）。
     void execute_worker_handoff(
         RuntimeId id,
         std::shared_ptr<void> state,
         std::function<void()> cleanup_fn) noexcept;
+
+    // 通知 Reaper 某个 Runtime 的全部 Worker 已退出循环，单调进入 Join Ready 状态（R-026）。
+    void notify_join_ready(RuntimeId id) noexcept;
+
+    // 获取当前 Reaper coordinator 线程数（R-107：恰好为 1，或未启动时为 0）。
+    [[nodiscard]] std::size_t coordinator_thread_count() const noexcept;
 
     // --- 测试与故障注入专用 Seam ---
     void reset_for_testing() noexcept;
@@ -118,10 +101,18 @@ private:
     ReaperRegistry(const ReaperRegistry&) = delete;
     ReaperRegistry& operator=(const ReaperRegistry&) = delete;
 
+    void ensure_coordinator_started_locked();
+    void coordinator_loop() noexcept;
+    bool has_join_ready_slot_locked() const noexcept;
+
     mutable std::mutex mutex_;
+    std::condition_variable coordinator_cv_;
     RegistrationState state_{RegistrationState::Open};
     std::vector<std::uint64_t> registered_ids_;
     std::vector<std::unique_ptr<HandoffCapabilitySlot>> slots_;
+
+    std::unique_ptr<std::thread> coordinator_thread_;
+    bool coordinator_stop_{false};
 
     bool inject_reservation_fail_{false};
     std::size_t inject_worker_fail_at_{0}; // 0 表示不注入

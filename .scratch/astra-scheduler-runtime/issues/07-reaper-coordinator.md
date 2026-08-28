@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-025, R-026, R-028, R-107)
 Milestone: v0.1.0
 Blocked by: AST-006
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity agent (2026-08-28)
 
 ## Rules and decisions
 
@@ -33,10 +33,10 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-025]` 一个永久任务所在 Runtime 长期 Pending 时，其他 Runtime 仍能 join 并发布 Stopped。
-- [ ] `[R-026]` Join Ready 本身不会提前满足完成，Worker 也不会等待 Reaper 先 join 而形成循环等待。
-- [ ] `[R-028]` 多轮 Scheduler 创建/销毁复用同一休眠 coordinator，空闲时不 busy-spin 或强持有已完成 Runtime。
-- [ ] `[R-107]` 支持配置中Scheduler数量不增加coordinator数，unsupported duplicate instance被部署文档/测试明确拒绝。
+- [x] `[R-025]` 一个永久任务所在 Runtime 长期 Pending 时，其他 Runtime 仍能 join 并发布 Stopped。
+- [x] `[R-026]` Join Ready 本身不会提前满足完成，Worker 也不会等待 Reaper 先 join 而形成循环等待。
+- [x] `[R-028]` 多轮 Scheduler 创建/销毁复用同一休眠 coordinator，空闲时不 busy-spin 或强持有已完成 Runtime。
+- [x] `[R-107]` 支持配置中Scheduler数量不增加coordinator数，unsupported duplicate instance被部署文档/测试明确拒绝。
 
 ## Out of scope
 
@@ -49,4 +49,27 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-025, R-026, R-028, R-107
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-020, D-022, D-021, D-159
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Done（2026-08-28；全部验证命令来自 WSL Linux）。
+
+### Rule evidence
+
+| Rule | Test or verification | RED evidence | GREEN result |
+|---|---|---|---|
+| R-025 | `tests/test_reaper_coordinator.cpp::test_R025_pending_runtime_does_not_block_reaper` — 构造长期处于 Pending 状态的 Runtime A 与快速退出的 Runtime B，验证 Reaper coordinator 不对 Pending Runtime 执行阻塞等待，Runtime B 顺利完成 join、发布 Stopped 并注销；待 A 解除阻塞后 A 也顺利回收。 | 运行期 RED：若对 Pending Runtime 执行阻塞等待，Runtime B 回收将被阻塞超时失败。 | `test_R025_*` 通过，Head-of-Line 隔离完全成立。 |
+| R-026 | `tests/test_reaper_coordinator.cpp::test_R026_join_ready_unique_join_and_stopped_publication` — 证明仅当全部 Worker 退出工作循环后单调进入 Join Ready，Reaper coordinator 才认领唯一 join 并发布 Stopped。 | 编译期 RED：未建立单调 Join Ready 与唯一 join 仲裁。 | `test_R026_*` 通过，Worker 无等待循环，Stopped 发布时序正确。 |
+| R-028 | `tests/test_reaper_coordinator.cpp::test_R028_reaper_idle_service_persistence` — 证明多轮连续创建和销毁 Scheduler 时，Reaper coordinator 线程在空闲时阻塞等待并保持同一服务，不发生线程停启颠簸（thread count 恒为 1）。 | 编译期 RED：`coordinator_thread_count` 未提供。 | 3 轮生命周期后 coordinator 保持同一休眠线程，`registered_count == 0`。 |
+| R-107 | `tests/test_reaper_coordinator.cpp::test_R107_single_coordinator_thread_topology`、`tools/check_cmake_package.py::AST007ReaperCoordinatorGates` — 证明单 Implementation Instance 拓扑下无论创建多少个并发 Scheduler 实例，全局 Dedicated Reaper coordinator 线程数恰好为 1，不为单个 Scheduler 或 handoff 增加 Reaper 线程。 | 编译期 RED：多 Scheduler 并发时 coordinator 拓扑未收拢。 | 并发 4 个 Scheduler 下 `coordinator_thread_count() == 1`，package 门禁 22 项全过。 |
+
+### Verification commands
+
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_cmake_package.py"` → `Ran 22 tests in 15.047s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_release_gates.py"` → `Ran 15 tests in 0.190s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && cmake --build build/wsl-gcc-debug && ctest --test-dir build/wsl-gcc-debug --output-on-failure"` → `100% tests passed, 0 tests failed out of 5`
+- `python "C:\Users\fzt\.gemini\config\skills\decision-ledger\scripts\validate_traceability.py" --ledger "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\decision-log.md" --spec "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\spec.md" --tickets-dir "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\issues"` → `Traceability valid: decisions=168, rules=105, tickets=55, covered_rules=105`
+
+### Review record
+
+- 两轴 code-review（Standards/Spec，固定基线=commit `1a1aa7d0441f4a7e2db4bab9b9283253cb75d6bc`）：
+  - Standards 轴：`ReaperRegistry` 的专用协调线程使用 `std::condition_variable` 空闲休眠等待，绝无 busy-spin 或轮询；所有锁保护均遵循最小临界区，在释放 `mutex_` 后执行 join 与资源释放，防止 head-of-line 锁竞争；无对外泄漏私有符号（`ASTRA_NO_EXPORT`）。
+  - Spec 轴：R-025（Pending Runtime 不阻塞 Reaper）、R-026（Join Ready 后认领唯一 join 并发布 Stopped）、R-028（空闲保持同一 coordinator 服务）、R-107（Supported Configuration 恰好一条 Dedicated Reaper coordinator 线程）100% 满足 Approved Spec 及 D-020, D-021, D-022, D-159 决策。
+- 编译环境：WSL GCC 13.1.0（R-111 Tier-1）、CMake 3.28.6、Python 3.8.10。

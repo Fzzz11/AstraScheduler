@@ -38,3 +38,19 @@ target_include_directories(astra_runtime_state_handoff_test PRIVATE
 )
 target_compile_features(astra_runtime_state_handoff_test PRIVATE cxx_std_20)
 add_test(NAME astra_runtime_state_handoff_test COMMAND astra_runtime_state_handoff_test)
+
+add_executable(astra_reaper_coordinator_test
+  test_reaper_coordinator.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_reaper_coordinator_test PRIVATE Threads::Threads)
+target_include_directories(astra_reaper_coordinator_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_reaper_coordinator_test PRIVATE cxx_std_20)
+add_test(NAME astra_reaper_coordinator_test COMMAND astra_reaper_coordinator_test)
+

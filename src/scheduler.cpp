@@ -83,6 +83,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     bool stop_requested{false};
     bool handoff_dispatched{false};
     std::size_t workers_ready{0};
+    std::atomic<std::size_t> active_workers{0};
     std::vector<std::thread> worker_threads;
     std::vector<std::function<void()>> worker_tasks;
 
@@ -106,6 +107,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
         // 2. 创建 Worker 并通过启动栅栏进行同步强事务管理（R-097, D-155）
         const std::size_t count = options.worker_count;
+        active_workers.store(count, std::memory_order_relaxed);
         worker_threads.reserve(count);
 
         try {
@@ -246,6 +248,9 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             });
             if (startup_failed || stop_requested) {
                 t_current_worker_runtime_id = RuntimeId{0};
+                if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    detail::ReaperRegistry::instance().notify_join_ready(runtime_id);
+                }
                 return;
             }
         }
@@ -271,6 +276,9 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
 
         t_current_worker_runtime_id = RuntimeId{0};
+        if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            detail::ReaperRegistry::instance().notify_join_ready(runtime_id);
+        }
     }
 
     void post_task_internal(std::function<void()> task) {

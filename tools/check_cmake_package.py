@@ -6,6 +6,7 @@ Source tickets:
 - .scratch/astra-scheduler-runtime/issues/04-scheduler-public-contract.md（R-098, R-099, R-100, R-101 primary）
 - .scratch/astra-scheduler-runtime/issues/05-startup-transaction.md（R-023, R-024, R-097 primary）
 - .scratch/astra-scheduler-runtime/issues/06-runtime-state-handoff.md（R-020, R-021, R-022 primary）
+- .scratch/astra-scheduler-runtime/issues/07-reaper-coordinator.md（R-025, R-026, R-028, R-107 primary）
 
 这些测试在 WSL/Linux 中构建 C++20 compiled library、安装为可消费的
 CMake package，并用仓库外的独立最小 consumer 工程执行 find_package/
@@ -556,6 +557,15 @@ class AST006RuntimeStateHandoffGates(PackageBuildFixture):
 
     def test_AST006_consumer_runs_all_runtime_state_handoff_checks(self):
         # 独立 consumer（static+shared）运行期断言 R-020/R-021/R-022
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
+class AST007ReaperCoordinatorGates(PackageBuildFixture):
+    """AST-007：实现唯一 Reaper coordinator 的 pending/join/idle 循环（R-025/R-026/R-028/R-107）。"""
+
+    def test_AST007_consumer_runs_all_reaper_coordinator_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-025/R-026/R-028/R-107
         self._run_consumer(self.static_consumer)
         self._run_consumer(self.shared_consumer)
 
