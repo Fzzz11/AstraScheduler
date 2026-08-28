@@ -468,7 +468,22 @@ int main() {
     }
     s_steal.shutdown();
 
-    // 16. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 16. AST-024: No-lost-wakeup Park Handshake (R-065)
+    astra::SchedulerOptions s_park_opt{};
+    s_park_opt.worker_count = 2;
+    astra::Scheduler s_park(s_park_opt);
+    std::atomic<bool> park_task_done{false};
+    auto h_park = s_park.submit([&park_task_done] {
+        park_task_done.store(true);
+    });
+    h_park.wait();
+    if (!park_task_done.load()) {
+        std::printf("AST-024 park handshake task did not complete\n");
+        return 1;
+    }
+    s_park.shutdown();
+
+    // 17. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,

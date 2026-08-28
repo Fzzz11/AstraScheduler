@@ -34,6 +34,8 @@ ASTRA_EXPORT RuntimeId current_worker_runtime_id() noexcept;
 void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
 std::size_t global_injection_queue_size(const Scheduler& s);
 std::size_t external_pending_count(const Scheduler& s);
+std::size_t parked_workers_count(const Scheduler& s);
+std::uint64_t current_work_epoch(const Scheduler& s);
 }
 
 // 调度器共享 Handle（D-155）。
@@ -187,6 +189,8 @@ private:
     friend void detail::run_test_task_on_worker(Scheduler&, std::function<void()>);
     friend std::size_t detail::global_injection_queue_size(const Scheduler&);
     friend std::size_t detail::external_pending_count(const Scheduler&);
+    friend std::size_t detail::parked_workers_count(const Scheduler&);
+    friend std::uint64_t detail::current_work_epoch(const Scheduler&);
     friend void detail::perform_caller_wait(const detail::TaskSharedStateBase&,
                                             std::optional<std::chrono::steady_clock::time_point>);
 };
@@ -195,6 +199,8 @@ namespace detail {
 void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
 std::size_t global_injection_queue_size(const Scheduler& s);
 std::size_t external_pending_count(const Scheduler& s);
+std::size_t parked_workers_count(const Scheduler& s);
+std::uint64_t current_work_epoch(const Scheduler& s);
 }
 
 }  // namespace astra

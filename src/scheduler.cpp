@@ -94,6 +94,8 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     std::size_t external_pending_count{0};
     std::size_t active_task_count{0};
     std::atomic<std::size_t> active_workers{0};
+    std::atomic<std::size_t> parked_workers{0};
+    std::atomic<std::uint64_t> work_epoch{0};
     std::vector<std::thread> worker_threads;
 
     struct QueuedTask {
@@ -330,6 +332,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
     // 状态转换与模式保持（R-014 / R-015 / R-022）
     void request_shutdown_mode(ShutdownMode requested_mode) noexcept {
+        work_epoch.fetch_add(1, std::memory_order_release);
         uint16_t current = packed_status.load(std::memory_order_acquire);
         while (true) {
             auto st = unpack(current);
@@ -480,6 +483,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 global_injection_queue.push_back({std::move(task), is_external});
             }
         }
+        work_epoch.fetch_add(1, std::memory_order_release);
         work_cv.notify_one();
     }
 
@@ -725,6 +729,20 @@ std::size_t external_pending_count(const Scheduler& s) {
     return 0;
 }
 
+std::size_t parked_workers_count(const Scheduler& s) {
+    if (s.impl_) {
+        return s.impl_->parked_workers.load(std::memory_order_acquire);
+    }
+    return 0;
+}
+
+std::uint64_t current_work_epoch(const Scheduler& s) {
+    if (s.impl_) {
+        return s.impl_->work_epoch.load(std::memory_order_acquire);
+    }
+    return 0;
+}
+
 }  // namespace detail
 
 void Scheduler::Impl::worker_main(std::size_t worker_index) {
@@ -815,10 +833,23 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
             }
         }
 
-        // 4. 若仍未获取到任务，进入等待或退出判断
+        // 4. 若仍未获取到任务，进入 Park Handshake 流程 (R-065)
         if (!found_task) {
+            // (a) Active backoff: 少量自旋/yield 减少即时睡眠开销
+            for (int spin = 0; spin < 16; ++spin) {
+#if defined(__x86_64__) || defined(_M_X64)
+                __builtin_ia32_pause();
+#else
+                std::this_thread::yield();
+#endif
+            }
+
+            // (b) 登记休眠意图并记录当前 work epoch
+            parked_workers.fetch_add(1, std::memory_order_seq_cst);
+            const std::uint64_t observed_epoch = work_epoch.load(std::memory_order_acquire);
+
             std::unique_lock<std::mutex> lock(lifecycle_mutex);
-            work_cv.wait(lock, [this, &my_local_deque] {
+            work_cv.wait(lock, [this, &my_local_deque, observed_epoch] {
                 if (stop_requested) {
                     const auto st = unpack(packed_status.load(std::memory_order_acquire));
                     if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
@@ -831,6 +862,9 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                         if (d && !d->empty()) return true;
                     }
                 } else {
+                    if (work_epoch.load(std::memory_order_acquire) != observed_epoch) {
+                        return true;
+                    }
                     if (!global_injection_queue.empty() || !my_local_deque.empty()) {
                         return true;
                     }
@@ -840,6 +874,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                 }
                 return false;
             });
+            parked_workers.fetch_sub(1, std::memory_order_seq_cst);
 
             if (!global_injection_queue.empty()) {
                 task = std::move(global_injection_queue.front());

@@ -78,15 +78,16 @@ void test_R021_R022_worker_last_handle_destruction_handoff() {
 
     std::atomic<bool> task_completed{false};
     std::atomic<bool> destructor_returned_immediately{false};
+    std::atomic<bool> handoff_seen{false};
 
     astra::SchedulerOptions opt{};
     opt.worker_count = 2;
     auto s = std::make_unique<astra::Scheduler>(opt);
     const astra::RuntimeId id = s->runtime_id();
 
-    auto* slot = registry.find_slot(id);
-    TEST_ASSERT(slot != nullptr);
-    TEST_ASSERT(!slot->handoff_executed.load());
+    auto* init_slot = registry.find_slot(id);
+    TEST_ASSERT(init_slot != nullptr);
+    TEST_ASSERT(!init_slot->handoff_executed.load());
 
     auto holder = std::make_shared<astra::Scheduler>(std::move(*s));
     s.reset();
@@ -108,6 +109,11 @@ void test_R021_R022_worker_last_handle_destruction_handoff() {
             destructor_returned_immediately.store(true);
         }
 
+        auto* running_slot = registry.find_slot(id);
+        if (running_slot && running_slot->handoff_executed.load()) {
+            handoff_seen.store(true);
+        }
+
         // R-021: 任务在 handoff 发生后继续安全执行并返回
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         task_completed.store(true);
@@ -126,7 +132,7 @@ void test_R021_R022_worker_last_handle_destruction_handoff() {
     }
 
     TEST_ASSERT(destructor_returned_immediately.load());
-    TEST_ASSERT(slot->handoff_executed.load());
+    TEST_ASSERT(handoff_seen.load());
 
     // 等待非 Worker Reaper 线程完成 join 与最终回收
     const auto reaper_wait_start = std::chrono::steady_clock::now();

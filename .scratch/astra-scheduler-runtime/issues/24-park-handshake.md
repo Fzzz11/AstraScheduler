@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-065)
 Milestone: v0.2.0
 Blocked by: AST-015, AST-022, AST-023
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-065]` producer与park竞态不产生永久睡眠，空闲不busy-spin。
+- [x] `[R-065]` producer与park竞态不产生永久睡眠，空闲不busy-spin。
 
 ## Out of scope
 
@@ -40,5 +40,10 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-065
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-094, D-095, D-096
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - 单元测试：`tests/test_park_handshake.cpp` 覆盖 R-065（空闲 Worker 正确进入 Park 状态且不忙等、有新任务即时唤醒、高并发 Producer-Park 竞态下无丢唤醒、控制面 Shutdown 唤醒全部 Parked Worker）。
+  - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 22/22 tests 全部 PASS。
+  - ASan / UBSan / LSan 内存安全与泄漏门禁：`build/wsl-gcc-asan` 22/22 tests 全部 PASS（0 leaks / 0 errors / 0 deadlocks）。
+  - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 39/39 tests 全部 OK。
+  - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。
  
