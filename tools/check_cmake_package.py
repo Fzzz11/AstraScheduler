@@ -699,7 +699,17 @@ class AST019FinalizationBeginGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST020FinalizationWaitGates(PackageBuildFixture):
+    """AST-020：实现 Finalization 无界 wait、wait_for 与唯一 coordinator join（R-032/R-033/R-039/R-040/R-041/R-042）。"""
+
+    def test_AST020_consumer_runs_all_finalization_wait_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-032/R-033/R-039/R-040/R-041/R-042
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 

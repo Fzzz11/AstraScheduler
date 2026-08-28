@@ -2,9 +2,7 @@
 #include "reaper_registry.hpp"
 
 #include <chrono>
-#include <condition_variable>
 #include <memory>
-#include <mutex>
 
 namespace astra {
 
@@ -12,13 +10,11 @@ struct FinalizationControl::Impl {
     explicit Impl() = default;
 
     void wait() const {
-        // AST-018: 基础 capability surface；AST-020 扩展完整等待闭包
+        detail::ReaperRegistry::instance().wait_finalization();
     }
 
     FinalizationWaitResult wait_for(std::chrono::nanoseconds timeout_ns) const {
-        // AST-018: 基础 capability surface；AST-020 扩展限时等待
-        (void)timeout_ns;
-        return FinalizationWaitResult::Completed;
+        return detail::ReaperRegistry::instance().wait_finalization_for(timeout_ns);
     }
 
     void request_immediate() const noexcept {

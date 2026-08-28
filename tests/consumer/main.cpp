@@ -471,5 +471,18 @@ int main() {
         return 1;
     }
 
+    // 16. AST-020: Finalization Wait & wait_for (R-032 / R-033 / R-039 / R-040 / R-041 / R-042)
+    auto f_res_zero = f_ctrl.wait_for(std::chrono::milliseconds(0));
+    if (f_res_zero != astra::FinalizationWaitResult::Completed) {
+        std::printf("wait_for(0) after completion must return Completed\n");
+        return 1;
+    }
+    auto f_res_neg = f_ctrl.wait_for(std::chrono::milliseconds(-5));
+    if (f_res_neg != astra::FinalizationWaitResult::Completed) {
+        std::printf("wait_for(negative) after completion must return Completed\n");
+        return 1;
+    }
+    f_ctrl2.wait();
+
     return 0;
 }

@@ -2,6 +2,7 @@
 #define ASTRA_SRC_REAPER_REGISTRY_HPP
 
 #include <astra/export.hpp>
+#include <astra/finalization.hpp>
 #include <astra/id.hpp>
 
 #include <atomic>
@@ -65,7 +66,8 @@ public:
     bool register_runtime(
         RuntimeId id,
         std::function<void()> req_graceful = nullptr,
-        std::function<void()> req_immediate = nullptr);
+        std::function<void()> req_immediate = nullptr,
+        std::function<void()> cleanup_fn = nullptr);
 
     // 撤销注册并释放预留能力（用于 startup rollback 或正常非 Worker 析构）。
     void unregister_runtime(RuntimeId id) noexcept;
@@ -95,6 +97,12 @@ public:
     // 获取当前 Reaper coordinator 线程数（R-107：恰好为 1，或未启动时为 0）。
     [[nodiscard]] std::size_t coordinator_thread_count() const noexcept;
 
+    // 阻塞等待 Finalization 完成（R-032 / R-039 / R-042）。
+    void wait_finalization();
+
+    // 限时等待 Finalization 完成（R-033 / R-040 / R-041 / R-042）。
+    [[nodiscard]] FinalizationWaitResult wait_finalization_for(std::chrono::nanoseconds timeout_ns);
+
     // --- 测试与故障注入专用 Seam ---
     void reset_for_testing() noexcept;
     void inject_handoff_reservation_failure(bool fail) noexcept;
@@ -115,12 +123,15 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable coordinator_cv_;
+    std::condition_variable finalization_cv_;
     RegistrationState state_{RegistrationState::Open};
     std::vector<std::uint64_t> registered_ids_;
     std::vector<std::unique_ptr<HandoffCapabilitySlot>> slots_;
 
     std::unique_ptr<std::thread> coordinator_thread_;
     bool coordinator_stop_{false};
+    bool coordinator_exited_{false};
+    bool coordinator_join_in_progress_{false};
 
     bool inject_reservation_fail_{false};
     std::size_t inject_worker_fail_at_{0}; // 0 表示不注入

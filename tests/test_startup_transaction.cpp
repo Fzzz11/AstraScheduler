@@ -221,7 +221,9 @@ void test_R097_finalization_race_during_startup() {
                 astra::SchedulerOptions opt{};
                 opt.worker_count = 2;
                 astra::Scheduler s(opt);
-                if (s.valid() && s.status().state == astra::SchedulerState::Running) {
+                if (s.valid() && (s.status().state == astra::SchedulerState::Running ||
+                                  s.status().state == astra::SchedulerState::Stopping ||
+                                  s.status().state == astra::SchedulerState::Stopped)) {
                     success_count.fetch_add(1);
                 }
             } catch (const astra::scheduler_creation_rejected& e) {

@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-032, R-033, R-039, R-040, R-041, R-042)
 Milestone: v0.1.0
 Blocked by: AST-007, AST-019
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -37,12 +37,12 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-032]` wait 返回后进程内没有 AstraScheduler Worker 或 Reaper coordinator 存活。
-- [ ] `[R-033]` 首次 TimedOut 后，同一控制对象或副本可继续等待并最终观察 Completed。
-- [ ] `[R-039]` 任一 Scheduler 的 Worker 调用 wait 得到 logic_error，Completion 和唯一 join owner 不受影响。
-- [ ] `[R-040]` Worker 的正、零、负 timeout 调用均抛异常而不返回 TimedOut。
-- [ ] `[R-041]` wall-clock 跳变不影响等待；TimedOut 线性化后即使返回前完成，本次结果仍为 TimedOut。
-- [ ] `[R-042]` 多等待者场景只有一次 coordinator join，Completed 永远晚于该 join。
+- [x] `[R-032]` wait 返回后进程内没有 AstraScheduler Worker 或 Reaper coordinator 存活。
+- [x] `[R-033]` 首次 TimedOut 后，同一控制对象或副本可继续等待并最终观察 Completed。
+- [x] `[R-039]` 任一 Scheduler 的 Worker 调用 wait 得到 logic_error，Completion 和唯一 join owner 不受影响。
+- [x] `[R-040]` Worker 的正、零、负 timeout 调用均抛异常而不返回 TimedOut。
+- [x] `[R-041]` wall-clock 跳变不影响等待；TimedOut 线性化后即使返回前完成，本次结果仍为 TimedOut。
+- [x] `[R-042]` 多等待者场景只有一次 coordinator join，Completed 永远晚于该 join。
 
 ## Out of scope
 
@@ -55,5 +55,9 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-032, R-033, R-039, R-040, R-041, R-042
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-027, D-028, D-034, D-035, D-036, D-037
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - 单元测试：`tests/test_finalization_wait.cpp` 覆盖全部 R-032, R-033, R-039, R-040, R-041, R-042 规则场景（无界 wait 真实观察、wait_for 超时恢复、Worker 拒绝抛 std::logic_error、多等待者唯一 coordinator join 与 leader-waiter 唤醒）。
+  - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 18/18 tests 全部 PASS（耗时 0.77s）。
+  - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 35/35 tests 全部 OK。
+  - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。
 

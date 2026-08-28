@@ -124,6 +124,9 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                     }
                     this->slot_cv.notify_all();
                     this->work_cv.notify_all();
+                },
+                [this] {
+                    this->reaper_cleanup_and_join();
                 })) {
             if (registry.should_fail_reservation()) {
                 throw std::bad_alloc();
@@ -179,12 +182,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             startup_cv.notify_all();
             work_cv.notify_all();
 
-            for (auto& t : worker_threads) {
-                if (t.joinable()) {
-                    t.join();
-                }
-            }
-            worker_threads.clear();
+            reaper_cleanup_and_join();
             registry.unregister_runtime(runtime_id);
             throw;
         }
@@ -326,15 +324,34 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
     // 由 Reaper 线程（非目标 Worker 线程）执行最终 join 与清理
     void reaper_cleanup_and_join() noexcept {
-        for (auto& t : worker_threads) {
-            if (t.joinable()) {
-                t.join();
-            }
+        std::unique_lock<std::mutex> s_lock(shutdown_mutex);
+        if (get_status().state == SchedulerState::Stopped) {
+            return;
         }
-        worker_threads.clear();
-        const auto current_mode = get_status().shutdown_mode;
-        packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
-        slot_cv.notify_all();
+
+        if (!shutdown_in_progress) {
+            shutdown_in_progress = true;
+            s_lock.unlock();
+
+            for (auto& t : worker_threads) {
+                if (t.joinable()) {
+                    t.join();
+                }
+            }
+            worker_threads.clear();
+
+            const auto current_mode = get_status().shutdown_mode;
+            packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
+            slot_cv.notify_all();
+
+            s_lock.lock();
+            shutdown_in_progress = false;
+            shutdown_done_cv.notify_all();
+        } else {
+            shutdown_done_cv.wait(s_lock, [this] {
+                return get_status().state == SchedulerState::Stopped;
+            });
+        }
     }
 
     detail::AdmissionDecision acquire_admission_slot(bool block, bool is_internal) {
