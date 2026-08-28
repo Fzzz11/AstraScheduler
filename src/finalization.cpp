@@ -22,7 +22,7 @@ struct FinalizationControl::Impl {
     }
 
     void request_immediate() const noexcept {
-        // AST-018: 基础 capability surface；AST-021 扩展全域 Immediate 升级
+        detail::ReaperRegistry::instance().request_all_immediate();
     }
 };
 

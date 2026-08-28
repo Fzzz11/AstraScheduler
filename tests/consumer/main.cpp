@@ -457,5 +457,19 @@ int main() {
     }
     f_ctrl.wait();
 
+    // 15. AST-019: Finalization Begin & Startup Race (R-031 / R-037 / R-038 / R-104)
+    bool new_sched_rejected = false;
+    try {
+        astra::Scheduler s_rejected;
+    } catch (const astra::scheduler_creation_rejected& e) {
+        if (e.reason() == astra::SchedulerCreationError::FinalizationStarted) {
+            new_sched_rejected = true;
+        }
+    }
+    if (!new_sched_rejected) {
+        std::printf("Scheduler creation after begin_finalization must be rejected\n");
+        return 1;
+    }
+
     return 0;
 }

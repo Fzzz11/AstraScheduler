@@ -52,6 +52,8 @@ struct ASTRA_NO_EXPORT HandoffCapabilitySlot {
     std::atomic<bool> join_claimed{false};
     std::shared_ptr<void> retained_state{};
     std::function<void()> cleanup_fn{};
+    std::function<void()> request_graceful_fn{};
+    std::function<void()> request_immediate_fn{};
 };
 
 class ASTRA_NO_EXPORT ReaperRegistry {
@@ -60,7 +62,10 @@ public:
 
     // 尝试在 Worker 启动前注册 Runtime 并预留 Reaper handoff 能力（R-023, R-097）。
     // 同时确保单例 coordinator 线程已启动（D-021 / R-107）。
-    bool register_runtime(RuntimeId id);
+    bool register_runtime(
+        RuntimeId id,
+        std::function<void()> req_graceful = nullptr,
+        std::function<void()> req_immediate = nullptr);
 
     // 撤销注册并释放预留能力（用于 startup rollback 或正常非 Worker 析构）。
     void unregister_runtime(RuntimeId id) noexcept;
@@ -70,6 +75,9 @@ public:
 
     // 永久关闭注册并转入 Finalizing（D-023, D-156）。
     void close_registration() noexcept;
+
+    // 向全部已注册 Runtime 广播 Immediate 升级请求（R-038 / R-104）。
+    void request_all_immediate() noexcept;
 
     // 查找已预留的 handoff 能力插槽（R-023, R-024）。
     [[nodiscard]] HandoffCapabilitySlot* find_slot(RuntimeId id) noexcept;

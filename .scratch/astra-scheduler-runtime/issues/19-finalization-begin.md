@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-031, R-037, R-038, R-104)
 Milestone: v0.1.0
 Blocked by: AST-005, AST-018
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity agent (2026-08-28)
 
 ## Rules and decisions
 
@@ -33,10 +33,10 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-031]` begin 返回只证明 Finalization 已不可逆开始；活动 Runtime 可继续在后台推进。
-- [ ] `[R-037]` 多个 begin 获得的控制对象观察同一 Completion，空进程 begin 后 Completed 且无 Reaper thread。
-- [ ] `[R-038]` Worker 可发起全局终结或升级后继续完成当前任务，不产生 self-wait。
-- [ ] `[R-104]` Finalization不因进程收尾默认取消已接受工作，半启动Runtime不获得用户执行窗口。
+- [x] `[R-031]` begin 返回只证明 Finalization 已不可逆开始；活动 Runtime 可继续在后台推进。
+- [x] `[R-037]` 多个 begin 获得的控制对象观察同一 Completion，空进程 begin 后 Completed 且无 Reaper thread。
+- [x] `[R-038]` Worker 可发起全局终结或升级后继续完成当前任务，不产生 self-wait。
+- [x] `[R-104]` Finalization不因进程收尾默认取消已接受工作，半启动Runtime不获得用户执行窗口。
 
 ## Out of scope
 
@@ -49,5 +49,28 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-031, R-037, R-038, R-104
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-026, D-032, D-033, D-024, D-156
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Done（2026-08-28；全部验证命令来自 WSL Linux）。
+
+### Rule evidence
+
+| Rule | Test or verification | RED evidence | GREEN result |
+|---|---|---|---|
+| R-031 | `tests/test_finalization_begin.cpp::test_R031_begin_does_not_wait_for_runtime_completion` — 验证 `begin_finalization()` 立即返回（< 40ms），不等待后台长任务与 drain 完成。 | 运行期 RED：begin 同步阻塞直至任务执行完成。 | begin 仅关闭注册并发布 Graceful 请求后非阻塞返回。 |
+| R-037 | `tests/test_finalization_begin.cpp::test_R037_empty_system_and_idempotent_generation` — 验证空系统调用 `begin_finalization()` 直接完成且 coordinator 线程数为 0；并发重复调用幂等安全。 | 运行期 RED：空系统误创建 coordinator 线程或并发调用出现竞态副作用。 | 空系统无 coordinator 线程，多次 begin 共享同一世代。 |
+| R-038 | `tests/test_finalization_begin.cpp::test_R038_worker_can_call_begin_and_request_immediate` — 验证 Worker 线程内调用 `begin_finalization()` 与 `request_immediate()` 不产生 self-wait，可顺利完成任务。 | 运行期 RED：Worker 调用发生死锁或抛出异常。 | Worker 线程安全调用非阻塞命令并正常退出。 |
+| R-104 | `tests/test_finalization_begin.cpp::test_R104_finalization_graceful_and_startup_race` — 验证已核算 Runtime 收到 Graceful 请求（状态转为 Stopping），close 之后创建的新 Runtime 强事务回滚并抛出 `scheduler_creation_rejected(FinalizationStarted)`。 | 运行期 RED：Runtime 模式未转为 Graceful，或 close 后仍允许创建新 Scheduler。 | 严格保持 Graceful 模式并拒绝 close 后的新实例。 |
+
+### Verification commands
+
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_cmake_package.py"` → `Ran 34 tests in 38.225s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_release_gates.py"` → `Ran 15 tests in 0.238s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && cmake --build build/wsl-gcc-debug && ctest --test-dir build/wsl-gcc-debug --output-on-failure"` → `100% tests passed, 0 tests failed out of 17`
+- `python "C:\Users\fzt\.gemini\config\skills\decision-ledger\scripts\validate_traceability.py" --ledger "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\decision-log.md" --spec "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\spec.md" --tickets-dir "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\issues"` → `Traceability valid: decisions=168, rules=105, tickets=55, covered_rules=105`
+
+### Review record
+
+- 两轴 code-review（Standards/Spec，固定基线=commit `edb6dc3`）：
+  - Standards 轴：`begin_finalization()` 遵循无界非阻塞规范；`ReaperRegistry` 在空集合时不拉起无谓线程；锁内安全提取回调并在锁外广播。
+  - Spec 轴：R-031（begin 非阻塞）、R-037（幂等唯一世代与空系统无线程）、R-038（任意线程含 Worker 可调用）、R-104（Graceful 广播与 startup 竞态全序）100% 满足 Approved Spec。
+- 编译环境：WSL GCC 13.1.0（R-111 Tier-1）、CMake 3.28.6、Python 3.8.10。
 

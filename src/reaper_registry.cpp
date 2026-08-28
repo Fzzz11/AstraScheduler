@@ -20,7 +20,10 @@ void ReaperRegistry::ensure_coordinator_started_locked() {
     }
 }
 
-bool ReaperRegistry::register_runtime(RuntimeId id) {
+bool ReaperRegistry::register_runtime(
+    RuntimeId id,
+    std::function<void()> req_graceful,
+    std::function<void()> req_immediate) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_ != RegistrationState::Open) {
         return false;
@@ -31,6 +34,8 @@ bool ReaperRegistry::register_runtime(RuntimeId id) {
     ensure_coordinator_started_locked();
     auto slot = std::make_unique<HandoffCapabilitySlot>();
     slot->runtime_id = id;
+    slot->request_graceful_fn = std::move(req_graceful);
+    slot->request_immediate_fn = std::move(req_immediate);
     slots_.push_back(std::move(slot));
     registered_ids_.push_back(id.value());
     return true;
@@ -56,9 +61,39 @@ bool ReaperRegistry::is_registration_open() const noexcept {
 }
 
 void ReaperRegistry::close_registration() noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (state_ == RegistrationState::Open) {
-        state_ = RegistrationState::Finalizing;
+    std::vector<std::function<void()>> graceful_callbacks;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ == RegistrationState::Open) {
+            if (registered_ids_.empty() && !coordinator_thread_) {
+                state_ = RegistrationState::Finalized;
+            } else {
+                state_ = RegistrationState::Finalizing;
+            }
+            for (const auto& s : slots_) {
+                if (s->request_graceful_fn) {
+                    graceful_callbacks.push_back(s->request_graceful_fn);
+                }
+            }
+        }
+    }
+    for (const auto& cb : graceful_callbacks) {
+        cb();
+    }
+}
+
+void ReaperRegistry::request_all_immediate() noexcept {
+    std::vector<std::function<void()>> immediate_callbacks;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& s : slots_) {
+            if (s->request_immediate_fn) {
+                immediate_callbacks.push_back(s->request_immediate_fn);
+            }
+        }
+    }
+    for (const auto& cb : immediate_callbacks) {
+        cb();
     }
 }
 

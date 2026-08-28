@@ -105,7 +105,26 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         if (!registry.is_registration_open()) {
             throw scheduler_creation_rejected(SchedulerCreationError::FinalizationStarted);
         }
-        if (!registry.register_runtime(runtime_id)) {
+        if (!registry.register_runtime(
+                runtime_id,
+                [this] {
+                    this->request_shutdown_mode(ShutdownMode::Graceful);
+                    {
+                        std::lock_guard<std::mutex> lock(this->lifecycle_mutex);
+                        this->stop_requested = true;
+                    }
+                    this->work_cv.notify_all();
+                },
+                [this] {
+                    this->request_shutdown_mode(ShutdownMode::Immediate);
+                    {
+                        std::lock_guard<std::mutex> lock(this->lifecycle_mutex);
+                        this->stop_requested = true;
+                        this->cancel_all_unstarted_tasks_locked();
+                    }
+                    this->slot_cv.notify_all();
+                    this->work_cv.notify_all();
+                })) {
             if (registry.should_fail_reservation()) {
                 throw std::bad_alloc();
             }

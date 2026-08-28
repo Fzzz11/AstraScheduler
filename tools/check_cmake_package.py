@@ -690,6 +690,15 @@ class AST018FinalizationControlApiGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST019FinalizationBeginGates(PackageBuildFixture):
+    """AST-019：实现 begin_finalization、核算集合与 startup 竞态（R-031/R-037/R-038/R-104）。"""
+
+    def test_AST019_consumer_runs_all_finalization_begin_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-031/R-037/R-038/R-104
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
