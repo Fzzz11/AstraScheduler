@@ -8,6 +8,7 @@ Source tickets:
 - .scratch/astra-scheduler-runtime/issues/06-runtime-state-handoff.md（R-020, R-021, R-022 primary）
 - .scratch/astra-scheduler-runtime/issues/07-reaper-coordinator.md（R-025, R-026, R-028, R-107 primary）
 - .scratch/astra-scheduler-runtime/issues/08-global-worker-runtime.md（R-001, R-002 primary）
+- .scratch/astra-scheduler-runtime/issues/09-move-only-submit.md（R-048, R-058, R-102 primary）
 
 这些测试在 WSL/Linux 中构建 C++20 compiled library、安装为可消费的
 CMake package，并用仓库外的独立最小 consumer 工程执行 find_package/
@@ -294,6 +295,7 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "_ZNK5astra9Scheduler10runtime_idEv",
             "_ZNK5astra9Scheduler6statusEv",
             "_ZNK5astra9Scheduler12capabilitiesEv",
+            "_ZNK5astra9Scheduler17post_task_invokerESt10unique_ptrINS_6detail15TaskInvokerBaseESt14default_deleteIS3_EE",
         ]
         for sym in expected_symbols:
             self.assertIn(
@@ -576,6 +578,15 @@ class AST008GlobalWorkerRuntimeGates(PackageBuildFixture):
 
     def test_AST008_consumer_runs_all_global_worker_runtime_checks(self):
         # 独立 consumer（static+shared）运行期断言 R-001/R-002
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
+class AST009MoveOnlySubmitGates(PackageBuildFixture):
+    """AST-009：实现 move-only submit 与共享 TaskHandle 基础面（R-048/R-058/R-102）。"""
+
+    def test_AST009_consumer_runs_all_move_only_submit_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-048/R-058/R-102
         self._run_consumer(self.static_consumer)
         self._run_consumer(self.shared_consumer)
 

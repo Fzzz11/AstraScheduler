@@ -11,9 +11,12 @@
 #include <astra/id.hpp>
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
+#include <astra/task_handle.hpp>
 
 #include <functional>
 #include <memory>
+#include <stdexcept>
+#include <utility>
 
 namespace astra {
 
@@ -53,9 +56,39 @@ public:
     // 获取当前 Runtime 冻结的能力快照；空 Handle 抛 std::logic_error（D-162）。
     [[nodiscard]] SchedulerCapabilities capabilities() const;
 
+    // 提交任务（R-048 / R-058 / R-102 / D-041 / D-042 / D-059 / D-074 / D-075 / D-076 / D-165）。
+    template <typename F, typename... Args>
+    auto submit(F&& f, Args&&... args) -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
+        using Traits = detail::InvocationTraits<F, Args...>;
+
+        static_assert(Traits::is_valid,
+            "Callable must be invocable as f(args...) or f(std::stop_token, args...)");
+        static_assert(!Traits::returns_reference,
+            "AstraScheduler tasks cannot return raw references (R-058 / D-074). Wrap in std::reference_wrapper if needed.");
+        static_assert(Traits::is_move_constructible,
+            "Task result type must be move-constructible (R-058 / D-075).");
+
+        using ResultType = typename Traits::ResultType;
+
+        if (!valid()) {
+            throw std::logic_error("operating on empty/moved-from Scheduler");
+        }
+
+        const TaskId tid = detail::allocate_task_id(runtime_id());
+        auto state = std::make_shared<detail::TaskSharedState<ResultType>>(tid);
+
+        auto invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
+            state, std::forward<F>(f), std::forward<Args>(args)...);
+
+        post_task_invoker(std::move(invoker));
+        return TaskHandle<ResultType>(std::move(state));
+    }
+
 private:
     struct ASTRA_NO_EXPORT Impl;
     std::shared_ptr<Impl> impl_;
+
+    void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker) const;
 
     friend void detail::run_test_task_on_worker(Scheduler&, std::function<void()>);
     friend std::size_t detail::global_injection_queue_size(const Scheduler&);

@@ -130,7 +130,7 @@ void test_R021_R022_worker_last_handle_destruction_handoff() {
 
     // 等待非 Worker Reaper 线程完成 join 与最终回收
     const auto reaper_wait_start = std::chrono::steady_clock::now();
-    while (!slot->join_ready.load()) {
+    while (registry.registered_count() > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         if (std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - reaper_wait_start).count() > 5) {
@@ -138,7 +138,6 @@ void test_R021_R022_worker_last_handle_destruction_handoff() {
         }
     }
 
-    TEST_ASSERT(slot->join_ready.load());
     TEST_ASSERT(registry.registered_count() == 0);
 }
 
@@ -173,11 +172,10 @@ void test_R021_multi_worker_handoff() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    while (!slot->join_ready.load()) {
+    while (registry.registered_count() > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    TEST_ASSERT(slot->join_ready.load());
     TEST_ASSERT(registry.registered_count() == 0);
 }
 

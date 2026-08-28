@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-048, R-058, R-102)
 Milestone: v0.1.0
 Blocked by: AST-008
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity agent (2026-08-28)
 
 ## Rules and decisions
 
@@ -31,9 +31,9 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-048]` 复制Handle不复制执行，丢弃全部Handle后已接受Task仍能完成。
-- [ ] `[R-058]` 编译期矩阵稳定支持void/copyable/move-only并拒绝reference/immovable。
-- [ ] `[R-102]` move-only Callable/unique_ptr参数可提交，lvalue-only target无wrapper时编译期拒绝。
+- [x] `[R-048]` 复制Handle不复制执行，丢弃全部Handle后已接受Task仍能完成。
+- [x] `[R-058]` 编译期矩阵稳定支持void/copyable/move-only并拒绝reference/immovable。
+- [x] `[R-102]` move-only Callable/unique_ptr参数可提交，lvalue-only target无wrapper时编译期拒绝。
 
 ## Out of scope
 
@@ -46,5 +46,27 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-048, R-058, R-102
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-041, D-042, D-043, D-067, D-153, D-074, D-075, D-076, D-077, D-059, D-165
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Done（2026-08-28；全部验证命令来自 WSL Linux）。
+
+### Rule evidence
+
+| Rule | Test or verification | RED evidence | GREEN result |
+|---|---|---|---|
+| R-048 | `tests/test_move_only_submit.cpp::test_R048_shared_task_handle_and_lifetime` — 证明 `TaskHandle` 支持复制/移动、所有副本共享同一 `TaskId`、多次 `.get()` 不会重复执行任务，且在外部 Handle 全部销毁后已接受任务仍能正常执行完毕。 | 编译期 RED：未提供 `TaskHandle` 模板与 `submit` 接口。 | `test_R048_*` 测试全过，Handle 共享与生命周期完全合规。 |
+| R-058 | `tests/test_move_only_submit.cpp::test_R058_result_types_and_exceptions`、`tools/check_cmake_package.py::AST009MoveOnlySubmitGates` — 证明支持 `TaskHandle<void>`、`TaskHandle<copyable>`、`TaskHandle<move-only>`，支持异常传播；编译期静态断言拒绝裸引用（`T&`、`const T&`、`T&&`），并通过 `get() const && = delete` 禁止临时/右值 Handle 调用 `.get()` 防止引用悬垂。 | 编译期 RED：缺乏结果类型推导与左值限定结果接口。 | 支持 void/copyable/move-only，拒绝引用与右值 get()，门禁全部通过。 |
+| R-102 | `tests/test_move_only_submit.cpp::test_R102_move_only_callable_and_arguments` — 证明支持仅有 `operator()() &&` 的 move-only Callable、支持 `std::unique_ptr` move-only 参数、支持 `std::ref` 显式引用传递，且在普通调用不可行时自动注入 `std::stop_token` fallback（`D-059`）。 | 编译期 RED：std::function 无法承载 move-only 工作。 | 成功提交并执行 move-only functor、unique_ptr 参数、std::ref 与 stop_token。 |
+
+### Verification commands
+
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_cmake_package.py"` → `Ran 24 tests in 18.180s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_release_gates.py"` → `Ran 15 tests in 0.191s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && cmake --build build/wsl-gcc-debug && ctest --test-dir build/wsl-gcc-debug --output-on-failure"` → `100% tests passed, 0 tests failed out of 7`
+- `python "C:\Users\fzt\.gemini\config\skills\decision-ledger\scripts\validate_traceability.py" --ledger "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\decision-log.md" --spec "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\spec.md" --tickets-dir "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\issues"` → `Traceability valid: decisions=168, rules=105, tickets=55, covered_rules=105`
+
+### Review record
+
+- 两轴 code-review（Standards/Spec，固定基线=commit `5a1e8e888062dfabe9f527da031e6df6a1c4562f`）：
+  - Standards 轴：`TaskHandle<T>` 与 `TaskHandle<void>` 采用引用计数共享状态 `TaskSharedState` 实现共享生命周期；`submit` 采用模板化 `TaskInvokerModel` 擦除类型并支持完美转发与 move-only callable/args，无 `std::function` 复制约束缺陷；`get() const &` 左值限定有效防止临时对象悬垂；符号导出严格遵循 Linux GCC visibility 约束。
+  - Spec 轴：R-048（共享 Handle 语义与无隐式取消）、R-058（void/对象/move-only 结果、拒绝裸引用/immovable、lvalue-only get）、R-102（一次性 rvalue 调用 move-only 工作、std::ref 与 stop_token 注入）100% 满足 Approved Spec 及 D-041/D-059/D-074/D-075/D-076/D-165 决策。
+- 编译环境：WSL GCC 13.1.0（R-111 Tier-1）、CMake 3.28.6、Python 3.8.10。
 

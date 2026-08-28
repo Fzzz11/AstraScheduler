@@ -86,7 +86,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     std::size_t workers_ready{0};
     std::atomic<std::size_t> active_workers{0};
     std::vector<std::thread> worker_threads;
-    std::deque<std::function<void()>> global_injection_queue;
+    std::deque<std::unique_ptr<detail::TaskInvokerBase>> global_injection_queue;
 
     Impl(RuntimeId id, SchedulerOptions opts, SchedulerCapabilities caps)
         : runtime_id(id),
@@ -258,7 +258,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
         // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested）
         while (true) {
-            std::function<void()> task;
+            std::unique_ptr<detail::TaskInvokerBase> task;
             {
                 std::unique_lock<std::mutex> lock(lifecycle_mutex);
                 work_cv.wait(lock, [this] {
@@ -272,7 +272,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 }
             }
             if (task) {
-                task();
+                task->execute();
             }
         }
 
@@ -282,18 +282,12 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
     }
 
-    void post_task_internal(std::function<void()> task) {
+    void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task) {
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex);
             global_injection_queue.push_back(std::move(task));
         }
         work_cv.notify_one();
-    }
-
-    static void post_test_task(Scheduler& s, std::function<void()> task) {
-        if (s.impl_) {
-            s.impl_->post_task_internal(std::move(task));
-        }
     }
 
     static constexpr std::uint16_t pack(SchedulerState state, ShutdownMode mode) noexcept {
@@ -319,10 +313,32 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 };
 
+void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker) const {
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    impl_->post_task_internal(std::move(invoker));
+}
+
 namespace detail {
+
+namespace {
+class FunctionTaskInvoker : public TaskInvokerBase {
+public:
+    explicit FunctionTaskInvoker(std::function<void()> fn) : fn_(std::move(fn)) {}
+    void execute() override {
+        if (fn_) {
+            fn_();
+        }
+    }
+private:
+    std::function<void()> fn_;
+};
+}  // namespace
+
 void run_test_task_on_worker(Scheduler& s, std::function<void()> task) {
     if (s.impl_) {
-        s.impl_->post_task_internal(std::move(task));
+        s.impl_->post_task_internal(std::make_unique<FunctionTaskInvoker>(std::move(task)));
     }
 }
 
