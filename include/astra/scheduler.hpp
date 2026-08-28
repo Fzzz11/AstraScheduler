@@ -12,9 +12,16 @@
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
 
+#include <functional>
 #include <memory>
 
 namespace astra {
+
+class Scheduler;
+
+namespace detail {
+void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
+}
 
 // 调度器共享 Handle（D-155）。
 class ASTRA_EXPORT Scheduler {
@@ -48,7 +55,13 @@ public:
 private:
     struct ASTRA_NO_EXPORT Impl;
     std::shared_ptr<Impl> impl_;
+
+    friend void detail::run_test_task_on_worker(Scheduler&, std::function<void()>);
 };
+
+namespace detail {
+void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
+}
 
 }  // namespace astra
 

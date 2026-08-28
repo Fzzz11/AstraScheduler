@@ -6,7 +6,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 // ============================================================================
@@ -71,6 +74,8 @@ struct ASTRA_NO_EXPORT HandoffCapabilitySlot {
     RuntimeId runtime_id{};
     std::atomic<bool> handoff_executed{false};
     std::atomic<bool> join_ready{false};
+    std::shared_ptr<void> retained_state{};
+    std::unique_ptr<std::thread> reaper_thread{};
 };
 
 class ASTRA_NO_EXPORT ReaperRegistry {
@@ -90,6 +95,15 @@ public:
     // 永久关闭注册并转入 Finalizing（D-023, D-156）。
     void close_registration() noexcept;
 
+    // 查找已预留的 handoff 能力插槽（R-023, R-024）。
+    [[nodiscard]] HandoffCapabilitySlot* find_slot(RuntimeId id) noexcept;
+
+    // 执行 Worker 端的孤儿所有权移交（R-021, R-022, R-024）。
+    void execute_worker_handoff(
+        RuntimeId id,
+        std::shared_ptr<void> state,
+        std::function<void()> cleanup_fn) noexcept;
+
     // --- 测试与故障注入专用 Seam ---
     void reset_for_testing() noexcept;
     void inject_handoff_reservation_failure(bool fail) noexcept;
@@ -100,13 +114,14 @@ public:
 
 private:
     ReaperRegistry() = default;
-    ~ReaperRegistry() = default;
+    ~ReaperRegistry();
     ReaperRegistry(const ReaperRegistry&) = delete;
     ReaperRegistry& operator=(const ReaperRegistry&) = delete;
 
     mutable std::mutex mutex_;
     RegistrationState state_{RegistrationState::Open};
     std::vector<std::uint64_t> registered_ids_;
+    std::vector<std::unique_ptr<HandoffCapabilitySlot>> slots_;
 
     bool inject_reservation_fail_{false};
     std::size_t inject_worker_fail_at_{0}; // 0 表示不注入

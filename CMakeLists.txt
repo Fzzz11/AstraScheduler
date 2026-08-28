@@ -38,6 +38,7 @@ find_package(Threads REQUIRED)
 add_library(AstraScheduler
   src/version.cpp
   src/scheduler.cpp
+  src/reaper_registry.cpp
 )
 add_library(AstraScheduler::AstraScheduler ALIAS AstraScheduler)
 

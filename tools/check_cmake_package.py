@@ -5,6 +5,7 @@ Source tickets:
 - .scratch/astra-scheduler-runtime/issues/03-version-contract.md（R-093 primary）
 - .scratch/astra-scheduler-runtime/issues/04-scheduler-public-contract.md（R-098, R-099, R-100, R-101 primary）
 - .scratch/astra-scheduler-runtime/issues/05-startup-transaction.md（R-023, R-024, R-097 primary）
+- .scratch/astra-scheduler-runtime/issues/06-runtime-state-handoff.md（R-020, R-021, R-022 primary）
 
 这些测试在 WSL/Linux 中构建 C++20 compiled library、安装为可消费的
 CMake package，并用仓库外的独立最小 consumer 工程执行 find_package/
@@ -546,6 +547,15 @@ class AST005StartupTransactionGates(PackageBuildFixture):
 
     def test_AST005_consumer_runs_all_startup_transaction_checks(self):
         # 独立 consumer（static+shared）运行期断言 R-023/R-024/R-097 与 error 异常契约
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
+class AST006RuntimeStateHandoffGates(PackageBuildFixture):
+    """AST-006：解耦 Runtime State 并实现最后 Worker Handle handoff（R-020/R-021/R-022）。"""
+
+    def test_AST006_consumer_runs_all_runtime_state_handoff_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-020/R-021/R-022
         self._run_consumer(self.static_consumer)
         self._run_consumer(self.shared_consumer)
 

@@ -1,8 +1,10 @@
 #include <astra/scheduler.hpp>
 #include "reaper_registry.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -19,6 +21,8 @@ std::size_t recommended_worker_count() noexcept {
 }
 
 namespace {
+
+thread_local RuntimeId t_current_worker_runtime_id{0};
 
 void validate_options(const SchedulerOptions& options) {
     if (options.worker_count == 0) {
@@ -63,7 +67,7 @@ RuntimeId allocate_runtime_id() {
 
 }  // namespace
 
-struct ASTRA_NO_EXPORT Scheduler::Impl {
+struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Scheduler::Impl> {
     RuntimeId runtime_id;
     SchedulerOptions options;
     SchedulerCapabilities capabilities;
@@ -77,8 +81,10 @@ struct ASTRA_NO_EXPORT Scheduler::Impl {
     bool startup_done{false};
     bool startup_failed{false};
     bool stop_requested{false};
+    bool handoff_dispatched{false};
     std::size_t workers_ready{0};
     std::vector<std::thread> worker_threads;
+    std::vector<std::function<void()>> worker_tasks;
 
     Impl(RuntimeId id, SchedulerOptions opts, SchedulerCapabilities caps)
         : runtime_id(id),
@@ -157,21 +163,79 @@ struct ASTRA_NO_EXPORT Scheduler::Impl {
     }
 
     ~Impl() {
-        // 正常析构：请求停止并 join 全部 Worker，注销 Reaper 注册
+        // 非 Worker 正常析构（若尚未经过 Worker handoff 移交）
+        if (!handoff_dispatched) {
+            request_shutdown_mode(ShutdownMode::Graceful);
+            {
+                std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                stop_requested = true;
+            }
+            work_cv.notify_all();
+            for (auto& t : worker_threads) {
+                if (t.joinable()) {
+                    t.join();
+                }
+            }
+            worker_threads.clear();
+            const auto current_mode = get_status().shutdown_mode;
+            packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
+            detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
+        }
+    }
+
+    // 状态转换与模式保持（R-022）
+    void request_shutdown_mode(ShutdownMode requested_mode) noexcept {
+        uint16_t current = packed_status.load(std::memory_order_acquire);
+        while (true) {
+            auto st = unpack(current);
+            if (st.state == SchedulerState::Running) {
+                uint16_t next = pack(SchedulerState::Stopping, requested_mode);
+                if (packed_status.compare_exchange_weak(current, next, std::memory_order_acq_rel)) {
+                    break;
+                }
+            } else {
+                // 已处于 Stopping 或 Stopped，保持现有模式（R-022）
+                break;
+            }
+        }
+    }
+
+    // R-021, R-022: Worker 释放最后 Handle 时触发异步 orphan handoff
+    void execute_worker_orphan_handoff(std::shared_ptr<Impl> self) noexcept {
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex);
+            handoff_dispatched = true;
             stop_requested = true;
         }
+        // R-022: 请求 Graceful Shutdown，保留当前模式
+        request_shutdown_mode(ShutdownMode::Graceful);
         work_cv.notify_all();
+
+        // 移交强引用所有权给 Reaper
+        detail::ReaperRegistry::instance().execute_worker_handoff(
+            runtime_id,
+            std::static_pointer_cast<void>(self),
+            [self]() {
+                self->reaper_cleanup_and_join();
+            }
+        );
+    }
+
+    // 由 Reaper 线程（非目标 Worker 线程）执行最终 join 与清理
+    void reaper_cleanup_and_join() noexcept {
         for (auto& t : worker_threads) {
             if (t.joinable()) {
                 t.join();
             }
         }
-        detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
+        worker_threads.clear();
+        const auto current_mode = get_status().shutdown_mode;
+        packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
     }
 
     void worker_main(std::size_t /*worker_index*/) {
+        t_current_worker_runtime_id = runtime_id;
+
         // 等待 startup 栅栏完成或中止
         {
             std::unique_lock<std::mutex> lock(lifecycle_mutex);
@@ -181,16 +245,45 @@ struct ASTRA_NO_EXPORT Scheduler::Impl {
                 return startup_done || startup_failed || stop_requested;
             });
             if (startup_failed || stop_requested) {
+                t_current_worker_runtime_id = RuntimeId{0};
                 return;
             }
         }
 
-        // 运行期工作循环（等待停止信号）
+        // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested）
+        while (true) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(lifecycle_mutex);
+                work_cv.wait(lock, [this] {
+                    return stop_requested || !worker_tasks.empty();
+                });
+                if (!worker_tasks.empty()) {
+                    task = std::move(worker_tasks.back());
+                    worker_tasks.pop_back();
+                } else if (stop_requested) {
+                    break;
+                }
+            }
+            if (task) {
+                task();
+            }
+        }
+
+        t_current_worker_runtime_id = RuntimeId{0};
+    }
+
+    void post_task_internal(std::function<void()> task) {
         {
-            std::unique_lock<std::mutex> lock(lifecycle_mutex);
-            work_cv.wait(lock, [this] {
-                return stop_requested;
-            });
+            std::lock_guard<std::mutex> lock(lifecycle_mutex);
+            worker_tasks.push_back(std::move(task));
+        }
+        work_cv.notify_one();
+    }
+
+    static void post_test_task(Scheduler& s, std::function<void()> task) {
+        if (s.impl_) {
+            s.impl_->post_task_internal(std::move(task));
         }
     }
 
@@ -217,6 +310,14 @@ struct ASTRA_NO_EXPORT Scheduler::Impl {
     }
 };
 
+namespace detail {
+void run_test_task_on_worker(Scheduler& s, std::function<void()> task) {
+    if (s.impl_) {
+        s.impl_->post_task_internal(std::move(task));
+    }
+}
+}  // namespace detail
+
 Scheduler::Scheduler(SchedulerOptions options) {
     validate_options(options);
     const RuntimeId id = allocate_runtime_id();
@@ -224,7 +325,16 @@ Scheduler::Scheduler(SchedulerOptions options) {
     impl_ = std::make_shared<Impl>(id, std::move(options), caps);
 }
 
-Scheduler::~Scheduler() = default;
+Scheduler::~Scheduler() {
+    if (impl_) {
+        // R-021: 检查是否在属于该 Runtime 的 Worker 线程上销毁最后一个 Handle
+        if (impl_.use_count() == 1 && t_current_worker_runtime_id == impl_->runtime_id) {
+            impl_->execute_worker_orphan_handoff(impl_);
+            impl_.reset();
+            return;
+        }
+    }
+}
 
 Scheduler::Scheduler(const Scheduler&) = default;
 Scheduler& Scheduler::operator=(const Scheduler&) = default;
