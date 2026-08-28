@@ -52,7 +52,8 @@ public:
     [[nodiscard]] virtual TaskId id() const noexcept = 0;
     [[nodiscard]] virtual TaskState state() const noexcept = 0;
     [[nodiscard]] virtual bool is_completed() const noexcept = 0;
-    virtual void request_stop() noexcept = 0;
+    virtual void request_cancel() noexcept = 0;
+    virtual bool try_start() noexcept = 0;
     [[nodiscard]] virtual std::stop_token stop_token() noexcept = 0;
     [[nodiscard]] virtual std::condition_variable& cv() const noexcept = 0;
     [[nodiscard]] virtual std::mutex& mutex() const noexcept = 0;
@@ -90,8 +91,22 @@ public:
         return stop_source_.get_token();
     }
 
-    void request_stop() noexcept override {
+    void request_cancel() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         stop_source_.request_stop();
+        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
+            state_.store(TaskState::Cancelled, std::memory_order_release);
+            cv_.notify_all();
+        }
+    }
+
+    bool try_start() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
+            state_.store(TaskState::Running, std::memory_order_release);
+            return true;
+        }
+        return false;
     }
 
     [[nodiscard]] TaskState state() const noexcept override {
@@ -104,13 +119,6 @@ public:
 
     [[nodiscard]] std::mutex& mutex() const noexcept override {
         return mutex_;
-    }
-
-    void mark_running() noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
-            state_.store(TaskState::Running, std::memory_order_release);
-        }
     }
 
     void set_value(T val) {
@@ -199,8 +207,22 @@ public:
         return stop_source_.get_token();
     }
 
-    void request_stop() noexcept override {
+    void request_cancel() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         stop_source_.request_stop();
+        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
+            state_.store(TaskState::Cancelled, std::memory_order_release);
+            cv_.notify_all();
+        }
+    }
+
+    bool try_start() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
+            state_.store(TaskState::Running, std::memory_order_release);
+            return true;
+        }
+        return false;
     }
 
     [[nodiscard]] TaskState state() const noexcept override {
@@ -213,13 +235,6 @@ public:
 
     [[nodiscard]] std::mutex& mutex() const noexcept override {
         return mutex_;
-    }
-
-    void mark_running() noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
-            state_.store(TaskState::Running, std::memory_order_release);
-        }
     }
 
     void set_value() {
@@ -349,6 +364,12 @@ public:
           args_(std::forward<UArgs>(args)...) {}
 
     void execute() override {
+        // R-053 / D-052: 首次 start 竞争
+        if (!state_->try_start()) {
+            // Cancel 胜出：用户 Callable 一次也不执行
+            return;
+        }
+
         constexpr std::size_t tuple_size = std::tuple_size_v<decltype(args_)>;
         invoke_impl(std::make_index_sequence<tuple_size>{});
     }
@@ -357,7 +378,6 @@ private:
     template <std::size_t... Is>
     void invoke_impl(std::index_sequence<Is...>) {
         TaskExecutionContextGuard context_guard(state_->id());
-        state_->mark_running();
         try {
             if constexpr (Ordinary) {
                 if constexpr (std::is_void_v<ResultType>) {
@@ -397,7 +417,7 @@ std::unique_ptr<TaskInvokerBase> make_task_invoker(
 
 }  // namespace detail
 
-// TaskHandle<T> — 共享任务结果句柄（R-048 / R-049 / R-050 / R-051 / R-052 / R-055 / R-056 / R-057 / R-058 / D-041 / D-042 / D-076）。
+// TaskHandle<T> — 共享任务结果句柄（R-048 / R-049 / R-050 / R-051 / R-052 / R-053 / R-054 / R-055 / R-056 / R-057 / R-058 / D-041 / D-042 / D-076）。
 template <typename T>
 class TaskHandle {
 public:
@@ -465,7 +485,7 @@ public:
     // R-053 / R-057: 请求取消（空 Handle 为 no-op）
     void request_cancel() const noexcept {
         if (state_) {
-            state_->request_stop();
+            state_->request_cancel();
         }
     }
 
@@ -473,7 +493,7 @@ private:
     std::shared_ptr<detail::TaskSharedState<T>> state_;
 };
 
-// TaskHandle<void> 特化（R-048 / R-049 / R-050 / R-051 / R-052 / R-055 / R-056 / R-057 / R-058 / D-075 / D-076）。
+// TaskHandle<void> 特化（R-048 / R-049 / R-050 / R-051 / R-052 / R-053 / R-054 / R-055 / R-056 / R-057 / R-058 / D-075 / D-076）。
 template <>
 class TaskHandle<void> {
 public:
@@ -537,7 +557,7 @@ public:
     // R-053 / R-057: 请求取消（空 Handle 为 no-op）
     void request_cancel() const noexcept {
         if (state_) {
-            state_->request_stop();
+            state_->request_cancel();
         }
     }
 

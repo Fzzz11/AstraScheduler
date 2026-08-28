@@ -626,6 +626,15 @@ class AST012HelpingWaitGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST013TaskCancellationGates(PackageBuildFixture):
+    """AST-013：实现显式 Task cancellation 的首次 start 分类（R-053/R-054）。"""
+
+    def test_AST013_consumer_runs_all_task_cancellation_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-053/R-054
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

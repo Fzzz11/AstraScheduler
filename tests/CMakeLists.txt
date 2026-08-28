@@ -129,4 +129,20 @@ target_include_directories(astra_helping_wait_test PRIVATE
 target_compile_features(astra_helping_wait_test PRIVATE cxx_std_20)
 add_test(NAME astra_helping_wait_test COMMAND astra_helping_wait_test)
 
+add_executable(astra_task_cancellation_test
+  test_task_cancellation.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_task_cancellation_test PRIVATE Threads::Threads)
+target_include_directories(astra_task_cancellation_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_task_cancellation_test PRIVATE cxx_std_20)
+add_test(NAME astra_task_cancellation_test COMMAND astra_task_cancellation_test)
+
+
 

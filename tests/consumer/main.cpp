@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <future>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -294,6 +295,38 @@ int main() {
     std::string depth_msg = depth_ex.what();
     if (depth_msg.empty()) {
         std::printf("helping_depth_exceeded::what() is empty\n");
+        return 1;
+    }
+
+    // 9. AST-013: Task cancellation pre-start
+    std::promise<void> hold_p;
+    std::shared_future<void> hold_f = hold_p.get_future().share();
+    std::atomic<bool> hold_started{false};
+
+    auto h_hold = s_help.submit([hold_f, &hold_started]() {
+        hold_started.store(true);
+        hold_f.wait();
+    });
+    while (!hold_started.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    std::atomic<int> pre_exec{0};
+    auto h_pre = s_help.submit([&pre_exec]() {
+        pre_exec.fetch_add(1);
+        return 777;
+    });
+    h_pre.request_cancel();
+    if (h_pre.state() != astra::TaskState::Cancelled) {
+        std::printf("h_pre.state() must be Cancelled\n");
+        return 1;
+    }
+
+    hold_p.set_value();
+    h_hold.wait();
+    h_pre.wait();
+    if (pre_exec.load() != 0) {
+        std::printf("pre-start cancelled task must not execute\n");
         return 1;
     }
 
