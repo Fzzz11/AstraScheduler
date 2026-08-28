@@ -1,10 +1,15 @@
 #include <astra/scheduler.hpp>
+#include "reaper_registry.hpp"
 
 #include <atomic>
+#include <condition_variable>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace astra {
 
@@ -65,11 +70,129 @@ struct ASTRA_NO_EXPORT Scheduler::Impl {
     // 单字原子状态，保证 status() 线性化读取成对快照，不发生跨维度撕裂（D-160）。
     std::atomic<std::uint16_t> packed_status;
 
+    // Worker 同步与生命周期控制
+    std::mutex lifecycle_mutex;
+    std::condition_variable startup_cv;
+    std::condition_variable work_cv;
+    bool startup_done{false};
+    bool startup_failed{false};
+    bool stop_requested{false};
+    std::size_t workers_ready{0};
+    std::vector<std::thread> worker_threads;
+
     Impl(RuntimeId id, SchedulerOptions opts, SchedulerCapabilities caps)
         : runtime_id(id),
           options(std::move(opts)),
           capabilities(caps),
-          packed_status(pack(SchedulerState::Running, ShutdownMode::None)) {}
+          packed_status(pack(SchedulerState::Running, ShutdownMode::None)) {
+        
+        // 1. Reaper 注册与能力预留（R-023, R-024, R-097）
+        auto& registry = detail::ReaperRegistry::instance();
+        if (!registry.is_registration_open()) {
+            throw scheduler_creation_rejected(SchedulerCreationError::FinalizationStarted);
+        }
+        if (!registry.register_runtime(runtime_id)) {
+            if (registry.should_fail_reservation()) {
+                throw std::bad_alloc();
+            }
+            throw scheduler_creation_rejected(SchedulerCreationError::FinalizationStarted);
+        }
+
+        // 2. 创建 Worker 并通过启动栅栏进行同步强事务管理（R-097, D-155）
+        const std::size_t count = options.worker_count;
+        worker_threads.reserve(count);
+
+        try {
+            for (std::size_t i = 0; i < count; ++i) {
+                // 检查故障注入（模拟第 k 个 worker 线程创建失败）
+                if (registry.worker_creation_failure_index() == i + 1) {
+                    throw std::system_error(
+                        std::make_error_code(std::errc::resource_unavailable_try_again),
+                        "Injected worker thread creation failure");
+                }
+                worker_threads.emplace_back(&Impl::worker_thread_entry, this, i);
+            }
+
+            // 等待全部 Worker 就绪到达 startup 栅栏
+            {
+                std::unique_lock<std::mutex> lock(lifecycle_mutex);
+                startup_cv.wait(lock, [this, count] {
+                    return workers_ready == count;
+                });
+
+                // 3. 在发布 Running 前再次检查 Finalization 状态（D-156 竞态全序）
+                if (!registry.is_registration_open()) {
+                    // Finalization close 赢得竞态：回滚已创建 Worker 并拒绝创建
+                    startup_failed = true;
+                    stop_requested = true;
+                    startup_cv.notify_all();
+                    work_cv.notify_all();
+                    throw scheduler_creation_rejected(SchedulerCreationError::FinalizationStarted);
+                }
+
+                // 4. 一次性发布 Running（R-097）并释放 Worker 启动栅栏
+                packed_status.store(pack(SchedulerState::Running, ShutdownMode::None), std::memory_order_release);
+                startup_done = true;
+                startup_cv.notify_all();
+            }
+        } catch (...) {
+            // 回滚事务：停止并 join 全部已创建的 Worker，撤销 Reaper 注册，保证 0 活跃 Worker
+            {
+                std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                startup_failed = true;
+                stop_requested = true;
+            }
+            startup_cv.notify_all();
+            work_cv.notify_all();
+
+            for (auto& t : worker_threads) {
+                if (t.joinable()) {
+                    t.join();
+                }
+            }
+            worker_threads.clear();
+            registry.unregister_runtime(runtime_id);
+            throw;
+        }
+    }
+
+    ~Impl() {
+        // 正常析构：请求停止并 join 全部 Worker，注销 Reaper 注册
+        {
+            std::lock_guard<std::mutex> lock(lifecycle_mutex);
+            stop_requested = true;
+        }
+        work_cv.notify_all();
+        for (auto& t : worker_threads) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+        detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
+    }
+
+    void worker_main(std::size_t /*worker_index*/) {
+        // 等待 startup 栅栏完成或中止
+        {
+            std::unique_lock<std::mutex> lock(lifecycle_mutex);
+            ++workers_ready;
+            startup_cv.notify_all();
+            startup_cv.wait(lock, [this] {
+                return startup_done || startup_failed || stop_requested;
+            });
+            if (startup_failed || stop_requested) {
+                return;
+            }
+        }
+
+        // 运行期工作循环（等待停止信号）
+        {
+            std::unique_lock<std::mutex> lock(lifecycle_mutex);
+            work_cv.wait(lock, [this] {
+                return stop_requested;
+            });
+        }
+    }
 
     static constexpr std::uint16_t pack(SchedulerState state, ShutdownMode mode) noexcept {
         return static_cast<std::uint16_t>((static_cast<std::uint8_t>(state) << 8) |
@@ -85,6 +208,12 @@ struct ASTRA_NO_EXPORT Scheduler::Impl {
     SchedulerStatus get_status() const noexcept {
         const std::uint16_t val = packed_status.load(std::memory_order_acquire);
         return unpack(val);
+    }
+
+    static void worker_thread_entry(void* arg, std::size_t index) noexcept {
+        if (arg != nullptr) {
+            static_cast<Impl*>(arg)->worker_main(index);
+        }
     }
 };
 

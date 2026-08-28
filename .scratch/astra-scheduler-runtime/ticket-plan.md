@@ -655,7 +655,7 @@ AST-055 <- AST-051, AST-053, AST-054
 | AST-002 | Phase 0 | [02-cmake-package.md](issues/02-cmake-package.md) | done | AST-001 |
 | AST-003 | Phase 0 | [03-version-contract.md](issues/03-version-contract.md) | done | AST-002 |
 | AST-004 | v0.1.0 | [04-scheduler-public-contract.md](issues/04-scheduler-public-contract.md) | done | AST-002, AST-003 |
-| AST-005 | v0.1.0 | [05-startup-transaction.md](issues/05-startup-transaction.md) | ready-for-agent | AST-004 |
+| AST-005 | v0.1.0 | [05-startup-transaction.md](issues/05-startup-transaction.md) | done | AST-004 |
 | AST-006 | v0.1.0 | [06-runtime-state-handoff.md](issues/06-runtime-state-handoff.md) | ready-for-agent | AST-005 |
 | AST-007 | v0.1.0 | [07-reaper-coordinator.md](issues/07-reaper-coordinator.md) | ready-for-agent | AST-006 |
 | AST-008 | v0.1.0 | [08-global-worker-runtime.md](issues/08-global-worker-runtime.md) | ready-for-agent | AST-004, AST-005 |
@@ -715,4 +715,4 @@ Approved at: 2026-08-27
 Revision approved by: project owner（user）
 Revision approved at: 2026-08-27（Linux-only/WSL Spec）
 
-本计划及Linux-only/WSL修订均已获明确批准。具体 Ticket 按依赖顺序发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；发布不等于实现。Ticket最初均以`ready-for-agent`、`Claimed by: None`发布；AST-001随后为落实R-112门禁重新打开并完成，当前执行前沿为AST-002。
+本计划及Linux-only/WSL修订均已获明确批准。具体 Ticket 按依赖顺序发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；发布不等于实现。AST-001、AST-002、AST-003、AST-004、AST-005 已完成，当前就绪执行前沿为 AST-006（及 AST-008、AST-018）。

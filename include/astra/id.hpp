@@ -55,7 +55,7 @@ private:
     std::uint64_t sequence_{0};
 };
 
-// 单次 Graph 运行的强类型全局逻辑标识（D-153：RuntimeId + 64-bit sequence）。
+// 单次 Graph（任务图：一组有依赖关系的 Task） 运行的强类型全局逻辑标识（D-153：RuntimeId + 64-bit sequence）。
 class GraphRunId {
 public:
     constexpr GraphRunId() noexcept = default;

@@ -12,24 +12,31 @@
 
 namespace astra {
 
-// Local Deque 实际后端实现（D-162）。
+// Local Deque 实际后端实现（D-162）。报告 Runtime 实际选用的本地任务队列后端。
 enum class LocalDequeBackend : std::uint8_t {
+    // 未启用本地双端队列后端（当前 Scheduler 实现的默认状态，尚未接入真实队列）。
     None,
+    // 基于锁（mutex）的本地双端队列后端，实现简单但存在锁竞争开销。
     Locked,
+    // 基于 Chase-Lev 算法的无锁（lock-free）本地双端队列后端，适用于高并发 work-stealing。
     ChaseLevLockFree
 };
 
 // 冻结的不可变 Scheduler 能力快照（D-162：非 aggregate、可平凡复制）。
 class SchedulerCapabilities {
 public:
+    // 默认构造：后端为 None（D-162）。
     constexpr SchedulerCapabilities() noexcept = default;
+    // 以指定的 Local Deque 后端构造能力快照（D-162）。
     constexpr explicit SchedulerCapabilities(LocalDequeBackend backend) noexcept
         : backend_(backend) {}
 
+    // 返回 Runtime 实际选用的本地双端队列后端（D-162）。
     [[nodiscard]] constexpr LocalDequeBackend local_deque_backend() const noexcept {
         return backend_;
     }
 
+    // 当且仅当本地双端队列后端为无锁（ChaseLevLockFree）时返回 true（D-162）。
     [[nodiscard]] constexpr bool lock_free_local_deque() const noexcept {
         return backend_ == LocalDequeBackend::ChaseLevLockFree;
     }

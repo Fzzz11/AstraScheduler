@@ -1,4 +1,5 @@
 #include <astra/capabilities.hpp>
+#include <astra/error.hpp>
 #include <astra/export.hpp>
 #include <astra/id.hpp>
 #include <astra/scheduler.hpp>
@@ -9,12 +10,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 
-// R-093 / R-098 / R-099 / R-100 / R-101 独立 consumer smoke（AST-003 / AST-004）：
+// R-093 / R-097 / R-098 / R-099 / R-100 / R-101 独立 consumer smoke（AST-003 / AST-004 / AST-005）：
 // 验证安装的 CMake package 暴露完整的 public headers，版本契约成立，
-// 且 SchedulerOptions、SchedulerStatus、强类型逻辑 ID、SchedulerCapabilities
-// 均符合规范契约。
+// 且 SchedulerOptions、SchedulerStatus、强类型逻辑 ID、SchedulerCapabilities、
+// 异常类型 scheduler_creation_rejected 均符合规范契约。
 // 本模板由 tools/check_cmake_package.py 复制到仓库外构建运行。
 
 // 编译期契约：三个版本查询均 noexcept；Version 可平凡复制；header_version()
@@ -39,6 +41,12 @@ static_assert(std::is_trivially_copyable_v<astra::GraphRunId>, "GraphRunId must 
 static_assert(std::is_trivially_copyable_v<astra::NodeId>, "NodeId must be trivially copyable");
 static_assert(std::is_trivially_copyable_v<astra::SchedulerCapabilities>, "SchedulerCapabilities must be trivially copyable");
 static_assert(!std::is_aggregate_v<astra::SchedulerCapabilities>, "SchedulerCapabilities must not be aggregate");
+
+// AST-005 编译期契约（R-097）：
+static_assert(std::is_base_of_v<std::runtime_error, astra::scheduler_creation_rejected>,
+              "scheduler_creation_rejected must inherit from std::runtime_error");
+static_assert(noexcept(std::declval<astra::scheduler_creation_rejected>().reason()),
+              "scheduler_creation_rejected::reason() must be noexcept");
 
 namespace {
 
@@ -189,6 +197,18 @@ int main() {
     }
     if (!logic_error_caught) {
         std::printf("scheduler.status() on empty Scheduler did not throw logic_error\n");
+        return 1;
+    }
+
+    // 5. AST-005: scheduler_creation_rejected
+    astra::scheduler_creation_rejected ex(astra::SchedulerCreationError::FinalizationStarted);
+    if (ex.reason() != astra::SchedulerCreationError::FinalizationStarted) {
+        std::printf("scheduler_creation_rejected::reason() mismatch\n");
+        return 1;
+    }
+    const std::string_view err_msg = ex.what();
+    if (err_msg.empty()) {
+        std::printf("scheduler_creation_rejected::what() is empty\n");
         return 1;
     }
 

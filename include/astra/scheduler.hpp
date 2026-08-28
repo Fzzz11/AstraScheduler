@@ -7,6 +7,7 @@
 
 #include <astra/export.hpp>
 #include <astra/capabilities.hpp>
+#include <astra/error.hpp>
 #include <astra/id.hpp>
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
@@ -32,6 +33,7 @@ public:
     Scheduler& operator=(Scheduler&&) noexcept;
 
     // 查询当前 Handle 是否关联有效 Runtime State（D-155）。
+    // [[nodiscard]] 告诉编译器这个函数的返回值不应该被忽略，帮助开发者避免潜在的错误。
     [[nodiscard]] bool valid() const noexcept;
 
     // 获取当前 Runtime 的强类型唯一标识；空 Handle 返回默认无效 ID（D-153 / D-155）。
