@@ -523,6 +523,43 @@ TaskExecutionContextGuard::~TaskExecutionContextGuard() noexcept {
     t_current_executing_task_id = prev_id;
 }
 
+inline std::uint64_t next_random(std::uint64_t& state) noexcept {
+    state ^= state >> 12;
+    state ^= state << 25;
+    state ^= state >> 27;
+    return state * 0x2545F4914F6CDD1DULL;
+}
+
+void generate_steal_victims(
+    std::size_t self_index,
+    std::size_t worker_count,
+    std::size_t probe_limit,
+    std::uint64_t& rng_state,
+    std::vector<std::size_t>& out_victims) {
+    out_victims.clear();
+    if (worker_count <= 1 || probe_limit == 0) {
+        return;
+    }
+
+    const std::size_t num_candidates = worker_count - 1;
+    const std::size_t k = std::min(probe_limit, num_candidates);
+    out_victims.reserve(k);
+
+    std::vector<std::size_t> candidates;
+    candidates.reserve(num_candidates);
+    for (std::size_t i = 0; i < worker_count; ++i) {
+        if (i != self_index) {
+            candidates.push_back(i);
+        }
+    }
+
+    for (std::size_t i = 0; i < k; ++i) {
+        std::size_t j = i + static_cast<std::size_t>(next_random(rng_state) % (num_candidates - i));
+        std::swap(candidates[i], candidates[j]);
+        out_victims.push_back(candidates[i]);
+    }
+}
+
 void perform_caller_wait(
     const TaskSharedStateBase& target,
     std::optional<std::chrono::steady_clock::time_point> deadline) {
@@ -602,6 +639,21 @@ void perform_caller_wait(
                 if (task.is_external && impl->external_pending_count > 0) {
                     --impl->external_pending_count;
                     impl->slot_cv.notify_one();
+                }
+            }
+        }
+
+        // 尝试从其他 Worker 的 Local Deque 执行 bounded non-repeating Steal Round (R-064)
+        if (!found_task) {
+            std::vector<std::size_t> victims;
+            static thread_local std::uint64_t s_help_rng = 0x854329415849ULL;
+            generate_steal_victims(t_current_worker_index, impl->options.worker_count, impl->options.steal_probe_limit, s_help_rng, victims);
+            for (std::size_t v : victims) {
+                if (v < impl->local_deques.size() && impl->local_deques[v]->steal_front(task)) {
+                    found_task = true;
+                    std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
+                    ++impl->active_task_count;
+                    break;
                 }
             }
         }
@@ -702,15 +754,18 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
     auto& my_local_deque = *local_deques[worker_index];
     std::size_t consecutive_local_count = 0;
-    constexpr std::size_t kMaxConsecutiveLocalTasks = 64;
+    std::uint64_t rng_state = (static_cast<std::uint64_t>(runtime_id.value()) << 32) ^
+                              static_cast<std::uint64_t>(worker_index + 1) ^
+                              0x9E3779B97F4A7C15ULL;
+    std::vector<std::size_t> victims;
 
     // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested 且 Drain Closure 排空）
     while (true) {
         QueuedTask task;
         bool found_task = false;
 
-        // 1. 优先尝试从本 Worker 的 Local Deque (LIFO) 获取任务（受防饥饿上限限制）
-        if (consecutive_local_count < kMaxConsecutiveLocalTasks) {
+        // 1. 优先尝试从本 Worker 的 Local Deque (LIFO) 获取任务（受 local_burst_limit 上限限制）
+        if (consecutive_local_count < options.local_burst_limit) {
             if (my_local_deque.pop_back(task)) {
                 found_task = true;
                 ++consecutive_local_count;
@@ -734,7 +789,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                     --external_pending_count;
                     slot_cv.notify_one();
                 }
-            } else if (consecutive_local_count >= kMaxConsecutiveLocalTasks) {
+            } else if (consecutive_local_count >= options.local_burst_limit) {
                 consecutive_local_count = 0;
                 lock.unlock();
                 if (my_local_deque.pop_back(task)) {
@@ -746,7 +801,21 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
             }
         }
 
-        // 3. 若仍无任务，进入等待或退出判断
+        // 3. 若仍无任务，执行 bounded non-repeating Steal Round (R-064)
+        if (!found_task) {
+            detail::generate_steal_victims(worker_index, options.worker_count, options.steal_probe_limit, rng_state, victims);
+            for (std::size_t v : victims) {
+                if (v < local_deques.size() && local_deques[v]->steal_front(task)) {
+                    found_task = true;
+                    consecutive_local_count = 0;
+                    std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                    ++active_task_count;
+                    break;
+                }
+            }
+        }
+
+        // 4. 若仍未获取到任务，进入等待或退出判断
         if (!found_task) {
             std::unique_lock<std::mutex> lock(lifecycle_mutex);
             work_cv.wait(lock, [this, &my_local_deque] {
@@ -758,9 +827,15 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                     if (!global_injection_queue.empty() || !my_local_deque.empty() || active_task_count == 0) {
                         return true;
                     }
+                    for (const auto& d : local_deques) {
+                        if (d && !d->empty()) return true;
+                    }
                 } else {
                     if (!global_injection_queue.empty() || !my_local_deque.empty()) {
                         return true;
+                    }
+                    for (const auto& d : local_deques) {
+                        if (d && !d->empty()) return true;
                     }
                 }
                 return false;
@@ -780,19 +855,41 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                 ++active_task_count;
                 found_task = true;
                 ++consecutive_local_count;
-            } else if (stop_requested) {
+            } else {
+                // 唤醒后尝试窃取一轮
+                detail::generate_steal_victims(worker_index, options.worker_count, options.steal_probe_limit, rng_state, victims);
+                for (std::size_t v : victims) {
+                    if (v < local_deques.size() && local_deques[v]->steal_front(task)) {
+                        found_task = true;
+                        consecutive_local_count = 0;
+                        ++active_task_count;
+                        break;
+                    }
+                }
+            }
+
+            if (!found_task && stop_requested) {
                 const auto st = unpack(packed_status.load(std::memory_order_acquire));
                 if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
                     break;
                 }
-                if (global_injection_queue.empty() && my_local_deque.empty() && active_task_count == 0) {
+                bool any_tasks = !global_injection_queue.empty() || !my_local_deque.empty();
+                if (!any_tasks) {
+                    for (const auto& d : local_deques) {
+                        if (d && !d->empty()) {
+                            any_tasks = true;
+                            break;
+                        }
+                    }
+                }
+                if (!any_tasks && active_task_count == 0) {
                     work_cv.notify_all();
                     break;
                 }
             }
         }
 
-        // 4. 执行获取到的任务
+        // 5. 执行获取到的任务
         if (found_task && task.invoker) {
             task.invoker->execute();
             {

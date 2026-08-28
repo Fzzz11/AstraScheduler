@@ -449,7 +449,26 @@ int main() {
     h_ext.wait();
     s_locked.shutdown();
 
-    // 15. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 15. AST-023: Bounded non-repeating Steal Round (R-064)
+    astra::SchedulerOptions s_steal_opt{};
+    s_steal_opt.worker_count = 2;
+    s_steal_opt.steal_probe_limit = 4;
+    astra::Scheduler s_steal(s_steal_opt);
+    std::atomic<bool> steal_done{false};
+    auto h_s = s_steal.submit([&s_steal, &steal_done] {
+        auto h_child = s_steal.submit([&steal_done] {
+            steal_done.store(true);
+        });
+        h_child.wait();
+    });
+    h_s.wait();
+    if (!steal_done.load()) {
+        std::printf("AST-023 steal round task did not complete\n");
+        return 1;
+    }
+    s_steal.shutdown();
+
+    // 16. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,

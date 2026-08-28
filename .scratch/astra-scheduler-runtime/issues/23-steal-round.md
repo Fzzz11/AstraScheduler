@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-064)
 Milestone: v0.2.0
 Blocked by: AST-022
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-064]` steal_attempt上界可测，固定seed可复现victim序列。
+- [x] `[R-064]` steal_attempt上界可测，固定seed可复现victim序列。
 
 ## Out of scope
 
@@ -40,5 +40,10 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-064
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-093
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - 单元测试：`tests/test_steal_round.cpp` 覆盖 R-064（0/1/N Worker 下 victim 选择有界性、严格排除自身、轮内 victim 互不重复、同一 seed 序列完全可重现，以及多 Worker 下窃取执行）。
+  - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 21/21 tests 全部 PASS。
+  - ASan / UBSan / LSan 内存安全与泄漏门禁：`build/wsl-gcc-asan` 21/21 tests 全部 PASS（0 leaks / 0 errors）。
+  - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 38/38 tests 全部 OK。
+  - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。
 

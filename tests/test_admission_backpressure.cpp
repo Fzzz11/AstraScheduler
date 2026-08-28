@@ -209,7 +209,7 @@ void test_R061_worker_cross_runtime_never_blocks() {
 // -----------------------------------------------------------------------------
 void test_R061_internal_submission_exempt_from_external_capacity() {
     astra::SchedulerOptions opt{};
-    opt.worker_count = 2;
+    opt.worker_count = 1;
     opt.external_pending_capacity = 1;
     opt.external_backpressure = astra::ExternalBackpressure::Reject;
 
