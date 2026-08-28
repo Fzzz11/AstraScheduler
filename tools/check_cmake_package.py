@@ -295,6 +295,8 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "_ZN5astra9SchedulerC2EOS0_",
             "_ZN5astra9SchedulerD1Ev",
             "_ZN5astra9SchedulerD2Ev",
+            "_ZN5astra9Scheduler8shutdownEv",
+            "_ZN5astra9Scheduler12shutdown_nowEv",
             "_ZN5astra9ScheduleraSERKS0_",
             "_ZN5astra9ScheduleraSEOS0_",
             "_ZNK5astra9Scheduler5validEv",
@@ -631,6 +633,15 @@ class AST013TaskCancellationGates(PackageBuildFixture):
 
     def test_AST013_consumer_runs_all_task_cancellation_checks(self):
         # 独立 consumer（static+shared）运行期断言 R-053/R-054
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
+class AST014GracefulDrainGates(PackageBuildFixture):
+    """AST-014：实现 Graceful admission closure 与 Drain Work Closure（R-006/R-007/R-012/R-019）。"""
+
+    def test_AST014_consumer_runs_all_graceful_drain_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-006/R-007/R-012/R-019
         self._run_consumer(self.static_consumer)
         self._run_consumer(self.shared_consumer)
 

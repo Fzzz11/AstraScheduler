@@ -330,5 +330,21 @@ int main() {
         return 1;
     }
 
+    // 10. AST-014: Graceful Drain & Stopped Absorbing State
+    s_help.shutdown();
+    if (s_help.status().state != astra::SchedulerState::Stopped ||
+        s_help.status().shutdown_mode != astra::ShutdownMode::Graceful) {
+        std::printf("s_help must be Stopped Graceful\n");
+        return 1;
+    }
+    // Repeat call must be safe no-op
+    s_help.shutdown();
+    s_help.shutdown_now();
+    if (s_help.status().state != astra::SchedulerState::Stopped ||
+        s_help.status().shutdown_mode != astra::ShutdownMode::Graceful) {
+        std::printf("s_help must remain Stopped Graceful\n");
+        return 1;
+    }
+
     return 0;
 }

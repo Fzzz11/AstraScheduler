@@ -84,6 +84,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     bool handoff_dispatched{false};
     std::size_t workers_ready{0};
     std::size_t external_pending_count{0};
+    std::size_t active_task_count{0};
     std::atomic<std::size_t> active_workers{0};
     std::vector<std::thread> worker_threads;
 
@@ -171,25 +172,34 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     ~Impl() {
-        // 非 Worker 正常析构（若尚未经过 Worker handoff 移交）
+        // 非 Worker 正常析构（若尚未经过 Worker handoff 移交且未处于 Stopped 状态）
         if (!handoff_dispatched) {
-            request_shutdown_mode(ShutdownMode::Graceful);
-            {
-                std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                stop_requested = true;
+            if (get_status().state != SchedulerState::Stopped) {
+                shutdown_sync(ShutdownMode::Graceful);
             }
-            work_cv.notify_all();
-            for (auto& t : worker_threads) {
-                if (t.joinable()) {
-                    t.join();
-                }
-            }
-            worker_threads.clear();
-            const auto current_mode = get_status().shutdown_mode;
-            packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
-            slot_cv.notify_all();
-            detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
         }
+    }
+
+    // 同步关闭并在全部 Worker 退出并 join 后发布 Stopped（R-012 / R-019）
+    void shutdown_sync(ShutdownMode mode) {
+        request_shutdown_mode(mode);
+        {
+            std::lock_guard<std::mutex> lock(lifecycle_mutex);
+            stop_requested = true;
+        }
+        work_cv.notify_all();
+
+        for (auto& t : worker_threads) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+        worker_threads.clear();
+
+        const auto current_mode = get_status().shutdown_mode;
+        packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
+        slot_cv.notify_all();
+        detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
     }
 
     // 状态转换与模式保持（R-022）
@@ -203,8 +213,19 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                     slot_cv.notify_all();
                     break;
                 }
+            } else if (st.state == SchedulerState::Stopping) {
+                // Immediate 升级（D-014）
+                if (requested_mode == ShutdownMode::Immediate && st.shutdown_mode != ShutdownMode::Immediate) {
+                    uint16_t next = pack(SchedulerState::Stopping, ShutdownMode::Immediate);
+                    if (packed_status.compare_exchange_weak(current, next, std::memory_order_acq_rel)) {
+                        slot_cv.notify_all();
+                        break;
+                    }
+                } else {
+                    break;
+                }
             } else {
-                // 已处于 Stopping 或 Stopped，保持现有模式（R-022）
+                // 已处于 Stopped，保持现有模式（R-019 / R-022）
                 break;
             }
         }
@@ -252,6 +273,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 return detail::AdmissionDecision::Stopped;
             }
             if (st.state == SchedulerState::Stopping) {
+                // R-006 / D-002: Graceful Stopping 接受授权的 Internal Submission
                 if (is_internal && st.shutdown_mode == ShutdownMode::Graceful) {
                     return detail::AdmissionDecision::Success;
                 }
@@ -405,6 +427,7 @@ void perform_caller_wait(
                 !impl->global_injection_queue.empty()) {
                 task = std::move(impl->global_injection_queue.front());
                 impl->global_injection_queue.pop_front();
+                ++impl->active_task_count;
                 found_task = true;
                 if (task.is_external && impl->external_pending_count > 0) {
                     --impl->external_pending_count;
@@ -415,6 +438,11 @@ void perform_caller_wait(
 
         if (found_task && task.invoker) {
             task.invoker->execute();
+            {
+                std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
+                --impl->active_task_count;
+            }
+            impl->work_cv.notify_all();
         } else {
             // 没有可窃取/帮助的任务，等待目标完成通知
             std::unique_lock<std::mutex> lock(target.mutex());
@@ -500,27 +528,55 @@ void Scheduler::Impl::worker_main(std::size_t /*worker_index*/) {
         }
     }
 
-    // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested）
+    // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested 且 Drain Closure 排空）
     while (true) {
         QueuedTask task;
         {
             std::unique_lock<std::mutex> lock(lifecycle_mutex);
             work_cv.wait(lock, [this] {
-                return stop_requested || !global_injection_queue.empty();
+                if (stop_requested) {
+                    const auto st = unpack(packed_status.load(std::memory_order_acquire));
+                    if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
+                        return true;
+                    }
+                    // Graceful: 只要队列有任务或 drain 闭包完全结束（队列空且活跃任务为0）
+                    if (!global_injection_queue.empty() || active_task_count == 0) {
+                        return true;
+                    }
+                } else {
+                    if (!global_injection_queue.empty()) {
+                        return true;
+                    }
+                }
+                return false;
             });
+
             if (!global_injection_queue.empty()) {
                 task = std::move(global_injection_queue.front());
                 global_injection_queue.pop_front();
+                ++active_task_count;
                 if (task.is_external && external_pending_count > 0) {
                     --external_pending_count;
                     slot_cv.notify_one();
                 }
             } else if (stop_requested) {
-                break;
+                const auto st = unpack(packed_status.load(std::memory_order_acquire));
+                if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
+                    break;
+                }
+                if (global_injection_queue.empty() && active_task_count == 0) {
+                    work_cv.notify_all();
+                    break;
+                }
             }
         }
         if (task.invoker) {
             task.invoker->execute();
+            {
+                std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                --active_task_count;
+            }
+            work_cv.notify_all();
         }
     }
 
@@ -597,6 +653,26 @@ SchedulerCapabilities Scheduler::capabilities() const {
         throw std::logic_error("operating on empty/moved-from Scheduler");
     }
     return impl_->capabilities;
+}
+
+void Scheduler::shutdown() {
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    if (impl_->get_status().state == SchedulerState::Stopped) {
+        return;
+    }
+    impl_->shutdown_sync(ShutdownMode::Graceful);
+}
+
+void Scheduler::shutdown_now() {
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    if (impl_->get_status().state == SchedulerState::Stopped) {
+        return;
+    }
+    impl_->shutdown_sync(ShutdownMode::Immediate);
 }
 
 }  // namespace astra

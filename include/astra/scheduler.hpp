@@ -65,6 +65,12 @@ public:
     // 获取当前 Runtime 冻结的能力快照；空 Handle 抛 std::logic_error（D-162）。
     [[nodiscard]] SchedulerCapabilities capabilities() const;
 
+    // 请求平滑停机并同步等待 Drain Work Closure 排空完成（R-006 / R-007 / R-012 / R-019）。
+    void shutdown();
+
+    // 请求立即停机（R-016 / R-019）。
+    void shutdown_now();
+
     // 阻塞/按策略提交任务（R-048 / R-058 / R-061 / R-062 / R-102）。
     template <typename F, typename... Args>
     auto submit(F&& f, Args&&... args) -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
