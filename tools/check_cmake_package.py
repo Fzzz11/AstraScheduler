@@ -808,6 +808,15 @@ class AST030GraphEdgePoliciesGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST031GraphRunControlGates(PackageBuildFixture):
+    """AST-031：实现 GraphRun cancel、完整报告与 caller-relative wait（R-072）。"""
+
+    def test_AST031_consumer_runs_all_graph_run_control_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-072
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

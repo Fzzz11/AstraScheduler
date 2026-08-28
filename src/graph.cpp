@@ -129,44 +129,50 @@ FrozenTaskGraph TaskGraph::freeze() && {
 }
 
 // -----------------------------------------------------------------------------
-// GraphRun 实现（R-070 / D-112 / D-113）
+// GraphRun 实现（R-070 / R-072 / D-111 / D-112 / D-113 / D-152）
 // -----------------------------------------------------------------------------
 
-GraphRunId GraphRun::id() const noexcept {
-    return state_ ? state_->id : GraphRunId{};
+GraphRunId GraphRun::id() const {
+    if (!state_) {
+        throw std::logic_error("operating on empty/invalid GraphRun");
+    }
+    return state_->id;
 }
 
-std::size_t GraphRun::node_count() const noexcept {
-    return state_ ? state_->total_node_count : 0;
+std::size_t GraphRun::node_count() const {
+    if (!state_) {
+        throw std::logic_error("operating on empty/invalid GraphRun");
+    }
+    return state_->total_node_count;
 }
 
 GraphRunState GraphRun::state() const {
     if (!state_) {
-        throw std::logic_error("operating on empty GraphRun");
+        throw std::logic_error("operating on empty/invalid GraphRun");
     }
     return state_->run_state.load(std::memory_order_acquire);
 }
 
 bool GraphRun::is_completed() const {
     if (!state_) {
-        throw std::logic_error("operating on empty GraphRun");
+        throw std::logic_error("operating on empty/invalid GraphRun");
     }
     return state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running;
 }
 
 void GraphRun::wait() const {
     if (!state_) {
-        throw std::logic_error("operating on empty GraphRun");
+        throw std::logic_error("operating on empty/invalid GraphRun");
     }
-    std::unique_lock<std::mutex> lock(state_->mutex);
-    state_->cv.wait(lock, [this] {
-        return state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running;
-    });
+    detail::perform_graph_caller_wait(*state_, std::nullopt);
 }
 
 GraphWaitResult GraphRun::wait_for(std::chrono::nanoseconds timeout) const {
     if (!state_) {
-        throw std::logic_error("operating on empty GraphRun");
+        throw std::logic_error("operating on empty/invalid GraphRun");
+    }
+    if (detail::t_current_executing_graph_run_id == state_->id && state_->id != GraphRunId{}) {
+        throw std::logic_error("cannot wait on own GraphRun inside its node execution");
     }
     if (state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running) {
         return GraphWaitResult::Completed;
@@ -176,18 +182,19 @@ GraphWaitResult GraphRun::wait_for(std::chrono::nanoseconds timeout) const {
                    ? GraphWaitResult::Completed
                    : GraphWaitResult::TimedOut;
     }
-    std::unique_lock<std::mutex> lock(state_->mutex);
-    const bool done = state_->cv.wait_for(lock, timeout, [this] {
-        return state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running;
-    });
-    return done ? GraphWaitResult::Completed : GraphWaitResult::TimedOut;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    detail::perform_graph_caller_wait(*state_, deadline);
+    return (state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running)
+               ? GraphWaitResult::Completed
+               : GraphWaitResult::TimedOut;
 }
 
 const GraphReport& GraphRun::get_report() const & {
     if (!state_) {
-        throw std::logic_error("operating on empty GraphRun");
+        throw std::logic_error("operating on empty/invalid GraphRun");
     }
     wait();
+    state_->failure_report_observed.store(true, std::memory_order_release);
     return state_->report;
 }
 
@@ -196,6 +203,11 @@ void GraphRun::request_cancel() const noexcept {
         return;
     }
     state_->cancel_requested.store(true, std::memory_order_release);
+    for (std::size_t i = 1; i <= state_->total_node_count; ++i) {
+        if (state_->node_entries[i].invoker) {
+            state_->node_entries[i].invoker->cancel_pre_start();
+        }
+    }
 }
 
 }  // namespace astra

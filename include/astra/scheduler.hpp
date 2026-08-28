@@ -24,6 +24,11 @@ namespace astra {
 class Scheduler;
 
 namespace detail {
+class GraphRunSharedState;
+
+void perform_graph_caller_wait(const GraphRunSharedState&,
+                               std::optional<std::chrono::steady_clock::time_point>);
+
 enum class AdmissionDecision : std::uint8_t {
     Success,
     Stopping,
@@ -197,6 +202,8 @@ private:
     friend std::uint64_t detail::current_work_epoch(const Scheduler&);
     friend void detail::perform_caller_wait(const detail::TaskSharedStateBase&,
                                             std::optional<std::chrono::steady_clock::time_point>);
+    friend void detail::perform_graph_caller_wait(const detail::GraphRunSharedState&,
+                                                  std::optional<std::chrono::steady_clock::time_point>);
 };
 
 namespace detail {

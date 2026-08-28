@@ -565,7 +565,35 @@ int main() {
     }
     sched_policy.shutdown();
 
-    // 20. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 20. AST-031: GraphRun cancel, report & caller wait (R-072)
+    astra::GraphRun empty_run;
+    if (empty_run.valid()) {
+        std::printf("Default GraphRun must not be valid\n");
+        return 1;
+    }
+    empty_run.request_cancel();
+
+    astra::Scheduler sched_run_ctrl;
+    astra::TaskGraph tg_ctrl;
+    auto node_c1 = tg_ctrl.emplace([] {
+        throw std::runtime_error("consumer error 1");
+    });
+    auto node_c2 = tg_ctrl.emplace([] {});
+    auto gr_ctrl = sched_run_ctrl.run(std::move(tg_ctrl).freeze());
+    auto wait_res = gr_ctrl.wait_for(std::chrono::seconds(2));
+    if (wait_res != astra::GraphWaitResult::Completed || gr_ctrl.state() != astra::GraphRunState::Failed) {
+        std::printf("AST-031 wait_for or state failed\n");
+        return 1;
+    }
+    const auto& rep_ctrl = gr_ctrl.get_report();
+    if (rep_ctrl.total_nodes != 2 || rep_ctrl.failed_nodes != 1 || rep_ctrl.succeeded_nodes != 1 ||
+        rep_ctrl.failed_node_exceptions.empty() || rep_ctrl.failed_node_exceptions[0].first != node_c1) {
+        std::printf("AST-031 get_report verification failed\n");
+        return 1;
+    }
+    sched_run_ctrl.shutdown();
+
+    // 21. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,

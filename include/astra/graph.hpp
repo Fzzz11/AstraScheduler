@@ -206,9 +206,9 @@ enum class GraphWaitResult : std::uint8_t {
     TimedOut = 2,
 };
 
-// 任务图聚合执行报告（D-112）。
 class GraphReport {
 public:
+    GraphRunId run_id{};
     std::size_t total_nodes{0};
     std::size_t succeeded_nodes{0};
     std::size_t failed_nodes{0};
@@ -221,7 +221,7 @@ class GraphRunSharedState;
 }
 
 // -----------------------------------------------------------------------------
-// GraphRun (R-070 / D-104 / D-112 / D-113)
+// GraphRun (R-070 / R-072 / D-104 / D-111 / D-112 / D-113 / D-152)
 // 任务图执行实例 Handle，支持多副本共享观察与状态等待
 // -----------------------------------------------------------------------------
 class ASTRA_EXPORT GraphRun {
@@ -242,13 +242,18 @@ public:
         return valid();
     }
 
-    [[nodiscard]] GraphRunId id() const noexcept;
-    [[nodiscard]] std::size_t node_count() const noexcept;
+    [[nodiscard]] GraphRunId id() const;
+    [[nodiscard]] std::size_t node_count() const;
     [[nodiscard]] GraphRunState state() const;
     [[nodiscard]] bool is_completed() const;
 
     void wait() const;
     [[nodiscard]] GraphWaitResult wait_for(std::chrono::nanoseconds timeout) const;
+
+    template <typename Rep, typename Period>
+    [[nodiscard]] GraphWaitResult wait_for(const std::chrono::duration<Rep, Period>& timeout) const {
+        return wait_for(std::chrono::duration_cast<std::chrono::nanoseconds>(timeout));
+    }
 
     [[nodiscard]] const GraphReport& get_report() const &;
     const GraphReport& get_report() const && = delete;

@@ -554,6 +554,7 @@ thread_local RuntimeId t_current_worker_runtime_id{0};
 thread_local void* t_current_worker_impl{nullptr};
 thread_local std::size_t t_current_worker_index{0};
 thread_local TaskId t_current_executing_task_id{};
+thread_local GraphRunId t_current_executing_graph_run_id{};
 thread_local std::size_t t_current_helping_depth{0};
 
 TaskExecutionContextGuard::TaskExecutionContextGuard(TaskId new_id) noexcept
@@ -564,6 +565,17 @@ TaskExecutionContextGuard::TaskExecutionContextGuard(TaskId new_id) noexcept
 TaskExecutionContextGuard::~TaskExecutionContextGuard() noexcept {
     t_current_executing_task_id = prev_id;
 }
+
+struct GraphNodeExecutionContextGuard {
+    GraphRunId prev_id;
+    explicit GraphNodeExecutionContextGuard(GraphRunId new_id) noexcept
+        : prev_id(t_current_executing_graph_run_id) {
+        t_current_executing_graph_run_id = new_id;
+    }
+    ~GraphNodeExecutionContextGuard() noexcept {
+        t_current_executing_graph_run_id = prev_id;
+    }
+};
 
 inline std::uint64_t next_random(std::uint64_t& state) noexcept {
     state ^= state >> 12;
@@ -720,6 +732,126 @@ void perform_caller_wait(
             } else {
                 target.cv().wait_for(lock, std::chrono::milliseconds(2), [&target] {
                     return target.is_completed();
+                });
+            }
+        }
+    }
+}
+
+void perform_graph_caller_wait(
+    const GraphRunSharedState& target,
+    std::optional<std::chrono::steady_clock::time_point> deadline) {
+    // 1. Direct Self-Run 检查（R-072 / D-113）
+    if (t_current_worker_impl != nullptr &&
+        t_current_executing_graph_run_id != GraphRunId{} &&
+        t_current_executing_graph_run_id == target.id) {
+        throw std::logic_error("cannot wait on own GraphRun inside its node execution");
+    }
+
+    // 2. 已完成即时返回
+    if (target.run_state.load(std::memory_order_acquire) != GraphRunState::Running) {
+        return;
+    }
+
+    // 3. 非正/已过期 deadline 即时返回
+    if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
+        return;
+    }
+
+    // 4. 非 Worker 线程：执行无界/有界条件变量等待
+    if (t_current_worker_impl == nullptr) {
+        std::unique_lock<std::mutex> lock(target.mutex);
+        if (deadline.has_value()) {
+            target.cv.wait_until(lock, *deadline, [&target] {
+                return target.run_state.load(std::memory_order_acquire) != GraphRunState::Running;
+            });
+        } else {
+            target.cv.wait(lock, [&target] {
+                return target.run_state.load(std::memory_order_acquire) != GraphRunState::Running;
+            });
+        }
+        return;
+    }
+
+    // 5. 同/源 Runtime Worker 线程：执行 Helping Wait（R-072 / D-113）
+    auto* impl = static_cast<Scheduler::Impl*>(t_current_worker_impl);
+
+    if (t_current_helping_depth >= impl->options.max_helping_depth) {
+        throw helping_depth_exceeded{};
+    }
+
+    struct DepthGuard {
+        std::size_t& depth;
+        explicit DepthGuard(std::size_t& d) noexcept : depth(d) { ++depth; }
+        ~DepthGuard() noexcept { --depth; }
+    } guard(t_current_helping_depth);
+
+    while (target.run_state.load(std::memory_order_acquire) == GraphRunState::Running) {
+        if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
+            break;
+        }
+
+        Scheduler::Impl::QueuedTask task;
+        bool found_task = false;
+
+        if (t_current_worker_index < impl->local_deques.size()) {
+            if (impl->local_deques[t_current_worker_index]->pop_back(task)) {
+                found_task = true;
+                std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
+                ++impl->active_task_count;
+            }
+        }
+
+        if (!found_task) {
+            std::unique_lock<std::mutex> lock(impl->lifecycle_mutex);
+            const auto st = Scheduler::Impl::unpack(impl->packed_status.load(std::memory_order_acquire));
+            if (st.state != SchedulerState::Stopped &&
+                st.shutdown_mode != ShutdownMode::Immediate &&
+                !impl->global_injection_queue.empty()) {
+                task = std::move(impl->global_injection_queue.front());
+                impl->global_injection_queue.pop_front();
+                ++impl->active_task_count;
+                found_task = true;
+                if (task.is_external && impl->external_pending_count > 0) {
+                    --impl->external_pending_count;
+                    impl->slot_cv.notify_one();
+                }
+            }
+        }
+
+        if (!found_task) {
+            std::vector<std::size_t> victims;
+            static thread_local std::uint64_t s_help_rng = 0x854329415849ULL;
+            generate_steal_victims(t_current_worker_index, impl->options.worker_count, impl->options.steal_probe_limit, s_help_rng, victims);
+            for (std::size_t v : victims) {
+                if (v < impl->local_deques.size() && impl->local_deques[v]->steal_front(task)) {
+                    found_task = true;
+                    std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
+                    ++impl->active_task_count;
+                    break;
+                }
+            }
+        }
+
+        if (found_task && task.invoker) {
+            task.invoker->execute();
+            {
+                std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
+                --impl->active_task_count;
+            }
+            impl->work_cv.notify_all();
+        } else {
+            std::unique_lock<std::mutex> lock(target.mutex);
+            if (target.run_state.load(std::memory_order_acquire) != GraphRunState::Running) {
+                break;
+            }
+            if (deadline.has_value()) {
+                target.cv.wait_until(lock, *deadline, [&target] {
+                    return target.run_state.load(std::memory_order_acquire) != GraphRunState::Running;
+                });
+            } else {
+                target.cv.wait_for(lock, std::chrono::milliseconds(2), [&target] {
+                    return target.run_state.load(std::memory_order_acquire) != GraphRunState::Running;
                 });
             }
         }
@@ -1192,6 +1324,8 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
                 trigger_successors(trigger_successors, self, u_id);
                 return;
             }
+
+            detail::GraphNodeExecutionContextGuard node_guard(state->id);
 
             try {
                 if (entry.invoker) {

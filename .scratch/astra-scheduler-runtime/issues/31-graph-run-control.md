@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-072)
 Milestone: v0.4.0
 Blocked by: AST-012, AST-013, AST-030
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ GraphRun 提供显式取消、所有 Node Terminal 才完成的稳定 report，�
 
 ## Acceptance criteria
 
-- [ ] `[R-072]` 并发失败无任意first-error丢失，Graph aggregate不制造synthetic exception。
+- [x] `[R-072]` 并发失败无任意first-error丢失，Graph aggregate不制造synthetic exception。
 
 ## Out of scope
 
@@ -40,5 +40,8 @@ GraphRun 提供显式取消、所有 Node Terminal 才完成的稳定 report，�
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-072
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-111, D-112, D-113, D-152
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - In-tree unit tests: `tests/test_graph_run_control.cpp` (29/29 ctest passed in debug and ASan/UBSan/LSan)
+  - Package consumer gates: `tools/check_cmake_package.py` (AST031GraphRunControlGates, 46/46 tests passed)
+  - Release gates: `tools/check_release_gates.py` (15/15 tests passed)
 
