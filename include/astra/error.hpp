@@ -78,6 +78,13 @@ public:
     }
 };
 
+// 帮助等待深度超限异常（R-059 / D-079）。
+class ASTRA_EXPORT helping_depth_exceeded : public std::runtime_error {
+public:
+    helping_depth_exceeded()
+        : std::runtime_error("AstraScheduler helping depth limit exceeded") {}
+};
+
 }  // namespace astra
 
 #endif  // ASTRA_ERROR_HPP

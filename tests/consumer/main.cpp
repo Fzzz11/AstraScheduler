@@ -275,5 +275,27 @@ int main() {
         return 1;
     }
 
+    // 8. AST-012: Helping Wait & helping_depth_exceeded
+    astra::SchedulerOptions s_opt{};
+    s_opt.worker_count = 1;
+    s_opt.max_helping_depth = 2;
+    astra::Scheduler s_help(s_opt);
+
+    auto h_nested = s_help.submit([&s_help]() {
+        auto c1 = s_help.submit([]() { return 100; });
+        return c1.get() + 50;
+    });
+    if (h_nested.get() != 150) {
+        std::printf("Helping wait nested get failed\n");
+        return 1;
+    }
+
+    astra::helping_depth_exceeded depth_ex;
+    std::string depth_msg = depth_ex.what();
+    if (depth_msg.empty()) {
+        std::printf("helping_depth_exceeded::what() is empty\n");
+        return 1;
+    }
+
     return 0;
 }

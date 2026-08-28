@@ -282,6 +282,11 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "_ZN5astra22library_version_stringEv",
             "_ZN5astra24recommended_worker_countEv",
             "_ZN5astra6detail25current_worker_runtime_idEv",
+            "_ZN5astra6detail19perform_caller_waitERKNS0_19TaskSharedStateBaseESt8optionalINSt6chrono10time_pointINS5_3_V212steady_clockENS5_8durationIlSt5ratioILl1ELl1000000000EEEEEEE",
+            "_ZN5astra6detail25TaskExecutionContextGuardC1ENS_6TaskIdE",
+            "_ZN5astra6detail25TaskExecutionContextGuardC2ENS_6TaskIdE",
+            "_ZN5astra6detail25TaskExecutionContextGuardD1Ev",
+            "_ZN5astra6detail25TaskExecutionContextGuardD2Ev",
             "_ZN5astra9SchedulerC1ENS_16SchedulerOptionsE",
             "_ZN5astra9SchedulerC2ENS_16SchedulerOptionsE",
             "_ZN5astra9SchedulerC1ERKS0_",
@@ -608,6 +613,15 @@ class AST011TaskOutcomeStateGates(PackageBuildFixture):
 
     def test_AST011_consumer_runs_all_task_outcome_state_checks(self):
         # 独立 consumer（static+shared）运行期断言 R-049/R-050/R-051/R-057/R-060
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
+class AST012HelpingWaitGates(PackageBuildFixture):
+    """AST-012：实现 Unbounded/Helping wait 与 timeout 边界（R-052/R-055/R-056/R-059）。"""
+
+    def test_AST012_consumer_runs_all_helping_wait_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-052/R-055/R-056/R-059
         self._run_consumer(self.static_consumer)
         self._run_consumer(self.shared_consumer)
 

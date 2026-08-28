@@ -46,34 +46,64 @@ inline TaskId allocate_task_id(RuntimeId runtime_id) noexcept {
     }
 }
 
+class ASTRA_EXPORT TaskSharedStateBase {
+public:
+    virtual ~TaskSharedStateBase() = default;
+    [[nodiscard]] virtual TaskId id() const noexcept = 0;
+    [[nodiscard]] virtual TaskState state() const noexcept = 0;
+    [[nodiscard]] virtual bool is_completed() const noexcept = 0;
+    virtual void request_stop() noexcept = 0;
+    [[nodiscard]] virtual std::stop_token stop_token() noexcept = 0;
+    [[nodiscard]] virtual std::condition_variable& cv() const noexcept = 0;
+    [[nodiscard]] virtual std::mutex& mutex() const noexcept = 0;
+};
+
+ASTRA_EXPORT void perform_caller_wait(
+    const TaskSharedStateBase& target,
+    std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+
+struct ASTRA_EXPORT TaskExecutionContextGuard {
+    TaskId prev_id;
+    explicit TaskExecutionContextGuard(TaskId new_id) noexcept;
+    ~TaskExecutionContextGuard() noexcept;
+};
+
 struct TaskInvokerBase {
     virtual ~TaskInvokerBase() = default;
     virtual void execute() = 0;
 };
 
 template <typename T>
-class TaskSharedState {
+class TaskSharedState : public TaskSharedStateBase {
 public:
     explicit TaskSharedState(TaskId id) : id_(id) {}
 
-    ~TaskSharedState() {
+    ~TaskSharedState() override {
         // R-060: 未观察异常析构时不抛出、不终止
     }
 
-    [[nodiscard]] TaskId id() const noexcept {
+    [[nodiscard]] TaskId id() const noexcept override {
         return id_;
     }
 
-    [[nodiscard]] std::stop_token stop_token() noexcept {
+    [[nodiscard]] std::stop_token stop_token() noexcept override {
         return stop_source_.get_token();
     }
 
-    void request_stop() noexcept {
+    void request_stop() noexcept override {
         stop_source_.request_stop();
     }
 
-    [[nodiscard]] TaskState state() const noexcept {
+    [[nodiscard]] TaskState state() const noexcept override {
         return state_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] std::condition_variable& cv() const noexcept override {
+        return cv_;
+    }
+
+    [[nodiscard]] std::mutex& mutex() const noexcept override {
+        return mutex_;
     }
 
     void mark_running() noexcept {
@@ -110,11 +140,7 @@ public:
     }
 
     const T& get() const {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this] {
-            const auto s = state_.load(std::memory_order_acquire);
-            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
-        });
+        perform_caller_wait(*this);
         const auto s = state_.load(std::memory_order_acquire);
         if (s == TaskState::Failed) {
             observed_.store(true, std::memory_order_relaxed);
@@ -127,29 +153,20 @@ public:
     }
 
     void wait() const {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this] {
-            const auto s = state_.load(std::memory_order_acquire);
-            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
-        });
+        perform_caller_wait(*this);
     }
 
     template <typename Rep, typename Period>
     WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
         if (duration <= std::chrono::duration<Rep, Period>::zero()) {
-            const auto s = state_.load(std::memory_order_acquire);
-            return (s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled)
-                ? WaitResult::Completed : WaitResult::TimedOut;
+            return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
         }
-        std::unique_lock<std::mutex> lock(mutex_);
-        const bool completed = cv_.wait_for(lock, duration, [this] {
-            const auto s = state_.load(std::memory_order_acquire);
-            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
-        });
-        return completed ? WaitResult::Completed : WaitResult::TimedOut;
+        const auto deadline = std::chrono::steady_clock::now() + duration;
+        perform_caller_wait(*this, deadline);
+        return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
     }
 
-    [[nodiscard]] bool is_completed() const noexcept {
+    [[nodiscard]] bool is_completed() const noexcept override {
         const auto s = state_.load(std::memory_order_acquire);
         return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
     }
@@ -166,28 +183,36 @@ private:
 };
 
 template <>
-class TaskSharedState<void> {
+class TaskSharedState<void> : public TaskSharedStateBase {
 public:
     explicit TaskSharedState(TaskId id) : id_(id) {}
 
-    ~TaskSharedState() {
+    ~TaskSharedState() override {
         // R-060: 未观察异常析构时不抛出、不终止
     }
 
-    [[nodiscard]] TaskId id() const noexcept {
+    [[nodiscard]] TaskId id() const noexcept override {
         return id_;
     }
 
-    [[nodiscard]] std::stop_token stop_token() noexcept {
+    [[nodiscard]] std::stop_token stop_token() noexcept override {
         return stop_source_.get_token();
     }
 
-    void request_stop() noexcept {
+    void request_stop() noexcept override {
         stop_source_.request_stop();
     }
 
-    [[nodiscard]] TaskState state() const noexcept {
+    [[nodiscard]] TaskState state() const noexcept override {
         return state_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] std::condition_variable& cv() const noexcept override {
+        return cv_;
+    }
+
+    [[nodiscard]] std::mutex& mutex() const noexcept override {
+        return mutex_;
     }
 
     void mark_running() noexcept {
@@ -223,11 +248,7 @@ public:
     }
 
     void get() const {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this] {
-            const auto s = state_.load(std::memory_order_acquire);
-            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
-        });
+        perform_caller_wait(*this);
         const auto s = state_.load(std::memory_order_acquire);
         if (s == TaskState::Failed) {
             observed_.store(true, std::memory_order_relaxed);
@@ -239,29 +260,20 @@ public:
     }
 
     void wait() const {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this] {
-            const auto s = state_.load(std::memory_order_acquire);
-            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
-        });
+        perform_caller_wait(*this);
     }
 
     template <typename Rep, typename Period>
     WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
         if (duration <= std::chrono::duration<Rep, Period>::zero()) {
-            const auto s = state_.load(std::memory_order_acquire);
-            return (s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled)
-                ? WaitResult::Completed : WaitResult::TimedOut;
+            return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
         }
-        std::unique_lock<std::mutex> lock(mutex_);
-        const bool completed = cv_.wait_for(lock, duration, [this] {
-            const auto s = state_.load(std::memory_order_acquire);
-            return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
-        });
-        return completed ? WaitResult::Completed : WaitResult::TimedOut;
+        const auto deadline = std::chrono::steady_clock::now() + duration;
+        perform_caller_wait(*this, deadline);
+        return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
     }
 
-    [[nodiscard]] bool is_completed() const noexcept {
+    [[nodiscard]] bool is_completed() const noexcept override {
         const auto s = state_.load(std::memory_order_acquire);
         return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
     }
@@ -344,6 +356,7 @@ public:
 private:
     template <std::size_t... Is>
     void invoke_impl(std::index_sequence<Is...>) {
+        TaskExecutionContextGuard context_guard(state_->id());
         state_->mark_running();
         try {
             if constexpr (Ordinary) {
@@ -384,7 +397,7 @@ std::unique_ptr<TaskInvokerBase> make_task_invoker(
 
 }  // namespace detail
 
-// TaskHandle<T> — 共享任务结果句柄（R-048 / R-049 / R-050 / R-051 / R-057 / R-058 / D-041 / D-042 / D-076）。
+// TaskHandle<T> — 共享任务结果句柄（R-048 / R-049 / R-050 / R-051 / R-052 / R-055 / R-056 / R-057 / R-058 / D-041 / D-042 / D-076）。
 template <typename T>
 class TaskHandle {
 public:
@@ -460,7 +473,7 @@ private:
     std::shared_ptr<detail::TaskSharedState<T>> state_;
 };
 
-// TaskHandle<void> 特化（R-048 / R-049 / R-050 / R-051 / R-057 / R-058 / D-075 / D-076）。
+// TaskHandle<void> 特化（R-048 / R-049 / R-050 / R-051 / R-052 / R-055 / R-056 / R-057 / R-058 / D-075 / D-076）。
 template <>
 class TaskHandle<void> {
 public:

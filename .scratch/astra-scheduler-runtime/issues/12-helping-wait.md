@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-052, R-055, R-056, R-059)
 Milestone: v0.1.0
 Blocked by: AST-008, AST-011
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity agent (2026-08-28)
 
 ## Rules and decisions
 
@@ -33,10 +33,10 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-052]` 等待不创建补偿线程或执行foreign Runtime工作；动态环允许永久阻塞。
-- [ ] `[R-055]` wait后仍可完整get，多等待者最终观察同一完成。
-- [ ] `[R-056]` TimedOut 后Task继续，稍后wait/get仍可观察真实Outcome。
-- [ ] `[R-059]` 深层同步组合确定性失败而不篡改目标Task，Immediate不借Helping启动新工作。
+- [x] `[R-052]` 等待不创建补偿线程或执行foreign Runtime工作；动态环允许永久阻塞。
+- [x] `[R-055]` wait后仍可完整get，多等待者最终观察同一完成。
+- [x] `[R-056]` TimedOut 后Task继续，稍后wait/get仍可观察真实Outcome。
+- [x] `[R-059]` 深层同步组合确定性失败而不篡改目标Task，Immediate不借Helping启动新工作。
 
 ## Out of scope
 
@@ -49,5 +49,28 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-052, R-055, R-056, R-059
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-047, D-048, D-049, D-050, D-051, D-061, D-062, D-073, D-063, D-064, D-065, D-066, D-078, D-079, D-080
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Done（2026-08-28；全部验证命令来自 WSL Linux）。
+
+### Rule evidence
+
+| Rule | Test or verification | RED evidence | GREEN result |
+|---|---|---|---|
+| R-052 | `tests/test_helping_wait.cpp::test_R052_single_worker_nested_helping_wait`、`test_R052_direct_self_wait_rejected` — 证明单 Worker 下嵌套 `get()` 通过 Helping Wait 自动协作执行队列中子任务，无死锁；Direct Self-Wait 在副作用前严格抛出 `std::logic_error`。 | 运行期 RED：单 worker 下嵌套 get 自锁，self-wait 未检测。 | 单 worker fork-join 正常执行返回，self-wait 正确抛出 logic_error。 |
+| R-055 | `tests/test_helping_wait.cpp::test_R055_wait_reuses_helping` — 证明 `wait()` 复用 Helping Wait 调度路径，并在真实 Terminal Outcome 发布后正常返回，不篡改或消费结果。 | 编译期 RED：wait() 未接入 caller-relative helping 路径。 | wait() 触发 helping 并等待目标完成，多次调用安全。 |
+| R-056 | `tests/test_helping_wait.cpp::test_R056_wait_for_timeout_and_helping` — 证明 `wait_for` 超时仅返回 `TimedOut`，不取消任务或伪造终态，任务继续执行并最终成功产出 Outcome。 | 运行期 RED：wait_for 未在 Worker 路径上正确有界推进。 | TimedOut 后任务完好，后续 get 正确获取计算结果。 |
+| R-059 | `tests/test_helping_wait.cpp::test_R059_helping_depth_limit` — 证明嵌套 Helping Wait 深度受 `max_helping_depth` 严格限制，超限在进入下一层前同步抛出 `helping_depth_exceeded`，被帮助任务未受破坏；Immediate 停机模式下不启动新任务。 | 运行期 RED：无深度限制引发无界递归。 | 达到指定阈值时确定性抛出 `helping_depth_exceeded`。 |
+
+### Verification commands
+
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_cmake_package.py"` → `Ran 27 tests in 34.696s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_release_gates.py"` → `Ran 15 tests in 0.263s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && cmake --build build/wsl-gcc-debug && ctest --test-dir build/wsl-gcc-debug --output-on-failure"` → `100% tests passed, 0 tests failed out of 10`
+- `python "C:\Users\fzt\.gemini\config\skills\decision-ledger\scripts\validate_traceability.py" --ledger "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\decision-log.md" --spec "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\spec.md" --tickets-dir "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\issues"` → `Traceability valid: decisions=168, rules=105, tickets=55, covered_rules=105`
+
+### Review record
+
+- 两轴 code-review（Standards/Spec，固定基线=commit `e90f008`）：
+  - Standards 轴：`TaskExecutionContextGuard` 与 RAII depth guard 实现异常安全的状态跟踪与深度回滚；`perform_caller_wait` 统一调度 Unbounded/Helping wait；`helping_depth_exceeded` 异常设计标准；符号导出与隐藏严格一致。
+  - Spec 轴：R-052（Helping Wait 与 Direct Self-Wait 拦截）、R-055（wait 复用 Helping）、R-056（wait_for 超时保护与非抢占）、R-059（max_helping_depth 与 Immediate 停机合规）100% 满足 Approved Spec 及相关 ADR/决策。
+- 编译环境：WSL GCC 13.1.0（R-111 Tier-1）、CMake 3.28.6、Python 3.8.10。
 

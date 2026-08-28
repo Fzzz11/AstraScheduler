@@ -23,8 +23,6 @@ std::size_t recommended_worker_count() noexcept {
 
 namespace {
 
-thread_local RuntimeId t_current_worker_runtime_id{0};
-
 void validate_options(const SchedulerOptions& options) {
     if (options.worker_count == 0) {
         throw std::invalid_argument("SchedulerOptions::worker_count must be greater than 0");
@@ -292,55 +290,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         slot_cv.notify_one();
     }
 
-    void worker_main(std::size_t /*worker_index*/) {
-        t_current_worker_runtime_id = runtime_id;
-
-        // 等待 startup 栅栏完成或中止
-        {
-            std::unique_lock<std::mutex> lock(lifecycle_mutex);
-            ++workers_ready;
-            startup_cv.notify_all();
-            startup_cv.wait(lock, [this] {
-                return startup_done || startup_failed || stop_requested;
-            });
-            if (startup_failed || stop_requested) {
-                t_current_worker_runtime_id = RuntimeId{0};
-                if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    detail::ReaperRegistry::instance().notify_join_ready(runtime_id);
-                }
-                return;
-            }
-        }
-
-        // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested）
-        while (true) {
-            QueuedTask task;
-            {
-                std::unique_lock<std::mutex> lock(lifecycle_mutex);
-                work_cv.wait(lock, [this] {
-                    return stop_requested || !global_injection_queue.empty();
-                });
-                if (!global_injection_queue.empty()) {
-                    task = std::move(global_injection_queue.front());
-                    global_injection_queue.pop_front();
-                    if (task.is_external && external_pending_count > 0) {
-                        --external_pending_count;
-                        slot_cv.notify_one();
-                    }
-                } else if (stop_requested) {
-                    break;
-                }
-            }
-            if (task.invoker) {
-                task.invoker->execute();
-            }
-        }
-
-        t_current_worker_runtime_id = RuntimeId{0};
-        if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            detail::ReaperRegistry::instance().notify_join_ready(runtime_id);
-        }
-    }
+    void worker_main(std::size_t worker_index);
 
     void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task, bool is_external) {
         {
@@ -373,27 +323,116 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 };
 
-detail::AdmissionDecision Scheduler::acquire_admission(bool block, bool is_internal) const {
-    if (!impl_) {
-        throw std::logic_error("operating on empty/moved-from Scheduler");
-    }
-    return impl_->acquire_admission_slot(block, is_internal);
-}
-
-void Scheduler::rollback_external_slot() const {
-    if (impl_) {
-        impl_->release_external_slot();
-    }
-}
-
-void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const {
-    if (!impl_) {
-        throw std::logic_error("operating on empty/moved-from Scheduler");
-    }
-    impl_->post_task_internal(std::move(invoker), is_external);
-}
-
 namespace detail {
+
+thread_local RuntimeId t_current_worker_runtime_id{0};
+thread_local void* t_current_worker_impl{nullptr};
+thread_local TaskId t_current_executing_task_id{};
+thread_local std::size_t t_current_helping_depth{0};
+
+TaskExecutionContextGuard::TaskExecutionContextGuard(TaskId new_id) noexcept
+    : prev_id(t_current_executing_task_id) {
+    t_current_executing_task_id = new_id;
+}
+
+TaskExecutionContextGuard::~TaskExecutionContextGuard() noexcept {
+    t_current_executing_task_id = prev_id;
+}
+
+void perform_caller_wait(
+    const TaskSharedStateBase& target,
+    std::optional<std::chrono::steady_clock::time_point> deadline) {
+    // 1. Direct Self-Wait 必须在副作用前抛 std::logic_error（R-052 / D-049 / D-065）
+    if (t_current_worker_impl != nullptr &&
+        t_current_executing_task_id != TaskId{} &&
+        t_current_executing_task_id == target.id()) {
+        throw std::logic_error("direct self-wait detected on TaskHandle");
+    }
+
+    // 2. 已完成即时返回
+    if (target.is_completed()) {
+        return;
+    }
+
+    // 3. 非正/已过期 deadline 即时返回
+    if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
+        return;
+    }
+
+    // 4. 非 Worker 线程：执行无界/有界条件变量等待（D-047）
+    if (t_current_worker_impl == nullptr) {
+        std::unique_lock<std::mutex> lock(target.mutex());
+        if (deadline.has_value()) {
+            target.cv().wait_until(lock, *deadline, [&target] {
+                return target.is_completed();
+            });
+        } else {
+            target.cv().wait(lock, [&target] {
+                return target.is_completed();
+            });
+        }
+        return;
+    }
+
+    // 5. 同/源 Runtime Worker 线程：执行 Helping Wait（R-052 / D-048 / D-051）
+    auto* impl = static_cast<Scheduler::Impl*>(t_current_worker_impl);
+
+    // R-059 / D-078 / D-079: 检查 Helping depth 超限
+    if (t_current_helping_depth >= impl->options.max_helping_depth) {
+        throw helping_depth_exceeded{};
+    }
+
+    struct DepthGuard {
+        std::size_t& depth;
+        explicit DepthGuard(std::size_t& d) noexcept : depth(d) { ++depth; }
+        ~DepthGuard() noexcept { --depth; }
+    } guard(t_current_helping_depth);
+
+    while (!target.is_completed()) {
+        if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
+            break;
+        }
+
+        Scheduler::Impl::QueuedTask task;
+        bool found_task = false;
+
+        {
+            std::unique_lock<std::mutex> lock(impl->lifecycle_mutex);
+            const auto st = Scheduler::Impl::unpack(impl->packed_status.load(std::memory_order_acquire));
+            // R-059 / D-080: Immediate 模式下不得 first-start 新 Task
+            if (st.state != SchedulerState::Stopped &&
+                st.shutdown_mode != ShutdownMode::Immediate &&
+                !impl->global_injection_queue.empty()) {
+                task = std::move(impl->global_injection_queue.front());
+                impl->global_injection_queue.pop_front();
+                found_task = true;
+                if (task.is_external && impl->external_pending_count > 0) {
+                    --impl->external_pending_count;
+                    impl->slot_cv.notify_one();
+                }
+            }
+        }
+
+        if (found_task && task.invoker) {
+            task.invoker->execute();
+        } else {
+            // 没有可窃取/帮助的任务，等待目标完成通知
+            std::unique_lock<std::mutex> lock(target.mutex());
+            if (target.is_completed()) {
+                break;
+            }
+            if (deadline.has_value()) {
+                target.cv().wait_until(lock, *deadline, [&target] {
+                    return target.is_completed();
+                });
+            } else {
+                target.cv().wait_for(lock, std::chrono::milliseconds(2), [&target] {
+                    return target.is_completed();
+                });
+            }
+        }
+    }
+}
 
 RuntimeId current_worker_runtime_id() noexcept {
     return t_current_worker_runtime_id;
@@ -434,7 +473,85 @@ std::size_t external_pending_count(const Scheduler& s) {
     }
     return 0;
 }
+
 }  // namespace detail
+
+void Scheduler::Impl::worker_main(std::size_t /*worker_index*/) {
+    detail::t_current_worker_runtime_id = runtime_id;
+    detail::t_current_worker_impl = this;
+    detail::t_current_helping_depth = 0;
+    detail::t_current_executing_task_id = TaskId{};
+
+    // 等待 startup 栅栏完成或中止
+    {
+        std::unique_lock<std::mutex> lock(lifecycle_mutex);
+        ++workers_ready;
+        startup_cv.notify_all();
+        startup_cv.wait(lock, [this] {
+            return startup_done || startup_failed || stop_requested;
+        });
+        if (startup_failed || stop_requested) {
+            detail::t_current_worker_runtime_id = RuntimeId{0};
+            detail::t_current_worker_impl = nullptr;
+            if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                detail::ReaperRegistry::instance().notify_join_ready(runtime_id);
+            }
+            return;
+        }
+    }
+
+    // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested）
+    while (true) {
+        QueuedTask task;
+        {
+            std::unique_lock<std::mutex> lock(lifecycle_mutex);
+            work_cv.wait(lock, [this] {
+                return stop_requested || !global_injection_queue.empty();
+            });
+            if (!global_injection_queue.empty()) {
+                task = std::move(global_injection_queue.front());
+                global_injection_queue.pop_front();
+                if (task.is_external && external_pending_count > 0) {
+                    --external_pending_count;
+                    slot_cv.notify_one();
+                }
+            } else if (stop_requested) {
+                break;
+            }
+        }
+        if (task.invoker) {
+            task.invoker->execute();
+        }
+    }
+
+    detail::t_current_worker_runtime_id = RuntimeId{0};
+    detail::t_current_worker_impl = nullptr;
+    detail::t_current_helping_depth = 0;
+    detail::t_current_executing_task_id = TaskId{};
+    if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        detail::ReaperRegistry::instance().notify_join_ready(runtime_id);
+    }
+}
+
+detail::AdmissionDecision Scheduler::acquire_admission(bool block, bool is_internal) const {
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    return impl_->acquire_admission_slot(block, is_internal);
+}
+
+void Scheduler::rollback_external_slot() const {
+    if (impl_) {
+        impl_->release_external_slot();
+    }
+}
+
+void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const {
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    impl_->post_task_internal(std::move(invoker), is_external);
+}
 
 Scheduler::Scheduler(SchedulerOptions options) {
     validate_options(options);
@@ -446,7 +563,7 @@ Scheduler::Scheduler(SchedulerOptions options) {
 Scheduler::~Scheduler() {
     if (impl_) {
         // R-021: 检查是否在属于该 Runtime 的 Worker 线程上销毁最后一个 Handle
-        if (impl_.use_count() == 1 && t_current_worker_runtime_id == impl_->runtime_id) {
+        if (impl_.use_count() == 1 && detail::t_current_worker_runtime_id == impl_->runtime_id) {
             impl_->execute_worker_orphan_handoff(impl_);
             impl_.reset();
             return;

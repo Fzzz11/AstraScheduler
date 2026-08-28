@@ -181,6 +181,8 @@ private:
     friend void detail::run_test_task_on_worker(Scheduler&, std::function<void()>);
     friend std::size_t detail::global_injection_queue_size(const Scheduler&);
     friend std::size_t detail::external_pending_count(const Scheduler&);
+    friend void detail::perform_caller_wait(const detail::TaskSharedStateBase&,
+                                            std::optional<std::chrono::steady_clock::time_point>);
 };
 
 namespace detail {
