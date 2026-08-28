@@ -161,6 +161,77 @@ private:
     std::vector<GraphEdge> edges_;
 };
 
+// 任务图运行状态（D-112）。
+enum class GraphRunState : std::uint8_t {
+    Running = 1,
+    Succeeded = 2,
+    Failed = 3,
+    Cancelled = 4,
+};
+
+// 任务图等待结果（D-113）。
+enum class GraphWaitResult : std::uint8_t {
+    Completed = 1,
+    TimedOut = 2,
+};
+
+// 任务图聚合执行报告（D-112）。
+class GraphReport {
+public:
+    std::size_t total_nodes{0};
+    std::size_t succeeded_nodes{0};
+    std::size_t failed_nodes{0};
+    std::size_t cancelled_nodes{0};
+    std::vector<std::pair<NodeId, std::exception_ptr>> failed_node_exceptions;
+};
+
+namespace detail {
+class GraphRunSharedState;
+}
+
+// -----------------------------------------------------------------------------
+// GraphRun (R-070 / D-104 / D-112 / D-113)
+// 任务图执行实例 Handle，支持多副本共享观察与状态等待
+// -----------------------------------------------------------------------------
+class ASTRA_EXPORT GraphRun {
+public:
+    GraphRun() noexcept = default;
+    ~GraphRun() = default;
+
+    GraphRun(const GraphRun&) noexcept = default;
+    GraphRun& operator=(const GraphRun&) noexcept = default;
+    GraphRun(GraphRun&&) noexcept = default;
+    GraphRun& operator=(GraphRun&&) noexcept = default;
+
+    [[nodiscard]] bool valid() const noexcept {
+        return state_ != nullptr;
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return valid();
+    }
+
+    [[nodiscard]] GraphRunId id() const noexcept;
+    [[nodiscard]] std::size_t node_count() const noexcept;
+    [[nodiscard]] GraphRunState state() const;
+    [[nodiscard]] bool is_completed() const;
+
+    void wait() const;
+    [[nodiscard]] GraphWaitResult wait_for(std::chrono::nanoseconds timeout) const;
+
+    [[nodiscard]] const GraphReport& get_report() const &;
+    const GraphReport& get_report() const && = delete;
+
+    void request_cancel() const noexcept;
+
+private:
+    friend class Scheduler;
+    explicit GraphRun(std::shared_ptr<detail::GraphRunSharedState> state)
+        : state_(std::move(state)) {}
+
+    std::shared_ptr<detail::GraphRunSharedState> state_{nullptr};
+};
+
 }  // namespace astra
 
 #endif  // ASTRA_GRAPH_HPP

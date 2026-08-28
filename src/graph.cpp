@@ -1,4 +1,5 @@
 #include <astra/graph.hpp>
+#include "graph_shared_state.hpp"
 
 #include <algorithm>
 #include <map>
@@ -125,6 +126,76 @@ FrozenTaskGraph TaskGraph::freeze() && {
     }
 
     return FrozenTaskGraph(std::move(nodes_), std::move(edges_));
+}
+
+// -----------------------------------------------------------------------------
+// GraphRun 实现（R-070 / D-112 / D-113）
+// -----------------------------------------------------------------------------
+
+GraphRunId GraphRun::id() const noexcept {
+    return state_ ? state_->id : GraphRunId{};
+}
+
+std::size_t GraphRun::node_count() const noexcept {
+    return state_ ? state_->total_node_count : 0;
+}
+
+GraphRunState GraphRun::state() const {
+    if (!state_) {
+        throw std::logic_error("operating on empty GraphRun");
+    }
+    return state_->run_state.load(std::memory_order_acquire);
+}
+
+bool GraphRun::is_completed() const {
+    if (!state_) {
+        throw std::logic_error("operating on empty GraphRun");
+    }
+    return state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running;
+}
+
+void GraphRun::wait() const {
+    if (!state_) {
+        throw std::logic_error("operating on empty GraphRun");
+    }
+    std::unique_lock<std::mutex> lock(state_->mutex);
+    state_->cv.wait(lock, [this] {
+        return state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running;
+    });
+}
+
+GraphWaitResult GraphRun::wait_for(std::chrono::nanoseconds timeout) const {
+    if (!state_) {
+        throw std::logic_error("operating on empty GraphRun");
+    }
+    if (state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running) {
+        return GraphWaitResult::Completed;
+    }
+    if (timeout <= std::chrono::nanoseconds::zero()) {
+        return (state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running)
+                   ? GraphWaitResult::Completed
+                   : GraphWaitResult::TimedOut;
+    }
+    std::unique_lock<std::mutex> lock(state_->mutex);
+    const bool done = state_->cv.wait_for(lock, timeout, [this] {
+        return state_->run_state.load(std::memory_order_acquire) != GraphRunState::Running;
+    });
+    return done ? GraphWaitResult::Completed : GraphWaitResult::TimedOut;
+}
+
+const GraphReport& GraphRun::get_report() const & {
+    if (!state_) {
+        throw std::logic_error("operating on empty GraphRun");
+    }
+    wait();
+    return state_->report;
+}
+
+void GraphRun::request_cancel() const noexcept {
+    if (!state_) {
+        return;
+    }
+    state_->cancel_requested.store(true, std::memory_order_release);
 }
 
 }  // namespace astra

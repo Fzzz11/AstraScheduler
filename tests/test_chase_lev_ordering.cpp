@@ -186,15 +186,15 @@ void run_stress_test(const char* name) {
 
     producer_done.store(true, std::memory_order_release);
 
-    // 清空可能剩余的元素
+    for (auto& th : thieves) {
+        th.join();
+    }
+
+    // 此时所有 Thief 均已退出，Owner 单线程排空剩余所有元素
     int remaining = -1;
     while (deque.pop(remaining) == astra::detail::DequeResultStatus::Success) {
         TEST_ASSERT(remaining >= 0 && remaining < kTotalItems);
         item_claim_count[remaining].fetch_add(1, std::memory_order_relaxed);
-    }
-
-    for (auto& th : thieves) {
-        th.join();
     }
 
     // 验证每个元素均被消费且仅被消费一次（No duplicate, no lost）

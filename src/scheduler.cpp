@@ -1,5 +1,6 @@
 #include <astra/scheduler.hpp>
 #include "chase_lev_deque.hpp"
+#include "graph_shared_state.hpp"
 #include "reaper_registry.hpp"
 
 #include <algorithm>
@@ -424,7 +425,29 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
     }
 
+    std::atomic<std::uint64_t> next_graph_run_sequence{0};
+
+    GraphRunId allocate_graph_run_id() noexcept {
+        return GraphRunId{runtime_id, ++next_graph_run_sequence};
+    }
+
     detail::AdmissionDecision acquire_admission_slot(bool block, bool is_internal) {
+        return acquire_admission_slots(1, block, is_internal);
+    }
+
+    detail::AdmissionDecision acquire_admission_slots(std::size_t count, bool block, bool is_internal) {
+        if (count == 0) {
+            const auto st = unpack(packed_status.load(std::memory_order_acquire));
+            if (st.state == SchedulerState::Stopped) {
+                return detail::AdmissionDecision::Stopped;
+            }
+            if (st.state == SchedulerState::Stopping &&
+                (!is_internal || st.shutdown_mode != ShutdownMode::Graceful)) {
+                return detail::AdmissionDecision::Stopping;
+            }
+            return detail::AdmissionDecision::Success;
+        }
+
         std::unique_lock<std::mutex> lock(lifecycle_mutex);
         while (true) {
             const auto st = unpack(packed_status.load(std::memory_order_acquire));
@@ -443,8 +466,13 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 return detail::AdmissionDecision::Success;
             }
 
-            if (external_pending_count < options.external_pending_capacity) {
-                ++external_pending_count;
+            // R-070 / D-106: 若 count > external_pending_capacity，即使 policy 为 Block 也立即以 CapacityExhausted 拒绝
+            if (count > options.external_pending_capacity) {
+                return detail::AdmissionDecision::CapacityExhausted;
+            }
+
+            if (external_pending_count + count <= options.external_pending_capacity) {
+                external_pending_count += count;
                 return detail::AdmissionDecision::Success;
             }
 
@@ -452,23 +480,32 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 return detail::AdmissionDecision::CapacityExhausted;
             }
 
-            // Ordinary thread waiting on slot_cv (R-061 / D-086)
-            slot_cv.wait(lock, [this] {
+            // Ordinary thread waiting on slot_cv (R-061 / D-086 / D-106)
+            slot_cv.wait(lock, [this, count] {
                 const auto current_st = unpack(packed_status.load(std::memory_order_acquire));
                 return current_st.state != SchedulerState::Running ||
-                       external_pending_count < options.external_pending_capacity;
+                       (external_pending_count + count <= options.external_pending_capacity);
             });
         }
     }
 
     void release_external_slot() {
+        release_external_slots(1);
+    }
+
+    void release_external_slots(std::size_t count) {
+        if (count == 0) {
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex);
-            if (external_pending_count > 0) {
-                --external_pending_count;
+            if (external_pending_count >= count) {
+                external_pending_count -= count;
+            } else {
+                external_pending_count = 0;
             }
         }
-        slot_cv.notify_one();
+        slot_cv.notify_all();
     }
 
     void worker_main(std::size_t worker_index);
@@ -849,78 +886,83 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
             parked_workers.fetch_add(1, std::memory_order_seq_cst);
             const std::uint64_t observed_epoch = work_epoch.load(std::memory_order_acquire);
 
-            std::unique_lock<std::mutex> lock(lifecycle_mutex);
-            work_cv.wait(lock, [this, &my_local_deque, observed_epoch] {
-                if (stop_requested) {
-                    const auto st = unpack(packed_status.load(std::memory_order_acquire));
-                    if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
-                        return true;
+            {
+                std::unique_lock<std::mutex> lock(lifecycle_mutex);
+                work_cv.wait(lock, [this, &my_local_deque, observed_epoch] {
+                    if (stop_requested) {
+                        const auto st = unpack(packed_status.load(std::memory_order_acquire));
+                        if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
+                            return true;
+                        }
+                        if (!global_injection_queue.empty() || !my_local_deque.empty() || active_task_count == 0) {
+                            return true;
+                        }
+                        for (const auto& d : local_deques) {
+                            if (d && !d->empty()) return true;
+                        }
+                    } else {
+                        if (work_epoch.load(std::memory_order_acquire) != observed_epoch) {
+                            return true;
+                        }
+                        if (!global_injection_queue.empty() || !my_local_deque.empty()) {
+                            return true;
+                        }
+                        for (const auto& d : local_deques) {
+                            if (d && !d->empty()) return true;
+                        }
                     }
-                    if (!global_injection_queue.empty() || !my_local_deque.empty() || active_task_count == 0) {
-                        return true;
+                    return false;
+                });
+                parked_workers.fetch_sub(1, std::memory_order_seq_cst);
+
+                if (!global_injection_queue.empty()) {
+                    task = std::move(global_injection_queue.front());
+                    global_injection_queue.pop_front();
+                    ++active_task_count;
+                    found_task = true;
+                    consecutive_local_count = 0;
+                    if (task.is_external && external_pending_count > 0) {
+                        --external_pending_count;
+                        slot_cv.notify_one();
                     }
-                    for (const auto& d : local_deques) {
-                        if (d && !d->empty()) return true;
-                    }
+                } else if (my_local_deque.pop_back(task)) {
+                    ++active_task_count;
+                    found_task = true;
+                    ++consecutive_local_count;
                 } else {
-                    if (work_epoch.load(std::memory_order_acquire) != observed_epoch) {
-                        return true;
-                    }
-                    if (!global_injection_queue.empty() || !my_local_deque.empty()) {
-                        return true;
-                    }
-                    for (const auto& d : local_deques) {
-                        if (d && !d->empty()) return true;
-                    }
-                }
-                return false;
-            });
-            parked_workers.fetch_sub(1, std::memory_order_seq_cst);
-
-            if (!global_injection_queue.empty()) {
-                task = std::move(global_injection_queue.front());
-                global_injection_queue.pop_front();
-                ++active_task_count;
-                found_task = true;
-                consecutive_local_count = 0;
-                if (task.is_external && external_pending_count > 0) {
-                    --external_pending_count;
-                    slot_cv.notify_one();
-                }
-            } else if (my_local_deque.pop_back(task)) {
-                ++active_task_count;
-                found_task = true;
-                ++consecutive_local_count;
-            } else {
-                // 唤醒后尝试窃取一轮
-                detail::generate_steal_victims(worker_index, options.worker_count, options.steal_probe_limit, rng_state, victims);
-                for (std::size_t v : victims) {
-                    if (v < local_deques.size() && local_deques[v]->steal_front(task)) {
-                        found_task = true;
-                        consecutive_local_count = 0;
-                        ++active_task_count;
-                        break;
-                    }
-                }
-            }
-
-            if (!found_task && stop_requested) {
-                const auto st = unpack(packed_status.load(std::memory_order_acquire));
-                if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
-                    break;
-                }
-                bool any_tasks = !global_injection_queue.empty() || !my_local_deque.empty();
-                if (!any_tasks) {
-                    for (const auto& d : local_deques) {
-                        if (d && !d->empty()) {
-                            any_tasks = true;
+                    // 唤醒后尝试窃取一轮
+                    lock.unlock();
+                    detail::generate_steal_victims(worker_index, options.worker_count, options.steal_probe_limit, rng_state, victims);
+                    for (std::size_t v : victims) {
+                        if (v < local_deques.size() && local_deques[v]->steal_front(task)) {
+                            found_task = true;
+                            consecutive_local_count = 0;
+                            std::lock_guard<std::mutex> lk(lifecycle_mutex);
+                            ++active_task_count;
                             break;
                         }
                     }
+                    lock.lock();
                 }
-                if (!any_tasks && active_task_count == 0) {
-                    work_cv.notify_all();
-                    break;
+
+                if (!found_task && stop_requested) {
+                    const auto st = unpack(packed_status.load(std::memory_order_acquire));
+                    if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
+                        break;
+                    }
+                    bool any_tasks = !global_injection_queue.empty() || !my_local_deque.empty();
+                    if (!any_tasks) {
+                        for (const auto& d : local_deques) {
+                            if (d && !d->empty()) {
+                                any_tasks = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!any_tasks && active_task_count == 0) {
+                        work_cv.notify_all();
+                        break;
+                    }
                 }
             }
         }
@@ -1052,6 +1094,113 @@ void Scheduler::shutdown_now() {
         throw std::logic_error("self-shutdown_now attempted from worker of the same runtime");
     }
     impl_->shutdown_sync(ShutdownMode::Immediate);
+}
+
+GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
+    if (!valid()) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+
+    const std::size_t n = graph.node_count();
+    const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+    const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
+    const bool can_block = !is_worker;
+
+    // R-070 / D-106: all-or-nothing slot reservation
+    const auto decision = impl_->acquire_admission_slots(n, can_block, is_internal);
+    if (decision == detail::AdmissionDecision::Stopping) {
+        throw submission_rejected(SubmissionError::Stopping);
+    }
+    if (decision == detail::AdmissionDecision::Stopped) {
+        throw submission_rejected(SubmissionError::Stopped);
+    }
+    if (decision == detail::AdmissionDecision::CapacityExhausted) {
+        throw submission_rejected(SubmissionError::CapacityExhausted);
+    }
+
+    const GraphRunId gid = impl_->allocate_graph_run_id();
+
+    // R-070: 空图直接完成
+    if (n == 0) {
+        auto state = std::make_shared<detail::GraphRunSharedState>(gid, 0);
+        state->run_state.store(GraphRunState::Succeeded, std::memory_order_release);
+        return GraphRun(std::move(state));
+    }
+
+    std::shared_ptr<detail::GraphRunSharedState> state;
+    try {
+        state = std::make_shared<detail::GraphRunSharedState>(gid, n);
+    } catch (...) {
+        if (!is_internal) {
+            impl_->release_external_slots(n);
+        }
+        throw;
+    }
+
+    // 填充 node_entries 与 edges
+    auto& nodes = graph.nodes_internal();
+    for (auto& node_data : nodes) {
+        const std::size_t idx = node_data.id.value();
+        state->node_entries[idx].id = node_data.id;
+        state->node_entries[idx].invoker = std::move(node_data.invoker);
+    }
+
+    for (const auto& edge : graph.edges()) {
+        const std::size_t u = edge.from.value();
+        const std::size_t v = edge.to.value();
+        state->node_entries[v].remaining_predecessors.fetch_add(1, std::memory_order_relaxed);
+        state->node_entries[u].successors.push_back({edge.to, edge.policy});
+    }
+
+    // 递归/内部分发函数
+    auto post_node = [impl = impl_.get(), state, is_internal](auto self, NodeId u_id) -> void {
+        auto task_fn = [impl, state, u_id, is_internal, self] {
+            const std::size_t node_idx = u_id.value();
+            auto& entry = state->node_entries[node_idx];
+
+            if (state->cancel_requested.load(std::memory_order_acquire)) {
+                state->mark_node_terminal(node_idx, TaskState::Cancelled);
+                return;
+            }
+
+            try {
+                if (entry.invoker) {
+                    entry.invoker->execute();
+                }
+                state->mark_node_terminal(node_idx, TaskState::Succeeded);
+            } catch (...) {
+                state->mark_node_terminal(node_idx, TaskState::Failed, std::current_exception());
+            }
+
+            // 触发后继节点（R-070 / D-107）
+            for (const auto& [succ_id, policy] : entry.successors) {
+                auto& succ_entry = state->node_entries[succ_id.value()];
+                if (succ_entry.remaining_predecessors.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    // 成为唯一 1->0 successor release owner
+                    self(self, succ_id);
+                }
+            }
+        };
+
+        impl->post_task_internal(
+            std::make_unique<detail::GraphTaskInvoker<decltype(task_fn)>>(std::move(task_fn)),
+            !is_internal);
+    };
+
+    // 寻找所有 0-predecessor roots 并直接发布 Ready
+    std::vector<NodeId> roots;
+    roots.reserve(n);
+    for (std::size_t i = 1; i <= n; ++i) {
+        if (state->node_entries[i].remaining_predecessors.load(std::memory_order_relaxed) == 0) {
+            roots.push_back(NodeId{i});
+        }
+    }
+
+    for (NodeId root_id : roots) {
+        post_node(post_node, root_id);
+    }
+
+    return GraphRun(std::move(state));
 }
 
 }  // namespace astra

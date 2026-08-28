@@ -278,7 +278,7 @@ class R110PackageConsumerGates(PackageBuildFixture):
             ["nm", "-D", "--defined-only", str(shared)],
             context="nm dynamic symbols",
         )
-        # AST-003 / AST-004 / AST-018：公开 API 经 export macro 导出，内部符号 hidden。
+        # AST-003 / AST-004 / AST-018 / AST-028 / AST-029：公开 API 经 export macro 导出，内部符号 hidden。
         expected_symbols = [
             "_ZN5astra15library_versionEv",
             "_ZN5astra22library_version_stringEv",
@@ -302,6 +302,7 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "_ZN5astra9SchedulerD2Ev",
             "_ZN5astra9Scheduler8shutdownEv",
             "_ZN5astra9Scheduler12shutdown_nowEv",
+            "_ZN5astra9Scheduler3runEONS_15FrozenTaskGraphE",
             "_ZN5astra9ScheduleraSERKS0_",
             "_ZN5astra9ScheduleraSEOS0_",
             "_ZNK5astra19FinalizationControl13wait_for_implENSt6chrono8durationIlSt5ratioILl1ELl1000000000EEEE",
@@ -314,6 +315,15 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "_ZNK5astra9Scheduler17acquire_admissionEbb",
             "_ZNK5astra9Scheduler17post_task_invokerESt10unique_ptrINS_6detail15TaskInvokerBaseESt14default_deleteIS3_EEb",
             "_ZNK5astra9Scheduler22rollback_external_slotEv",
+            "_ZNK5astra8GraphRun10node_countEv",
+            "_ZNK5astra8GraphRun12is_completedEv",
+            "_ZNK5astra8GraphRun14request_cancelEv",
+            "_ZNK5astra8GraphRun2idEv",
+            "_ZNK5astra8GraphRun4waitEv",
+            "_ZNK5astra8GraphRun5stateEv",
+            "_ZNK5astra8GraphRun8wait_forENSt6chrono8durationIlSt5ratioILl1ELl1000000000EEEE",
+            "_ZNKR5astra8GraphRun10get_reportEv",
+            "_ZNO5astra9TaskGraph6freezeEv",
         ]
         for sym in expected_symbols:
             self.assertIn(
@@ -322,7 +332,7 @@ class R110PackageConsumerGates(PackageBuildFixture):
             )
         # 动态表中 astra 命名空间导出符号必须仅为公开 API 集合；
         # 其余符号（含版本字符串静态存储、内部 Impl、Helper 等）保持 hidden。
-        exported = re.findall(r"_ZN5astra\w+|_ZNK5astra\w+", dynamic)
+        exported = re.findall(r"_ZN5astra\w+|_ZNK5astra\w+|_ZNKR5astra\w+|_ZNO5astra\w+", dynamic)
         self.assertCountEqual(
             exported,
             expected_symbols,
@@ -776,6 +786,15 @@ class AST028TaskGraphFreezeGates(PackageBuildFixture):
 
     def test_AST028_consumer_runs_all_task_graph_freeze_checks(self):
         # 独立 consumer（static+shared）运行期断言 R-069
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
+class AST029GraphAdmissionGates(PackageBuildFixture):
+    """AST-029：实现 GraphRun 原子 admission 与依赖发布（R-070）。"""
+
+    def test_AST029_consumer_runs_all_graph_admission_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-070
         self._run_consumer(self.static_consumer)
         self._run_consumer(self.shared_consumer)
 

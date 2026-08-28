@@ -484,65 +484,7 @@ int main() {
     }
     s_park.shutdown();
 
-    // 17. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
-    static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
-                  "FinalizationControl must not be default-constructible");
-    static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,
-                  "FinalizationControl must be noexcept copyable");
-    static_assert(std::is_nothrow_move_constructible_v<astra::FinalizationControl>,
-                  "FinalizationControl must be noexcept movable");
-    static_assert(std::is_nothrow_destructible_v<astra::FinalizationControl>,
-                  "FinalizationControl must be noexcept destructible");
-    static_assert(noexcept(astra::begin_finalization()),
-                  "begin_finalization must be noexcept");
-
-    auto f_ctrl = astra::begin_finalization();
-    auto f_ctrl2 = f_ctrl;
-    f_ctrl2.request_immediate();
-    auto f_res = f_ctrl2.wait_for(std::chrono::milliseconds(10));
-    if (f_res != astra::FinalizationWaitResult::Completed) {
-        std::printf("FinalizationWaitResult must be Completed\n");
-        return 1;
-    }
-    f_ctrl.wait();
-
-    // 16. AST-019: Finalization Begin & Startup Race (R-031 / R-037 / R-038 / R-104)
-    bool new_sched_rejected = false;
-    try {
-        astra::Scheduler s_rejected;
-    } catch (const astra::scheduler_creation_rejected& e) {
-        if (e.reason() == astra::SchedulerCreationError::FinalizationStarted) {
-            new_sched_rejected = true;
-        }
-    }
-    if (!new_sched_rejected) {
-        std::printf("Scheduler creation after begin_finalization must be rejected\n");
-        return 1;
-    }
-
-    // 17. AST-020: Finalization Wait & wait_for (R-032 / R-033 / R-039 / R-040 / R-041 / R-042)
-    auto f_res_zero = f_ctrl.wait_for(std::chrono::milliseconds(0));
-    if (f_res_zero != astra::FinalizationWaitResult::Completed) {
-        std::printf("wait_for(0) after completion must return Completed\n");
-        return 1;
-    }
-    auto f_res_neg = f_ctrl.wait_for(std::chrono::milliseconds(-5));
-    if (f_res_neg != astra::FinalizationWaitResult::Completed) {
-        std::printf("wait_for(negative) after completion must return Completed\n");
-        return 1;
-    }
-    f_ctrl2.wait();
-
-    // 18. AST-021: Finalization Escalation (R-034 / R-047)
-    static_assert(noexcept(f_ctrl.request_immediate()), "request_immediate must be noexcept");
-    f_ctrl.request_immediate();
-    f_ctrl2.request_immediate();
-    if (f_ctrl.wait_for(std::chrono::milliseconds(0)) != astra::FinalizationWaitResult::Completed) {
-        std::printf("request_immediate idempotence check failed\n");
-        return 1;
-    }
-
-    // 19. AST-028: TaskGraph consuming freeze & validation (R-069)
+    // 17. AST-028: TaskGraph consuming freeze & validation (R-069)
     astra::TaskGraph tg;
     auto gn1 = tg.emplace([] {});
     auto gn2 = tg.emplace([] {});
@@ -567,6 +509,92 @@ int main() {
     }
     if (!cycle_caught) {
         std::printf("AST-028 TaskGraph cycle validation failed\n");
+        return 1;
+    }
+
+    // 18. AST-029: GraphRun admission & dependency release (R-070)
+    astra::Scheduler sched_graph;
+    astra::TaskGraph tg_exec;
+    std::atomic<int> g_n1_done{0};
+    std::atomic<int> g_n2_done{0};
+    auto eg1 = tg_exec.emplace([&] { g_n1_done.store(1); });
+    auto eg2 = tg_exec.emplace([&] {
+        if (g_n1_done.load() == 1) {
+            g_n2_done.store(1);
+        }
+    });
+    tg_exec.add_edge(eg1, eg2);
+    auto gr = sched_graph.run(std::move(tg_exec).freeze());
+    gr.wait();
+    if (!gr.is_completed() || gr.state() != astra::GraphRunState::Succeeded ||
+        g_n1_done.load() != 1 || g_n2_done.load() != 1) {
+        std::printf("AST-029 GraphRun execution/dependency verification failed\n");
+        return 1;
+    }
+    // Empty graph run
+    auto gr_empty = sched_graph.run(astra::TaskGraph{}.freeze());
+    if (!gr_empty.is_completed() || gr_empty.node_count() != 0 ||
+        gr_empty.state() != astra::GraphRunState::Succeeded) {
+        std::printf("AST-029 empty GraphRun failed\n");
+        return 1;
+    }
+    sched_graph.shutdown();
+
+    // 19. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
+                  "FinalizationControl must not be default-constructible");
+    static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,
+                  "FinalizationControl must be noexcept copyable");
+    static_assert(std::is_nothrow_move_constructible_v<astra::FinalizationControl>,
+                  "FinalizationControl must be noexcept movable");
+    static_assert(std::is_nothrow_destructible_v<astra::FinalizationControl>,
+                  "FinalizationControl must be noexcept destructible");
+    static_assert(noexcept(astra::begin_finalization()),
+                  "begin_finalization must be noexcept");
+
+    auto f_ctrl = astra::begin_finalization();
+    auto f_ctrl2 = f_ctrl;
+    f_ctrl2.request_immediate();
+    auto f_res = f_ctrl2.wait_for(std::chrono::milliseconds(10));
+    if (f_res != astra::FinalizationWaitResult::Completed) {
+        std::printf("FinalizationWaitResult must be Completed\n");
+        return 1;
+    }
+    f_ctrl.wait();
+
+    // 20. AST-019: Finalization Begin & Startup Race (R-031 / R-037 / R-038 / R-104)
+    bool new_sched_rejected = false;
+    try {
+        astra::Scheduler s_rejected;
+    } catch (const astra::scheduler_creation_rejected& e) {
+        if (e.reason() == astra::SchedulerCreationError::FinalizationStarted) {
+            new_sched_rejected = true;
+        }
+    }
+    if (!new_sched_rejected) {
+        std::printf("Scheduler creation after begin_finalization must be rejected\n");
+        return 1;
+    }
+
+    // 21. AST-020: Finalization Wait & wait_for (R-032 / R-033 / R-039 / R-040 / R-041 / R-042)
+    auto f_res_zero = f_ctrl.wait_for(std::chrono::milliseconds(0));
+    if (f_res_zero != astra::FinalizationWaitResult::Completed) {
+        std::printf("wait_for(0) after completion must return Completed\n");
+        return 1;
+    }
+    auto f_res_neg = f_ctrl.wait_for(std::chrono::milliseconds(-5));
+    if (f_res_neg != astra::FinalizationWaitResult::Completed) {
+        std::printf("wait_for(negative) after completion must return Completed\n");
+        return 1;
+    }
+    f_ctrl2.wait();
+
+    // 22. AST-021: Finalization Escalation (R-034 / R-047)
+    static_assert(noexcept(f_ctrl.request_immediate()), "request_immediate must be noexcept");
+    f_ctrl.request_immediate();
+    f_ctrl2.request_immediate();
+    if (f_ctrl.wait_for(std::chrono::milliseconds(0)) != astra::FinalizationWaitResult::Completed) {
+        std::printf("request_immediate idempotence check failed\n");
         return 1;
     }
 

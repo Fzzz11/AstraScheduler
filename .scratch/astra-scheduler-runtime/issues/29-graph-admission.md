@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-070)
 Milestone: v0.4.0
 Blocked by: AST-010, AST-022, AST-028
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-070]` 图不会部分接受，successor不会早启、重复Ready或永久漏release。
+- [x] `[R-070]` 图不会部分接受，successor不会早启、重复Ready或永久漏release。
 
 ## Out of scope
 
@@ -40,5 +40,8 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-070
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-106, D-107
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - In-tree unit tests: `tests/test_graph_admission.cpp` (27/27 ctest passing in debug and ASan/UBSan/LSan)
+  - Package consumer gates: `tools/check_cmake_package.py` (AST029GraphAdmissionGates, 44/44 tests passed)
+  - Release gates: `tools/check_release_gates.py` (15/15 tests passed)
 

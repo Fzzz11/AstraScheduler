@@ -8,6 +8,7 @@
 #include <astra/export.hpp>
 #include <astra/capabilities.hpp>
 #include <astra/error.hpp>
+#include <astra/graph.hpp>
 #include <astra/id.hpp>
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
@@ -72,6 +73,9 @@ public:
 
     // 请求立即停机（R-016 / R-019）。
     void shutdown_now();
+
+    // 提交单次执行任务图（R-070 / D-104 / D-106 / D-107）。
+    GraphRun run(FrozenTaskGraph&& graph);
 
     // 阻塞/按策略提交任务（R-048 / R-058 / R-061 / R-062 / R-102）。
     template <typename F, typename... Args>
