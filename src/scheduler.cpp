@@ -66,6 +66,14 @@ RuntimeId allocate_runtime_id() {
 
 }  // namespace
 
+namespace detail {
+extern thread_local RuntimeId t_current_worker_runtime_id;
+extern thread_local void* t_current_worker_impl;
+extern thread_local std::size_t t_current_worker_index;
+extern thread_local TaskId t_current_executing_task_id;
+extern thread_local std::size_t t_current_helping_depth;
+}  // namespace detail
+
 struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Scheduler::Impl> {
     RuntimeId runtime_id;
     SchedulerOptions options;
@@ -94,11 +102,57 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     };
     std::deque<QueuedTask> global_injection_queue;
 
+    struct LockedLocalDeque {
+        mutable std::mutex mutex;
+        std::deque<QueuedTask> tasks;
+
+        void push_back(QueuedTask task) {
+            std::lock_guard<std::mutex> lock(mutex);
+            tasks.push_back(std::move(task));
+        }
+
+        bool pop_back(QueuedTask& out) {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (tasks.empty()) {
+                return false;
+            }
+            out = std::move(tasks.back());
+            tasks.pop_back();
+            return true;
+        }
+
+        bool steal_front(QueuedTask& out) {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (tasks.empty()) {
+                return false;
+            }
+            out = std::move(tasks.front());
+            tasks.pop_front();
+            return true;
+        }
+
+        bool empty() const {
+            std::lock_guard<std::mutex> lock(mutex);
+            return tasks.empty();
+        }
+
+        std::size_t size() const {
+            std::lock_guard<std::mutex> lock(mutex);
+            return tasks.size();
+        }
+    };
+    std::vector<std::unique_ptr<LockedLocalDeque>> local_deques;
+
     Impl(RuntimeId id, SchedulerOptions opts, SchedulerCapabilities caps)
         : runtime_id(id),
           options(std::move(opts)),
           capabilities(caps),
           packed_status(pack(SchedulerState::Running, ShutdownMode::None)) {
+        
+        local_deques.reserve(options.worker_count);
+        for (std::size_t i = 0; i < options.worker_count; ++i) {
+            local_deques.push_back(std::make_unique<LockedLocalDeque>());
+        }
         
         // 1. Reaper 注册与能力预留（R-023, R-024, R-097）
         auto& registry = detail::ReaperRegistry::instance();
@@ -260,6 +314,18 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 slot_cv.notify_one();
             }
         }
+        for (auto& d : local_deques) {
+            if (d) {
+                std::lock_guard<std::mutex> lk(d->mutex);
+                while (!d->tasks.empty()) {
+                    auto task = std::move(d->tasks.front());
+                    d->tasks.pop_front();
+                    if (task.invoker) {
+                        task.invoker->cancel_pre_start();
+                    }
+                }
+            }
+        }
     }
 
     // 状态转换与模式保持（R-014 / R-015 / R-022）
@@ -404,9 +470,15 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     void worker_main(std::size_t worker_index);
 
     void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task, bool is_external) {
-        {
-            std::lock_guard<std::mutex> lock(lifecycle_mutex);
-            global_injection_queue.push_back({std::move(task), is_external});
+        if (!is_external && detail::t_current_worker_impl == this &&
+            detail::t_current_worker_runtime_id == runtime_id &&
+            detail::t_current_worker_index < local_deques.size()) {
+            local_deques[detail::t_current_worker_index]->push_back({std::move(task), false});
+        } else {
+            {
+                std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                global_injection_queue.push_back({std::move(task), is_external});
+            }
         }
         work_cv.notify_one();
     }
@@ -438,6 +510,7 @@ namespace detail {
 
 thread_local RuntimeId t_current_worker_runtime_id{0};
 thread_local void* t_current_worker_impl{nullptr};
+thread_local std::size_t t_current_worker_index{0};
 thread_local TaskId t_current_executing_task_id{};
 thread_local std::size_t t_current_helping_depth{0};
 
@@ -507,7 +580,15 @@ void perform_caller_wait(
         Scheduler::Impl::QueuedTask task;
         bool found_task = false;
 
-        {
+        if (t_current_worker_index < impl->local_deques.size()) {
+            if (impl->local_deques[t_current_worker_index]->pop_back(task)) {
+                found_task = true;
+                std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
+                ++impl->active_task_count;
+            }
+        }
+
+        if (!found_task) {
             std::unique_lock<std::mutex> lock(impl->lifecycle_mutex);
             const auto st = Scheduler::Impl::unpack(impl->packed_status.load(std::memory_order_acquire));
             // R-059 / D-080: Immediate 模式下不得 first-start 新 Task
@@ -594,9 +675,10 @@ std::size_t external_pending_count(const Scheduler& s) {
 
 }  // namespace detail
 
-void Scheduler::Impl::worker_main(std::size_t /*worker_index*/) {
+void Scheduler::Impl::worker_main(std::size_t worker_index) {
     detail::t_current_worker_runtime_id = runtime_id;
     detail::t_current_worker_impl = this;
+    detail::t_current_worker_index = worker_index;
     detail::t_current_helping_depth = 0;
     detail::t_current_executing_task_id = TaskId{};
 
@@ -618,23 +700,66 @@ void Scheduler::Impl::worker_main(std::size_t /*worker_index*/) {
         }
     }
 
+    auto& my_local_deque = *local_deques[worker_index];
+    std::size_t consecutive_local_count = 0;
+    constexpr std::size_t kMaxConsecutiveLocalTasks = 64;
+
     // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested 且 Drain Closure 排空）
     while (true) {
         QueuedTask task;
-        {
+        bool found_task = false;
+
+        // 1. 优先尝试从本 Worker 的 Local Deque (LIFO) 获取任务（受防饥饿上限限制）
+        if (consecutive_local_count < kMaxConsecutiveLocalTasks) {
+            if (my_local_deque.pop_back(task)) {
+                found_task = true;
+                ++consecutive_local_count;
+                {
+                    std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                    ++active_task_count;
+                }
+            }
+        }
+
+        // 2. 若 Local 为空或防饥饿阈值触发，探测 Global Injection Queue (FIFO)
+        if (!found_task) {
             std::unique_lock<std::mutex> lock(lifecycle_mutex);
-            work_cv.wait(lock, [this] {
+            if (!global_injection_queue.empty()) {
+                task = std::move(global_injection_queue.front());
+                global_injection_queue.pop_front();
+                ++active_task_count;
+                found_task = true;
+                consecutive_local_count = 0;
+                if (task.is_external && external_pending_count > 0) {
+                    --external_pending_count;
+                    slot_cv.notify_one();
+                }
+            } else if (consecutive_local_count >= kMaxConsecutiveLocalTasks) {
+                consecutive_local_count = 0;
+                lock.unlock();
+                if (my_local_deque.pop_back(task)) {
+                    found_task = true;
+                    ++consecutive_local_count;
+                    std::lock_guard<std::mutex> lk(lifecycle_mutex);
+                    ++active_task_count;
+                }
+            }
+        }
+
+        // 3. 若仍无任务，进入等待或退出判断
+        if (!found_task) {
+            std::unique_lock<std::mutex> lock(lifecycle_mutex);
+            work_cv.wait(lock, [this, &my_local_deque] {
                 if (stop_requested) {
                     const auto st = unpack(packed_status.load(std::memory_order_acquire));
                     if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
                         return true;
                     }
-                    // Graceful: 只要队列有任务或 drain 闭包完全结束（队列空且活跃任务为0）
-                    if (!global_injection_queue.empty() || active_task_count == 0) {
+                    if (!global_injection_queue.empty() || !my_local_deque.empty() || active_task_count == 0) {
                         return true;
                     }
                 } else {
-                    if (!global_injection_queue.empty()) {
+                    if (!global_injection_queue.empty() || !my_local_deque.empty()) {
                         return true;
                     }
                 }
@@ -645,22 +770,30 @@ void Scheduler::Impl::worker_main(std::size_t /*worker_index*/) {
                 task = std::move(global_injection_queue.front());
                 global_injection_queue.pop_front();
                 ++active_task_count;
+                found_task = true;
+                consecutive_local_count = 0;
                 if (task.is_external && external_pending_count > 0) {
                     --external_pending_count;
                     slot_cv.notify_one();
                 }
+            } else if (my_local_deque.pop_back(task)) {
+                ++active_task_count;
+                found_task = true;
+                ++consecutive_local_count;
             } else if (stop_requested) {
                 const auto st = unpack(packed_status.load(std::memory_order_acquire));
                 if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
                     break;
                 }
-                if (global_injection_queue.empty() && active_task_count == 0) {
+                if (global_injection_queue.empty() && my_local_deque.empty() && active_task_count == 0) {
                     work_cv.notify_all();
                     break;
                 }
             }
         }
-        if (task.invoker) {
+
+        // 4. 执行获取到的任务
+        if (found_task && task.invoker) {
             task.invoker->execute();
             {
                 std::lock_guard<std::mutex> lock(lifecycle_mutex);
@@ -702,7 +835,7 @@ void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invok
 Scheduler::Scheduler(SchedulerOptions options) {
     validate_options(options);
     const RuntimeId id = allocate_runtime_id();
-    const SchedulerCapabilities caps{LocalDequeBackend::None};
+    const SchedulerCapabilities caps{LocalDequeBackend::Locked};
     impl_ = std::make_shared<Impl>(id, std::move(options), caps);
 }
 

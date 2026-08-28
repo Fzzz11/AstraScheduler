@@ -418,8 +418,8 @@ void test_R101_capabilities() {
     TEST_ASSERT(s.valid());
 
     astra::SchedulerCapabilities caps = s.capabilities();
-    // In v0.1.0, Local Deque backend must report None
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::None);
+    // In v0.2.0, Local Deque backend must report Locked
+    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
     TEST_ASSERT(caps.lock_free_local_deque() == false);
 
     // Capabilities mappings
@@ -438,7 +438,7 @@ void test_R101_capabilities() {
     // Empty scheduler capabilities throws logic_error
     astra::Scheduler moved = std::move(s);
     TEST_THROWS(s.capabilities(), std::logic_error);
-    TEST_ASSERT(moved.capabilities().local_deque_backend() == astra::LocalDequeBackend::None);
+    TEST_ASSERT(moved.capabilities().local_deque_backend() == astra::LocalDequeBackend::Locked);
 }
 
 // =============================================================================

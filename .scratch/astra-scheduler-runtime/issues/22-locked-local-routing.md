@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-063, R-101)
 Milestone: v0.2.0
 Blocked by: AST-008, AST-010, AST-012
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -29,8 +29,8 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-063]` routing source可由Trace验证，Local洪水不能永久饿死Global。
-- [ ] `[R-101]` v0.2 启用 Locked Local Deque 后 capability 必须报告 `Locked` 且 `lock_free_local_deque()==false`，不得按版本名称虚报 Chase-Lev lock-free。
+- [x] `[R-063]` routing source可由Trace验证，Local洪水不能永久饿死Global。
+- [x] `[R-101]` v0.2 启用 Locked Local Deque 后 capability 必须报告 `Locked` 且 `lock_free_local_deque()==false`，不得按版本名称虚报 Chase-Lev lock-free。
 
 ## Out of scope
 
@@ -43,4 +43,8 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-063, R-101
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-090, D-091, D-092, D-147, D-101, D-167, D-162
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - 单元测试：`tests/test_locked_local_routing.cpp` 覆盖 R-063（External vs Internal 路由优先级、Local Deque LIFO、防 Global 饥饿探测阈值 64）与 R-101（v0.2 capabilities 返回 Locked 且 lock_free 为 false、空 handle 抛 logic_error）。
+  - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 20/20 tests 全部 PASS。
+  - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 37/37 tests 全部 OK。
+  - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。

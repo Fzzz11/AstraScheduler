@@ -717,6 +717,15 @@ class AST021FinalizationEscalationGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST022LockedLocalRoutingGates(PackageBuildFixture):
+    """AST-022：加入 Locked Local Deque 与 Ready Routing Precedence（R-063/R-101）。"""
+
+    def test_AST022_consumer_runs_all_locked_local_routing_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-063/R-101
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

@@ -268,6 +268,23 @@ target_include_directories(astra_finalization_escalation_test PRIVATE
 target_compile_features(astra_finalization_escalation_test PRIVATE cxx_std_20)
 add_test(NAME astra_finalization_escalation_test COMMAND astra_finalization_escalation_test)
 
+add_executable(astra_locked_local_routing_test
+  test_locked_local_routing.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_locked_local_routing_test PRIVATE Threads::Threads)
+target_include_directories(astra_locked_local_routing_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_locked_local_routing_test PRIVATE cxx_std_20)
+add_test(NAME astra_locked_local_routing_test COMMAND astra_locked_local_routing_test)
+
+
 
 
 

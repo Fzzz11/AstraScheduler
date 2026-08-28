@@ -179,9 +179,9 @@ int main() {
         return 1;
     }
     const astra::SchedulerCapabilities caps = scheduler.capabilities();
-    if (caps.local_deque_backend() != astra::LocalDequeBackend::None ||
+    if (caps.local_deque_backend() != astra::LocalDequeBackend::Locked ||
         caps.lock_free_local_deque() != false) {
-        std::printf("v0.1.0 SchedulerCapabilities must report LocalDequeBackend::None\n");
+        std::printf("v0.2.0 SchedulerCapabilities must report LocalDequeBackend::Locked\n");
         return 1;
     }
 
@@ -435,7 +435,21 @@ int main() {
         return 1;
     }
 
-    // 14. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 14. AST-022: Locked Local Deque & Ready Routing Precedence (R-063 / R-101)
+    astra::Scheduler s_locked;
+    if (s_locked.capabilities().local_deque_backend() != astra::LocalDequeBackend::Locked ||
+        s_locked.capabilities().lock_free_local_deque()) {
+        std::printf("AST-022 capability must be Locked and not lock_free\n");
+        return 1;
+    }
+    auto h_ext = s_locked.submit([&] {
+        auto h_int = s_locked.submit([] {});
+        h_int.wait();
+    });
+    h_ext.wait();
+    s_locked.shutdown();
+
+    // 15. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,
@@ -457,7 +471,7 @@ int main() {
     }
     f_ctrl.wait();
 
-    // 15. AST-019: Finalization Begin & Startup Race (R-031 / R-037 / R-038 / R-104)
+    // 16. AST-019: Finalization Begin & Startup Race (R-031 / R-037 / R-038 / R-104)
     bool new_sched_rejected = false;
     try {
         astra::Scheduler s_rejected;
@@ -471,7 +485,7 @@ int main() {
         return 1;
     }
 
-    // 16. AST-020: Finalization Wait & wait_for (R-032 / R-033 / R-039 / R-040 / R-041 / R-042)
+    // 17. AST-020: Finalization Wait & wait_for (R-032 / R-033 / R-039 / R-040 / R-041 / R-042)
     auto f_res_zero = f_ctrl.wait_for(std::chrono::milliseconds(0));
     if (f_res_zero != astra::FinalizationWaitResult::Completed) {
         std::printf("wait_for(0) after completion must return Completed\n");
@@ -484,7 +498,7 @@ int main() {
     }
     f_ctrl2.wait();
 
-    // 17. AST-021: Finalization Escalation (R-034 / R-047)
+    // 18. AST-021: Finalization Escalation (R-034 / R-047)
     static_assert(noexcept(f_ctrl.request_immediate()), "request_immediate must be noexcept");
     f_ctrl.request_immediate();
     f_ctrl2.request_immediate();

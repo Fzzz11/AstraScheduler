@@ -147,7 +147,7 @@ void test_R001_nested_task_submission() {
 }
 
 // -----------------------------------------------------------------------------
-// R-002: v0.1.0 排除本地队列与任务窃取
+// R-002 / R-101: 验证本地队列能力报告
 // -----------------------------------------------------------------------------
 void test_R002_exclude_local_queues_and_work_stealing() {
     auto& registry = astra::detail::ReaperRegistry::instance();
@@ -157,9 +157,9 @@ void test_R002_exclude_local_queues_and_work_stealing() {
     opt.worker_count = 4;
     astra::Scheduler s(opt);
 
-    // 验证能力报告：v0.1.0 严格排除 Local Queue 与 Work Stealing（R-002 / R-101）
+    // 验证能力报告：v0.2.0 为 Locked，非 ChaseLevLockFree（R-101）
     const auto caps = s.capabilities();
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::None);
+    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
     TEST_ASSERT(!caps.lock_free_local_deque());
 }
 
