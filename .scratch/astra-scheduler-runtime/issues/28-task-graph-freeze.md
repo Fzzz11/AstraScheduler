@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-069)
 Milestone: v0.4.0
 Blocked by: AST-004, AST-009
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-069]` 非DAG输入在admission前确定失败，freeze不重编号且move-only Node可用。
+- [x] `[R-069]` 非DAG输入在admission前确定失败，freeze不重编号且move-only Node可用。
 
 ## Out of scope
 
@@ -40,5 +40,11 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-069
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-104, D-105, D-161
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - 架构与实现：`include/astra/graph.hpp` 与 `src/graph.cpp` 实现了 move-only `TaskGraph` builder 与 immutable single-shot `FrozenTaskGraph`；实现了基于 Kahn + 确定性 DFS 的图结构校验器；`include/astra/error.hpp` 实现了 `GraphValidationError::{ForeignNode,SelfEdge,DuplicateEdge,Cycle}` 及携带确定性 `cycle_witness` 的 `graph_validation_error`。
+  - 单元测试：`tests/test_task_graph_freeze.cpp` 覆盖 R-069（空图合法性、Move-only Callable 节点支持、按插入顺序严格递增分配 NodeId、ForeignNode 越界校验、SelfEdge 自环校验、DuplicateEdge 重复边校验、Cycle 环路检测与首尾闭合确定性 witness 提取、复杂 DAG 与非连通环路隔离）。
+  - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 26/26 tests 全部 PASS。
+  - ASan / UBSan / LSan 内存安全与泄漏门禁：`build/wsl-gcc-asan` 26/26 tests 全部 PASS（0 leaks / 0 errors / 0 deadlocks）。
+  - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 43/43 tests 全部 OK。
+  - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。
 

@@ -1,6 +1,7 @@
 #include <astra/capabilities.hpp>
 #include <astra/error.hpp>
 #include <astra/export.hpp>
+#include <astra/graph.hpp>
 #include <astra/id.hpp>
 #include <astra/finalization.hpp>
 #include <astra/scheduler.hpp>
@@ -538,6 +539,34 @@ int main() {
     f_ctrl2.request_immediate();
     if (f_ctrl.wait_for(std::chrono::milliseconds(0)) != astra::FinalizationWaitResult::Completed) {
         std::printf("request_immediate idempotence check failed\n");
+        return 1;
+    }
+
+    // 19. AST-028: TaskGraph consuming freeze & validation (R-069)
+    astra::TaskGraph tg;
+    auto gn1 = tg.emplace([] {});
+    auto gn2 = tg.emplace([] {});
+    tg.add_edge(gn1, gn2);
+    auto frozen_tg = std::move(tg).freeze();
+    if (frozen_tg.node_count() != 2 || frozen_tg.edge_count() != 1 || frozen_tg.empty()) {
+        std::printf("AST-028 FrozenTaskGraph node/edge count mismatch\n");
+        return 1;
+    }
+    astra::TaskGraph tg_cycle;
+    auto gc1 = tg_cycle.emplace([] {});
+    auto gc2 = tg_cycle.emplace([] {});
+    tg_cycle.add_edge(gc1, gc2);
+    tg_cycle.add_edge(gc2, gc1);
+    bool cycle_caught = false;
+    try {
+        (void)std::move(tg_cycle).freeze();
+    } catch (const astra::graph_validation_error& ex) {
+        if (ex.reason() == astra::GraphValidationError::Cycle && ex.cycle_witness().size() == 3) {
+            cycle_caught = true;
+        }
+    }
+    if (!cycle_caught) {
+        std::printf("AST-028 TaskGraph cycle validation failed\n");
         return 1;
     }
 

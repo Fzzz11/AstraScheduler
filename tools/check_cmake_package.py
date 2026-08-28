@@ -771,6 +771,15 @@ class AST027ChaseLevIndicesGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST028TaskGraphFreezeGates(PackageBuildFixture):
+    """AST-028：实现 consuming TaskGraph freeze 与 NodeId 验证（R-069）。"""
+
+    def test_AST028_consumer_runs_all_task_graph_freeze_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-069
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

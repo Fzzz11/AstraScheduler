@@ -40,6 +40,7 @@ add_library(AstraScheduler
   src/scheduler.cpp
   src/reaper_registry.cpp
   src/finalization.cpp
+  src/graph.cpp
 )
 add_library(AstraScheduler::AstraScheduler ALIAS AstraScheduler)
 

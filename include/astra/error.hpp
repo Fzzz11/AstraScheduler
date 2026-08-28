@@ -2,10 +2,12 @@
 #define ASTRA_ERROR_HPP
 
 #include <astra/export.hpp>
+#include <astra/id.hpp>
 
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace astra {
 
@@ -83,6 +85,51 @@ class ASTRA_EXPORT helping_depth_exceeded : public std::runtime_error {
 public:
     helping_depth_exceeded()
         : std::runtime_error("AstraScheduler helping depth limit exceeded") {}
+};
+
+// Graph 结构校验失败原因（R-069 / D-105）。
+enum class GraphValidationError : std::uint8_t {
+    ForeignNode = 1,
+    SelfEdge = 2,
+    DuplicateEdge = 3,
+    Cycle = 4,
+};
+
+// Graph 结构校验失败异常（R-069 / D-105）。
+class ASTRA_EXPORT graph_validation_error : public std::logic_error {
+public:
+    explicit graph_validation_error(GraphValidationError reason,
+                                    std::vector<NodeId> witness = {})
+        : std::logic_error(format_message(reason)),
+          reason_(reason),
+          cycle_witness_(std::move(witness)) {}
+
+    [[nodiscard]] GraphValidationError reason() const noexcept {
+        return reason_;
+    }
+
+    [[nodiscard]] const std::vector<NodeId>& cycle_witness() const noexcept {
+        return cycle_witness_;
+    }
+
+private:
+    static const char* format_message(GraphValidationError reason) noexcept {
+        switch (reason) {
+            case GraphValidationError::ForeignNode:
+                return "Graph validation failed: edge references node foreign to builder";
+            case GraphValidationError::SelfEdge:
+                return "Graph validation failed: self-edge detected";
+            case GraphValidationError::DuplicateEdge:
+                return "Graph validation failed: duplicate edge detected";
+            case GraphValidationError::Cycle:
+                return "Graph validation failed: cycle detected in graph";
+            default:
+                return "Graph validation failed";
+        }
+    }
+
+    GraphValidationError reason_;
+    std::vector<NodeId> cycle_witness_;
 };
 
 }  // namespace astra
