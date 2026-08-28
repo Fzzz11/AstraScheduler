@@ -2,6 +2,7 @@
 #include <astra/error.hpp>
 #include <astra/export.hpp>
 #include <astra/id.hpp>
+#include <astra/finalization.hpp>
 #include <astra/scheduler.hpp>
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
@@ -433,6 +434,28 @@ int main() {
         std::printf("RAII destructor must wait for tasks to complete (done=%d)\n", raii_task_done.load() ? 1 : 0);
         return 1;
     }
+
+    // 14. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
+                  "FinalizationControl must not be default-constructible");
+    static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,
+                  "FinalizationControl must be noexcept copyable");
+    static_assert(std::is_nothrow_move_constructible_v<astra::FinalizationControl>,
+                  "FinalizationControl must be noexcept movable");
+    static_assert(std::is_nothrow_destructible_v<astra::FinalizationControl>,
+                  "FinalizationControl must be noexcept destructible");
+    static_assert(noexcept(astra::begin_finalization()),
+                  "begin_finalization must be noexcept");
+
+    auto f_ctrl = astra::begin_finalization();
+    auto f_ctrl2 = f_ctrl;
+    f_ctrl2.request_immediate();
+    auto f_res = f_ctrl2.wait_for(std::chrono::milliseconds(10));
+    if (f_res != astra::FinalizationWaitResult::Completed) {
+        std::printf("FinalizationWaitResult must be Completed\n");
+        return 1;
+    }
+    f_ctrl.wait();
 
     return 0;
 }

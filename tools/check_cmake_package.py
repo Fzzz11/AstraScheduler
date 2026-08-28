@@ -205,6 +205,8 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "scheduler_options.hpp",
             "status.hpp",
             "error.hpp",
+            "task_handle.hpp",
+            "finalization.hpp",
         ):
             header = self.static_install / "include" / "astra" / header_name
             self.assertTrue(header.is_file(), f"public header missing: {header}")
@@ -276,11 +278,14 @@ class R110PackageConsumerGates(PackageBuildFixture):
             ["nm", "-D", "--defined-only", str(shared)],
             context="nm dynamic symbols",
         )
-        # AST-003 / AST-004：公开 API 经 export macro 导出，内部符号 hidden。
+        # AST-003 / AST-004 / AST-018：公开 API 经 export macro 导出，内部符号 hidden。
         expected_symbols = [
             "_ZN5astra15library_versionEv",
             "_ZN5astra22library_version_stringEv",
             "_ZN5astra24recommended_worker_countEv",
+            "_ZN5astra18begin_finalizationEv",
+            "_ZN5astra19FinalizationControlC1ESt10shared_ptrINS0_4ImplEE",
+            "_ZN5astra19FinalizationControlC2ESt10shared_ptrINS0_4ImplEE",
             "_ZN5astra6detail25current_worker_runtime_idEv",
             "_ZN5astra6detail19perform_caller_waitERKNS0_19TaskSharedStateBaseESt8optionalINSt6chrono10time_pointINS5_3_V212steady_clockENS5_8durationIlSt5ratioILl1ELl1000000000EEEEEEE",
             "_ZN5astra6detail25TaskExecutionContextGuardC1ENS_6TaskIdE",
@@ -299,6 +304,9 @@ class R110PackageConsumerGates(PackageBuildFixture):
             "_ZN5astra9Scheduler12shutdown_nowEv",
             "_ZN5astra9ScheduleraSERKS0_",
             "_ZN5astra9ScheduleraSEOS0_",
+            "_ZNK5astra19FinalizationControl13wait_for_implENSt6chrono8durationIlSt5ratioILl1ELl1000000000EEEE",
+            "_ZNK5astra19FinalizationControl17request_immediateEv",
+            "_ZNK5astra19FinalizationControl4waitEv",
             "_ZNK5astra9Scheduler5validEv",
             "_ZNK5astra9Scheduler10runtime_idEv",
             "_ZNK5astra9Scheduler6statusEv",
@@ -669,6 +677,15 @@ class AST017LastHandleRaiiGates(PackageBuildFixture):
 
     def test_AST017_consumer_runs_all_last_handle_raii_checks(self):
         # 独立 consumer（static+shared）运行期断言 R-103/R-105
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
+class AST018FinalizationControlApiGates(PackageBuildFixture):
+    """AST-018：固定 FinalizationControl 公共 capability surface（R-035/R-036/R-043/R-044/R-045/R-046）。"""
+
+    def test_AST018_consumer_runs_all_finalization_control_api_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-035/R-036/R-043/R-044/R-045/R-046
         self._run_consumer(self.static_consumer)
         self._run_consumer(self.shared_consumer)
 

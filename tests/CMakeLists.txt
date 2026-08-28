@@ -204,6 +204,23 @@ target_include_directories(astra_last_handle_raii_test PRIVATE
 target_compile_features(astra_last_handle_raii_test PRIVATE cxx_std_20)
 add_test(NAME astra_last_handle_raii_test COMMAND astra_last_handle_raii_test)
 
+add_executable(astra_finalization_control_api_test
+  test_finalization_control_api.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_finalization_control_api_test PRIVATE Threads::Threads)
+target_include_directories(astra_finalization_control_api_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_finalization_control_api_test PRIVATE cxx_std_20)
+add_test(NAME astra_finalization_control_api_test COMMAND astra_finalization_control_api_test)
+
+
 
 
 
