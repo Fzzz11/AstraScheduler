@@ -540,7 +540,32 @@ int main() {
     }
     sched_graph.shutdown();
 
-    // 19. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
+    // 19. AST-030: void control graph & edge policies (R-071)
+    astra::Scheduler sched_policy;
+    astra::TaskGraph tg_policy;
+    std::atomic<bool> p_cleanup_done{false};
+    std::atomic<bool> p_req_done{false};
+    auto pn_fail = tg_policy.emplace([] {
+        throw std::runtime_error("consumer fail");
+    });
+    auto pn_req = tg_policy.emplace([&] {
+        p_req_done.store(true);
+    });
+    auto pn_cleanup = tg_policy.emplace([&] {
+        p_cleanup_done.store(true);
+    });
+    tg_policy.add_edge(pn_fail, pn_req, astra::EdgePolicy::RequireSuccess);
+    tg_policy.add_edge(pn_fail, pn_cleanup, astra::EdgePolicy::AfterCompletion);
+    auto gr_policy = sched_policy.run(std::move(tg_policy).freeze());
+    gr_policy.wait();
+    if (!gr_policy.is_completed() || gr_policy.state() != astra::GraphRunState::Failed ||
+        p_req_done.load() || !p_cleanup_done.load()) {
+        std::printf("AST-030 edge policy verification failed\n");
+        return 1;
+    }
+    sched_policy.shutdown();
+
+    // 20. AST-018: FinalizationControl API (R-035 / R-036 / R-043 / R-044 / R-045 / R-046)
     static_assert(!std::is_default_constructible_v<astra::FinalizationControl>,
                   "FinalizationControl must not be default-constructible");
     static_assert(std::is_nothrow_copy_constructible_v<astra::FinalizationControl>,

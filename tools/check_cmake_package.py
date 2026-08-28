@@ -799,6 +799,15 @@ class AST029GraphAdmissionGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST030GraphEdgePoliciesGates(PackageBuildFixture):
+    """AST-030：实现 void 控制图与两类 Edge policy（R-071）。"""
+
+    def test_AST030_consumer_runs_all_graph_edge_policy_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-071
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

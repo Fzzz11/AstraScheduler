@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-071)
 Milestone: v0.4.0
 Blocked by: AST-029
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-071]` dependency failure不伪装为descendant failure，cleanup continuation仍运行。
+- [x] `[R-071]` dependency failure不伪装为descendant failure，cleanup continuation仍运行。
 
 ## Out of scope
 
@@ -40,5 +40,8 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-071
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-108, D-109, D-110
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification:
+  - In-tree unit tests: `tests/test_graph_edge_policies.cpp` (28/28 ctest passed in debug and ASan/UBSan/LSan)
+  - Package consumer gates: `tools/check_cmake_package.py` (AST030GraphEdgePoliciesGates, 45/45 tests passed)
+  - Release gates: `tools/check_release_gates.py` (15/15 tests passed)
 

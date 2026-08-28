@@ -386,6 +386,23 @@ target_include_directories(astra_graph_admission_test PRIVATE
 target_compile_features(astra_graph_admission_test PRIVATE cxx_std_20)
 add_test(NAME astra_graph_admission_test COMMAND astra_graph_admission_test)
 
+add_executable(astra_graph_edge_policies_test
+  test_graph_edge_policies.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_graph_edge_policies_test PRIVATE Threads::Threads)
+target_include_directories(astra_graph_edge_policies_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_graph_edge_policies_test PRIVATE cxx_std_20)
+add_test(NAME astra_graph_edge_policies_test COMMAND astra_graph_edge_policies_test)
+
 
 
 

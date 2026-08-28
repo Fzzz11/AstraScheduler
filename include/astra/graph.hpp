@@ -21,12 +21,15 @@ class Scheduler;
 class FrozenTaskGraph;
 
 namespace detail {
+template <bool Ordinary, typename F>
+struct GraphTaskInvokerModel;
+
 template <typename F>
-struct GraphTaskInvoker final : TaskInvokerBase {
+struct GraphTaskInvokerModel<true, F> final : TaskInvokerBase {
     F func;
 
-    explicit GraphTaskInvoker(F&& f) : func(std::move(f)) {}
-    explicit GraphTaskInvoker(const F& f) : func(f) {}
+    explicit GraphTaskInvokerModel(F&& f) : func(std::move(f)) {}
+    explicit GraphTaskInvokerModel(const F& f) : func(f) {}
 
     void execute() override {
         func();
@@ -34,6 +37,29 @@ struct GraphTaskInvoker final : TaskInvokerBase {
 
     void cancel_pre_start() noexcept override {}
 };
+
+template <typename F>
+struct GraphTaskInvokerModel<false, F> final : TaskInvokerBase {
+    F func;
+    std::stop_source stop_source;
+
+    explicit GraphTaskInvokerModel(F&& f) : func(std::move(f)) {}
+    explicit GraphTaskInvokerModel(const F& f) : func(f) {}
+
+    void execute() override {
+        func(stop_source.get_token());
+    }
+
+    void cancel_pre_start() noexcept override {
+        stop_source.request_stop();
+    }
+};
+
+template <bool Ordinary, typename F>
+inline std::unique_ptr<TaskInvokerBase> make_graph_node_invoker(F&& f) {
+    using DecayedF = std::decay_t<F>;
+    return std::make_unique<GraphTaskInvokerModel<Ordinary, DecayedF>>(std::forward<F>(f));
+}
 }  // namespace detail
 
 // 边触发策略（R-071 / D-109）。
@@ -62,7 +88,7 @@ class ASTRA_EXPORT FrozenTaskGraph {
 public:
     struct NodeData {
         NodeId id{};
-        std::unique_ptr<detail::TaskInvokerBase> invoker;
+        std::unique_ptr<detail::TaskInvokerBase> invoker{nullptr};
     };
 
     FrozenTaskGraph() noexcept = default;
@@ -90,6 +116,7 @@ public:
         return edges_;
     }
 
+    // 内部访问接口（转移 NodeData 所有权至 GraphRunSharedState）
     [[nodiscard]] std::vector<NodeData>& nodes_internal() noexcept {
         return nodes_;
     }
@@ -106,8 +133,8 @@ private:
 };
 
 // -----------------------------------------------------------------------------
-// TaskGraph (R-069 / D-104 / D-105 / D-161)
-// 串行构建的可移动 Builder，经 consuming freeze() 校验并形成 FrozenTaskGraph
+// TaskGraph (R-069 / D-104 / D-105 / D-108 / D-161)
+// 任务图构建器，支持移动语义的 Callable 与拓扑验证
 // -----------------------------------------------------------------------------
 class ASTRA_EXPORT TaskGraph {
 public:
@@ -120,17 +147,21 @@ public:
     TaskGraph(const TaskGraph&) = delete;
     TaskGraph& operator=(const TaskGraph&) = delete;
 
-    // 添加任务节点，返回 graph-local 强类型 NodeId（D-161）
+    // 添加任务节点，返回 graph-local 强类型 NodeId（D-108 / D-161）
+    // 约束 Callable 返回类型必须恰好为 void（R-071 / D-108）
     template <typename F>
     NodeId emplace(F&& f) {
-        using DecayedF = std::decay_t<F>;
-        static_assert(std::is_invocable_v<DecayedF>, "Callable must be invocable with ()");
+        using Traits = detail::InvocationTraits<F>;
+        static_assert(Traits::is_valid,
+            "Callable must be invocable as f() or f(std::stop_token)");
+        static_assert(std::is_void_v<typename Traits::ResultType>,
+            "TaskGraph Node Callable must return void (R-071 / D-108)");
 
         const std::uint64_t seq = nodes_.size() + 1;
         const NodeId id{seq};
         nodes_.push_back(FrozenTaskGraph::NodeData{
             id,
-            std::make_unique<detail::GraphTaskInvoker<DecayedF>>(std::forward<F>(f))
+            detail::make_graph_node_invoker<Traits::is_ordinary_invocable>(std::forward<F>(f))
         });
         return id;
     }

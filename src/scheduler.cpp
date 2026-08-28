@@ -1152,14 +1152,44 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
         state->node_entries[u].successors.push_back({edge.to, edge.policy});
     }
 
-    // 递归/内部分发函数
-    auto post_node = [impl = impl_.get(), state, is_internal](auto self, NodeId u_id) -> void {
-        auto task_fn = [impl, state, u_id, is_internal, self] {
+    // 递归/内部分发与依赖传播函数（R-070 / R-071 / D-107 / D-109 / D-110）
+    auto trigger_successors = [impl = impl_.get(), state, is_internal](auto self, auto post_node_fn, NodeId u_id) -> void {
+        const std::size_t node_idx = u_id.value();
+        auto& entry = state->node_entries[node_idx];
+        const TaskState u_outcome = entry.outcome.load(std::memory_order_acquire);
+
+        for (const auto& [succ_id, policy] : entry.successors) {
+            auto& succ_entry = state->node_entries[succ_id.value()];
+            if (policy == EdgePolicy::RequireSuccess && u_outcome != TaskState::Succeeded) {
+                succ_entry.has_failed_required_predecessor.store(true, std::memory_order_release);
+            }
+            if (succ_entry.remaining_predecessors.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                // 成为唯一 1->0 successor release owner
+                if (succ_entry.has_failed_required_predecessor.load(std::memory_order_acquire) ||
+                    state->cancel_requested.load(std::memory_order_acquire)) {
+                    // 前置依赖失败或图已取消：取消该后继节点，不执行 Callable，直接发布 Cancelled 并释放 external slot
+                    if (!is_internal) {
+                        impl->release_external_slots(1);
+                    }
+                    state->mark_node_terminal(succ_id.value(), TaskState::Cancelled);
+                    // 递归触发 succ_id 的后继
+                    self(self, post_node_fn, succ_id);
+                } else {
+                    // 前置依赖全部满足且未取消：发布给 Scheduler 调度执行
+                    post_node_fn(post_node_fn, succ_id);
+                }
+            }
+        }
+    };
+
+    auto post_node = [impl = impl_.get(), state, is_internal, trigger_successors](auto self, NodeId u_id) -> void {
+        auto task_fn = [impl, state, u_id, is_internal, self, trigger_successors] {
             const std::size_t node_idx = u_id.value();
             auto& entry = state->node_entries[node_idx];
 
             if (state->cancel_requested.load(std::memory_order_acquire)) {
                 state->mark_node_terminal(node_idx, TaskState::Cancelled);
+                trigger_successors(trigger_successors, self, u_id);
                 return;
             }
 
@@ -1168,22 +1198,17 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
                     entry.invoker->execute();
                 }
                 state->mark_node_terminal(node_idx, TaskState::Succeeded);
+            } catch (const astra::task_cancelled&) {
+                state->mark_node_terminal(node_idx, TaskState::Cancelled);
             } catch (...) {
                 state->mark_node_terminal(node_idx, TaskState::Failed, std::current_exception());
             }
 
-            // 触发后继节点（R-070 / D-107）
-            for (const auto& [succ_id, policy] : entry.successors) {
-                auto& succ_entry = state->node_entries[succ_id.value()];
-                if (succ_entry.remaining_predecessors.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    // 成为唯一 1->0 successor release owner
-                    self(self, succ_id);
-                }
-            }
+            trigger_successors(trigger_successors, self, u_id);
         };
 
         impl->post_task_internal(
-            std::make_unique<detail::GraphTaskInvoker<decltype(task_fn)>>(std::move(task_fn)),
+            detail::make_graph_node_invoker<true>(std::move(task_fn)),
             !is_internal);
     };
 

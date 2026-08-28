@@ -19,6 +19,7 @@ public:
         NodeId id{};
         std::unique_ptr<TaskInvokerBase> invoker{nullptr};
         std::atomic<std::size_t> remaining_predecessors{0};
+        std::atomic<bool> has_failed_required_predecessor{false};
         std::vector<std::pair<NodeId, EdgePolicy>> successors;
         std::atomic<TaskState> outcome{TaskState::Ready};
     };
