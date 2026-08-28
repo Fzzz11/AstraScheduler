@@ -42,7 +42,7 @@ public:
     // 同步验证配置并初始化 Runtime（D-155 / D-157）。
     explicit Scheduler(SchedulerOptions options = {});
 
-    ~Scheduler();
+    ~Scheduler() noexcept;
 
     // 共享 Handle 语义：复制关联同一 Runtime State（D-155）。
     Scheduler(const Scheduler&);

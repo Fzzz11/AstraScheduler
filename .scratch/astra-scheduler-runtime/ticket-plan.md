@@ -667,7 +667,7 @@ AST-055 <- AST-051, AST-053, AST-054
 | AST-014 | v0.1.0 | [14-graceful-drain.md](issues/14-graceful-drain.md) | done | AST-010, AST-011 |
 | AST-015 | v0.1.0 | [15-shutdown-guards.md](issues/15-shutdown-guards.md) | done | AST-007, AST-014 |
 | AST-016 | v0.1.0 | [16-immediate-escalation.md](issues/16-immediate-escalation.md) | done | AST-013, AST-015 |
-| AST-017 | v0.1.0 | [17-last-handle-raii.md](issues/17-last-handle-raii.md) | ready-for-agent | AST-007, AST-014, AST-015 |
+| AST-017 | v0.1.0 | [17-last-handle-raii.md](issues/17-last-handle-raii.md) | done | AST-007, AST-014, AST-015 |
 | AST-018 | v0.1.0 | [18-finalization-control-api.md](issues/18-finalization-control-api.md) | ready-for-agent | AST-004, AST-007 |
 | AST-019 | v0.1.0 | [19-finalization-begin.md](issues/19-finalization-begin.md) | ready-for-agent | AST-005, AST-018 |
 | AST-020 | v0.1.0 | [20-finalization-wait.md](issues/20-finalization-wait.md) | ready-for-agent | AST-007, AST-019 |
@@ -715,4 +715,4 @@ Approved at: 2026-08-27
 Revision approved by: project owner（user）
 Revision approved at: 2026-08-27（Linux-only/WSL Spec）
 
-本计划及Linux-only/WSL修订均已获明确批准。具体 Ticket 按依赖顺序发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；发布不等于实现。AST-001、AST-002、AST-003、AST-004、AST-005、AST-006、AST-007、AST-008、AST-009、AST-010、AST-011、AST-012、AST-013、AST-014、AST-015、AST-016 已完成，当前就绪执行前沿为 AST-017、AST-018 与 AST-022。
+本计划及Linux-only/WSL修订均已获明确批准。具体 Ticket 按依赖顺序发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；发布不等于实现。AST-001、AST-002、AST-003、AST-004、AST-005、AST-006、AST-007、AST-008、AST-009、AST-010、AST-011、AST-012、AST-013、AST-014、AST-015、AST-016、AST-017 已完成，当前就绪执行前沿为 AST-018 与 AST-022。

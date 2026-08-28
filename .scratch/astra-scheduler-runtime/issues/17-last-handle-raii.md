@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-103, R-105)
 Milestone: v0.1.0
 Blocked by: AST-007, AST-014, AST-015
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Antigravity agent (2026-08-28)
 
 ## Rules and decisions
 
@@ -29,8 +29,8 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-103]` 销毁一个非最后副本不改变status/admission，最后释放才按caller选择RAII或handoff。
-- [ ] `[R-105]` 析构返回后无Worker访问Runtime，不合作任务保持析构未返回。
+- [x] `[R-103]` 销毁一个非最后副本不改变status/admission，最后释放才按caller选择RAII或handoff。
+- [x] `[R-105]` 析构返回后无Worker访问Runtime，不合作任务保持析构未返回。
 
 ## Out of scope
 
@@ -43,5 +43,26 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-103, R-105
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-014, D-017, D-018, D-155
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Done（2026-08-28；全部验证命令来自 WSL Linux）。
+
+### Rule evidence
+
+| Rule | Test or verification | RED evidence | GREEN result |
+|---|---|---|---|
+| R-103 | `tests/test_last_handle_raii.cpp::test_R103_non_last_handle_destruction_does_not_shutdown`、`test_R103_empty_moved_from_throws_logic_error` — 证明 `Scheduler` 作为 shared Handle 副本销毁不改变状态与准入；moved-from 空 Handle 调用抛出 `std::logic_error`。 | 运行期 RED：副本销毁误触发停机或 moved-from Handle 未抛出 logic_error。 | 仅最后 Handle 释放才触发关停，空 Handle 行为安全一致。 |
+| R-105 | `tests/test_last_handle_raii.cpp::test_R105_last_non_worker_handle_destructor_is_synchronous_noexcept` — 证明最后一个非 Worker Handle 在析构时严格执行 `noexcept` 同步 Graceful 关停等待 Drain Closure 与所有 Worker 线程 join，不向外泄漏异常。 | 运行期 RED：析构提前返回或任务异常导致析构抛出 std::terminate。 | `~Scheduler() noexcept` 完整同步等待 Drain Closure 与全部 Worker join。 |
+
+### Verification commands
+
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_cmake_package.py"` → `Ran 32 tests in 36.206s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && python3 -X utf8 tools/check_release_gates.py"` → `Ran 15 tests in 0.194s ... OK`
+- `wsl bash -lc "cd /mnt/d/code/cppStudy/AstraScheduler && cmake --build build/wsl-gcc-debug && ctest --test-dir build/wsl-gcc-debug --output-on-failure"` → `100% tests passed, 0 tests failed out of 15`
+- `python "C:\Users\fzt\.gemini\config\skills\decision-ledger\scripts\validate_traceability.py" --ledger "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\decision-log.md" --spec "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\spec.md" --tickets-dir "D:\code\cppStudy\AstraScheduler\.scratch\astra-scheduler-runtime\issues"` → `Traceability valid: decisions=168, rules=105, tickets=55, covered_rules=105`
+
+### Review record
+
+- 两轴 code-review（Standards/Spec，固定基线=commit `613a54a`）：
+  - Standards 轴：`Scheduler::~Scheduler() noexcept` 显式标记并根据 `impl_.use_count() == 1` 判断最后 Handle；优雅处理启动栅栏竞态；无任何异常外泄风险。
+  - Spec 轴：R-103（最后非 Worker Handle 释放触发 RAII）、R-105（最后非 Worker Handle 析构是 noexcept 同步完成边界）100% 满足 Approved Spec。
+- 编译环境：WSL GCC 13.1.0（R-111 Tier-1）、CMake 3.28.6、Python 3.8.10。
 

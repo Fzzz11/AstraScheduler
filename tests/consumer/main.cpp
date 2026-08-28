@@ -407,5 +407,32 @@ int main() {
     hold_esc_p.set_value();
     th_esc.join();
 
+    // 13. AST-017: Last Handle RAII (R-103 / R-105)
+    std::atomic<bool> raii_task_done{false};
+    {
+        astra::Scheduler s_raii1;
+        {
+            astra::Scheduler s_raii2 = s_raii1;
+            try {
+                auto h_raii = s_raii2.submit([&raii_task_done]() {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    raii_task_done.store(true);
+                });
+            } catch (const std::exception& e) {
+                std::printf("s_raii2.submit threw: %s\n", e.what());
+                return 1;
+            }
+        }
+        // Non-last handle destruction does not trigger shutdown
+        if (s_raii1.status().state != astra::SchedulerState::Running) {
+            std::printf("s_raii1 must remain Running after s_raii2 destruction\n");
+            return 1;
+        }
+    } // Last handle destroyed -> RAII graceful drain
+    if (!raii_task_done.load()) {
+        std::printf("RAII destructor must wait for tasks to complete (done=%d)\n", raii_task_done.load() ? 1 : 0);
+        return 1;
+    }
+
     return 0;
 }

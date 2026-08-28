@@ -664,6 +664,15 @@ class AST016ImmediateEscalationGates(PackageBuildFixture):
         self._run_consumer(self.shared_consumer)
 
 
+class AST017LastHandleRaiiGates(PackageBuildFixture):
+    """AST-017：实现最后非 Worker Handle 的 noexcept 同步 RAII（R-103/R-105）。"""
+
+    def test_AST017_consumer_runs_all_last_handle_raii_checks(self):
+        # 独立 consumer（static+shared）运行期断言 R-103/R-105
+        self._run_consumer(self.static_consumer)
+        self._run_consumer(self.shared_consumer)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

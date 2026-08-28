@@ -572,7 +572,7 @@ void Scheduler::Impl::worker_main(std::size_t /*worker_index*/) {
         startup_cv.wait(lock, [this] {
             return startup_done || startup_failed || stop_requested;
         });
-        if (startup_failed || stop_requested) {
+        if (startup_failed || (!startup_done && stop_requested)) {
             detail::t_current_worker_runtime_id = RuntimeId{0};
             detail::t_current_worker_impl = nullptr;
             if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -670,13 +670,23 @@ Scheduler::Scheduler(SchedulerOptions options) {
     impl_ = std::make_shared<Impl>(id, std::move(options), caps);
 }
 
-Scheduler::~Scheduler() {
+Scheduler::~Scheduler() noexcept {
     if (impl_) {
-        // R-021: 检查是否在属于该 Runtime 的 Worker 线程上销毁最后一个 Handle
-        if (impl_.use_count() == 1 && detail::t_current_worker_runtime_id == impl_->runtime_id) {
-            impl_->execute_worker_orphan_handoff(impl_);
-            impl_.reset();
-            return;
+        // R-103 / R-105: 只有最后一个 Handle 销毁才触发关停
+        if (impl_.use_count() == 1) {
+            if (detail::t_current_worker_runtime_id == impl_->runtime_id) {
+                // R-021 / R-022: Worker 线程销毁最后 Handle 触发异步 orphan handoff
+                impl_->execute_worker_orphan_handoff(impl_);
+                impl_.reset();
+                return;
+            } else {
+                // R-103 / R-105: 非 Worker 线程销毁最后 Handle 触发同步 Graceful RAII
+                try {
+                    impl_->shutdown_sync(ShutdownMode::Graceful);
+                } catch (...) {
+                    // noexcept 析构必须吸收异常
+                }
+            }
         }
     }
 }
