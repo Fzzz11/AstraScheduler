@@ -523,6 +523,23 @@ target_include_directories(astra_worker_timers_test PRIVATE
 target_compile_features(astra_worker_timers_test PRIVATE cxx_std_20)
 add_test(NAME astra_worker_timers_test COMMAND astra_worker_timers_test)
 
+add_executable(astra_base_priority_test
+  test_base_priority.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_base_priority_test PRIVATE Threads::Threads)
+target_include_directories(astra_base_priority_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_base_priority_test PRIVATE cxx_std_20)
+add_test(NAME astra_base_priority_test COMMAND astra_base_priority_test)
+
 
 
 

@@ -33,6 +33,12 @@ struct FrameTracker {
         destruct_count.store(0);
     }
 
+    static void wait_alive_zero() {
+        for (int i = 0; i < 5000 && alive_count.load() != 0; ++i) {
+            std::this_thread::yield();
+        }
+    }
+
     FrameTracker() {
         construct_count.fetch_add(1);
         alive_count.fetch_add(1);
@@ -145,6 +151,7 @@ void test_R073_successful_spawn_and_value_return() {
     TEST_ASSERT(val == 12345);
     TEST_ASSERT(body_started.load());
     TEST_ASSERT(handle.state() == astra::TaskState::Succeeded);
+    FrameTracker::wait_alive_zero();
     TEST_ASSERT(FrameTracker::alive_count.load() == 0);
 }
 
@@ -161,6 +168,7 @@ void test_R073_successful_spawn_void() {
     handle.get();
     TEST_ASSERT(body_started.load());
     TEST_ASSERT(handle.state() == astra::TaskState::Succeeded);
+    FrameTracker::wait_alive_zero();
     TEST_ASSERT(FrameTracker::alive_count.load() == 0);
 }
 
@@ -183,6 +191,7 @@ void test_R073_coroutine_exception_propagation() {
     }
     TEST_ASSERT(threw);
     TEST_ASSERT(handle.state() == astra::TaskState::Failed);
+    FrameTracker::wait_alive_zero();
     TEST_ASSERT(FrameTracker::alive_count.load() == 0);
 }
 

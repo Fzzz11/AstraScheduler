@@ -5,6 +5,7 @@
 #include <astra/export.hpp>
 #include <astra/id.hpp>
 #include <astra/status.hpp>
+#include <astra/task_options.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -60,26 +61,34 @@ struct TaskInvokerBase {
     virtual void cancel_pre_start() noexcept = 0;
     [[nodiscard]] virtual bool is_resume_segment() const noexcept { return false; }
     [[nodiscard]] virtual bool is_coroutine_node() const noexcept { return false; }
+    [[nodiscard]] virtual Priority priority() const noexcept { return Priority::Normal; }
 };
 
 ASTRA_EXPORT TaskId current_executing_task_id() noexcept;
+ASTRA_EXPORT Priority current_executing_task_priority() noexcept;
 
 template <typename T>
 struct TaskHandleAwaiter;
 
 struct ASTRA_EXPORT TaskExecutionContextGuard {
     TaskId prev_id;
-    explicit TaskExecutionContextGuard(TaskId new_id) noexcept;
+    Priority prev_priority;
+    explicit TaskExecutionContextGuard(TaskId new_id, Priority new_priority = Priority::Normal) noexcept;
     ~TaskExecutionContextGuard() noexcept;
 };
 
 class ASTRA_EXPORT TaskSharedStateBase {
 public:
-    explicit TaskSharedStateBase(TaskId id) : id_(id) {}
+    explicit TaskSharedStateBase(TaskId id, Priority priority = Priority::Normal)
+        : id_(id), priority_(priority) {}
     virtual ~TaskSharedStateBase() = default;
 
     [[nodiscard]] TaskId id() const noexcept {
         return id_;
+    }
+
+    [[nodiscard]] Priority priority() const noexcept {
+        return priority_;
     }
 
     [[nodiscard]] std::stop_token stop_token() noexcept {
@@ -249,6 +258,7 @@ public:
 
 protected:
     TaskId id_;
+    Priority priority_{Priority::Normal};
     std::stop_source stop_source_;
     mutable std::mutex mutex_;
     mutable std::condition_variable cv_;
@@ -264,7 +274,8 @@ protected:
 template <typename T>
 class TaskSharedState : public TaskSharedStateBase {
 public:
-    explicit TaskSharedState(TaskId id) : TaskSharedStateBase(id) {}
+    explicit TaskSharedState(TaskId id, Priority priority = Priority::Normal)
+        : TaskSharedStateBase(id, priority) {}
 
     void set_value(T val) {
         std::vector<std::function<void()>> callbacks;
@@ -303,7 +314,8 @@ private:
 template <>
 class TaskSharedState<void> : public TaskSharedStateBase {
 public:
-    explicit TaskSharedState(TaskId id) : TaskSharedStateBase(id) {}
+    explicit TaskSharedState(TaskId id, Priority priority = Priority::Normal)
+        : TaskSharedStateBase(id, priority) {}
 
     void set_value() {
         std::vector<std::function<void()>> callbacks;
@@ -411,10 +423,14 @@ public:
         }
     }
 
+    [[nodiscard]] Priority priority() const noexcept override {
+        return state_ ? state_->priority() : Priority::Normal;
+    }
+
 private:
     template <std::size_t... Is>
     void invoke_impl(std::index_sequence<Is...>) {
-        TaskExecutionContextGuard context_guard(state_->id());
+        TaskExecutionContextGuard context_guard(state_->id(), state_->priority());
         try {
             if constexpr (Ordinary) {
                 if constexpr (std::is_void_v<ResultType>) {
@@ -482,6 +498,13 @@ public:
             throw std::logic_error("operating on empty/moved-from TaskHandle");
         }
         return state_->id();
+    }
+
+    [[nodiscard]] Priority priority() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->priority();
     }
 
     [[nodiscard]] TaskState state() const {
@@ -564,6 +587,13 @@ public:
             throw std::logic_error("operating on empty/moved-from TaskHandle");
         }
         return state_->id();
+    }
+
+    [[nodiscard]] Priority priority() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->priority();
     }
 
     [[nodiscard]] TaskState state() const {

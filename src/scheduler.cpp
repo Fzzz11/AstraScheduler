@@ -747,20 +747,27 @@ thread_local RuntimeId t_current_worker_runtime_id{0};
 thread_local void* t_current_worker_impl{nullptr};
 thread_local std::size_t t_current_worker_index{0};
 thread_local TaskId t_current_executing_task_id{};
+thread_local Priority t_current_executing_task_priority{Priority::Normal};
 thread_local GraphRunId t_current_executing_graph_run_id{};
 thread_local std::size_t t_current_helping_depth{0};
 
-TaskExecutionContextGuard::TaskExecutionContextGuard(TaskId new_id) noexcept
-    : prev_id(t_current_executing_task_id) {
+TaskExecutionContextGuard::TaskExecutionContextGuard(TaskId new_id, Priority new_priority) noexcept
+    : prev_id(t_current_executing_task_id), prev_priority(t_current_executing_task_priority) {
     t_current_executing_task_id = new_id;
+    t_current_executing_task_priority = new_priority;
 }
 
 TaskExecutionContextGuard::~TaskExecutionContextGuard() noexcept {
     t_current_executing_task_id = prev_id;
+    t_current_executing_task_priority = prev_priority;
 }
 
 TaskId current_executing_task_id() noexcept {
     return t_current_executing_task_id;
+}
+
+Priority current_executing_task_priority() noexcept {
+    return t_current_executing_task_priority;
 }
 
 GraphRunId current_executing_graph_run_id() noexcept {
@@ -769,12 +776,15 @@ GraphRunId current_executing_graph_run_id() noexcept {
 
 struct GraphNodeExecutionContextGuard {
     GraphRunId prev_id;
-    explicit GraphNodeExecutionContextGuard(GraphRunId new_id) noexcept
-        : prev_id(t_current_executing_graph_run_id) {
+    Priority prev_priority;
+    explicit GraphNodeExecutionContextGuard(GraphRunId new_id, Priority new_priority = Priority::Normal) noexcept
+        : prev_id(t_current_executing_graph_run_id), prev_priority(t_current_executing_task_priority) {
         t_current_executing_graph_run_id = new_id;
+        t_current_executing_task_priority = new_priority;
     }
     ~GraphNodeExecutionContextGuard() noexcept {
         t_current_executing_graph_run_id = prev_id;
+        t_current_executing_task_priority = prev_priority;
     }
 };
 
@@ -795,7 +805,8 @@ struct GraphCoroutineResumeWrapper final : TaskInvokerBase {
           node_id(nid), trigger_fn(std::move(tfn)) {}
 
     void execute() override {
-        GraphNodeExecutionContextGuard node_guard(graph_state->id);
+        const Priority p = task_state ? task_state->priority() : Priority::Normal;
+        GraphNodeExecutionContextGuard node_guard(graph_state->id, p);
         if (inner) {
             inner->execute();
         }
@@ -817,6 +828,10 @@ struct GraphCoroutineResumeWrapper final : TaskInvokerBase {
 
     [[nodiscard]] bool is_resume_segment() const noexcept override {
         return true;
+    }
+
+    [[nodiscard]] Priority priority() const noexcept override {
+        return task_state ? task_state->priority() : Priority::Normal;
     }
 };
 
@@ -1530,7 +1545,7 @@ void Scheduler::shutdown_now() {
     impl_->shutdown_sync(ShutdownMode::Immediate);
 }
 
-GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
+GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph) {
     if (!valid()) {
         throw std::logic_error("operating on empty/moved-from Scheduler");
     }
@@ -1539,6 +1554,16 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
     const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
     const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
     const bool can_block = !is_worker;
+
+    Priority graph_priority = Priority::Normal;
+    if (options.has_value()) {
+        validate_priority(options->priority);
+        graph_priority = options->priority;
+    } else if (is_internal) {
+        graph_priority = detail::current_executing_task_priority();
+    } else {
+        graph_priority = Priority::Normal;
+    }
 
     // R-070 / D-106: all-or-nothing slot reservation
     const auto decision = impl_->acquire_admission_slots(n, can_block, is_internal);
@@ -1575,18 +1600,24 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
     auto& nodes = graph.nodes_internal();
     for (auto& node_data : nodes) {
         const std::size_t idx = node_data.id.value();
+        Priority node_priority = graph_priority;
+        if (node_data.options.has_value()) {
+            validate_priority(node_data.options->priority);
+            node_priority = node_data.options->priority;
+        }
         state->node_entries[idx].id = node_data.id;
         state->node_entries[idx].invoker = std::move(node_data.invoker);
+        state->node_entries[idx].priority = node_priority;
         if (state->node_entries[idx].invoker && state->node_entries[idx].invoker->is_coroutine_node()) {
             auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(state->node_entries[idx].invoker.get());
             const TaskId task_id = detail::allocate_task_id(impl_->runtime_id);
-            auto task_state = std::make_shared<detail::TaskSharedState<void>>(task_id);
+            auto task_state = std::make_shared<detail::TaskSharedState<void>>(task_id, node_priority);
             task_state->set_timer_functions(
-                [impl = impl_.get()](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
-                    return impl->register_timer(wt, std::move(hs), std::move(act));
+                [impl_ptr = impl_.get()](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
+                    return impl_ptr->register_timer(wt, std::move(hs), std::move(act));
                 },
-                [impl = impl_.get()](std::uint64_t tid) {
-                    impl->cancel_timer(tid);
+                [impl_ptr = impl_.get()](std::uint64_t tid) {
+                    impl_ptr->cancel_timer(tid);
                 }
             );
             coro_node->coro.promise().shared_state = task_state;
@@ -1602,7 +1633,7 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
     }
 
     // 递归/内部分发与依赖传播函数（R-070 / R-071 / D-107 / D-109 / D-110）
-    auto trigger_successors = [impl = impl_.get(), state, is_internal](auto self, auto post_node_fn, NodeId u_id) -> void {
+    auto trigger_successors = [impl_ptr = impl_.get(), state, is_internal](auto self, auto post_node_fn, NodeId u_id) -> void {
         const std::size_t node_idx = u_id.value();
         auto& entry = state->node_entries[node_idx];
         const TaskState u_outcome = entry.outcome.load(std::memory_order_acquire);
@@ -1618,7 +1649,7 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
                     state->cancel_requested.load(std::memory_order_acquire)) {
                     // 前置依赖失败或图已取消：取消该后继节点，不执行 Callable，直接发布 Cancelled 并释放 external slot
                     if (!is_internal) {
-                        impl->release_external_slots(1);
+                        impl_ptr->release_external_slots(1);
                     }
                     state->mark_node_terminal(succ_id.value(), TaskState::Cancelled);
                     // 递归触发 succ_id 的后继
@@ -1631,9 +1662,10 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
         }
     };
 
-    auto post_node = [impl = impl_.get(), state, is_internal, trigger_successors](auto self, NodeId u_id) -> void {
+    auto post_node = [impl_ptr = impl_.get(), state, is_internal, trigger_successors](auto self, NodeId u_id) -> void {
         const std::size_t node_idx = u_id.value();
         auto& entry = state->node_entries[node_idx];
+        const Priority node_p = entry.priority;
 
         if (entry.invoker && entry.invoker->is_coroutine_node()) {
             auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(entry.invoker.get());
@@ -1641,23 +1673,23 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
             auto coro = coro_node->coro;
             coro_node->coro = nullptr;
 
-            task_state->set_rescheduler([impl, state, u_id, is_internal, task_state, trigger_successors, self](std::unique_ptr<detail::TaskInvokerBase> invoker) {
+            task_state->set_rescheduler([impl_ptr, state, u_id, is_internal, task_state, trigger_successors, self](std::unique_ptr<detail::TaskInvokerBase> invoker) {
                 auto trigger_fn = [trigger_successors, self](NodeId id) {
                     trigger_successors(trigger_successors, self, id);
                 };
                 auto wrapper = std::make_unique<detail::GraphCoroutineResumeWrapper>(
                     std::move(invoker), state, task_state, u_id, std::move(trigger_fn));
-                impl->post_task_internal(std::move(wrapper), false /* is_external */);
+                impl_ptr->post_task_internal(std::move(wrapper), false /* is_external */);
             });
 
-            auto task_fn = [impl, state, u_id, is_internal, self, trigger_successors, task_state, coro] {
+            auto task_fn = [impl_ptr, state, u_id, is_internal, self, trigger_successors, task_state, coro, node_p] {
                 const std::size_t n_idx = u_id.value();
 
                 if (state->cancel_requested.load(std::memory_order_acquire)) {
                     task_state->request_cancel();
                 }
 
-                detail::GraphNodeExecutionContextGuard node_guard(state->id);
+                detail::GraphNodeExecutionContextGuard node_guard(state->id, node_p);
 
                 auto start_invoker = std::make_unique<detail::CoroutineTaskInvokerModel<void>>(
                     coro, task_state);
@@ -1671,13 +1703,13 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
                 }
             };
 
-            impl->post_task_internal(
+            impl_ptr->post_task_internal(
                 detail::make_graph_node_invoker<true>(std::move(task_fn)),
                 !is_internal);
             return;
         }
 
-        auto task_fn = [impl, state, u_id, is_internal, self, trigger_successors] {
+        auto task_fn = [impl_ptr, state, u_id, is_internal, self, trigger_successors, node_p] {
             const std::size_t n_idx = u_id.value();
             auto& node_entry = state->node_entries[n_idx];
 
@@ -1687,7 +1719,7 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
                 return;
             }
 
-            detail::GraphNodeExecutionContextGuard node_guard(state->id);
+            detail::GraphNodeExecutionContextGuard node_guard(state->id, node_p);
 
             try {
                 if (node_entry.invoker) {
@@ -1703,7 +1735,7 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
             trigger_successors(trigger_successors, self, u_id);
         };
 
-        impl->post_task_internal(
+        impl_ptr->post_task_internal(
             detail::make_graph_node_invoker<true>(std::move(task_fn)),
             !is_internal);
     };
@@ -1722,6 +1754,14 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
     }
 
     return GraphRun(std::move(state));
+}
+
+GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
+    return run_impl(std::nullopt, std::move(graph));
+}
+
+GraphRun Scheduler::run(TaskOptions options, FrozenTaskGraph&& graph) {
+    return run_impl(options, std::move(graph));
 }
 
 }  // namespace astra

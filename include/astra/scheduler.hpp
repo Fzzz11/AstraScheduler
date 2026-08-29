@@ -81,12 +81,60 @@ public:
     // 请求立即停机（R-016 / R-019）。
     void shutdown_now();
 
-    // 提交单次执行任务图（R-070 / D-104 / D-106 / D-107）。
+    // 提交单次执行任务图（R-070 / R-080 / D-104 / D-106 / D-107 / D-129）。
     GraphRun run(FrozenTaskGraph&& graph);
+    GraphRun run(TaskOptions options, FrozenTaskGraph&& graph);
 
-    // 阻塞/按策略提交任务（R-048 / R-058 / R-061 / R-062 / R-102）。
+    // 阻塞/按策略提交任务（R-048 / R-058 / R-061 / R-062 / R-080 / R-102 / D-129）。
     template <typename F, typename... Args>
+        requires (!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
     auto submit(F&& f, Args&&... args) -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
+        return submit_impl(std::nullopt, std::forward<F>(f), std::forward<Args>(args)...);
+    }
+
+    template <typename F, typename... Args>
+    auto submit(TaskOptions options, F&& f, Args&&... args) -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
+        return submit_impl(options, std::forward<F>(f), std::forward<Args>(args)...);
+    }
+
+    // 非阻塞尝试提交任务（R-061 / R-062 / R-080 / D-088 / D-129）。
+    template <typename F, typename... Args>
+        requires (!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
+    auto try_submit(F&& f, Args&&... args) -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
+        return try_submit_impl(std::nullopt, std::forward<F>(f), std::forward<Args>(args)...);
+    }
+
+    template <typename F, typename... Args>
+    auto try_submit(TaskOptions options, F&& f, Args&&... args) -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
+        return try_submit_impl(options, std::forward<F>(f), std::forward<Args>(args)...);
+    }
+
+    // 异步提交 C++20 Coroutine Task（R-073 / R-080 / D-114 / D-115 / D-129）
+    template <typename T>
+    TaskHandle<T> spawn(Task<T>&& task) {
+        return spawn_impl(std::nullopt, std::move(task));
+    }
+
+    template <typename T>
+    TaskHandle<T> spawn(TaskOptions options, Task<T>&& task) {
+        return spawn_impl(options, std::move(task));
+    }
+
+    // 非阻塞尝试提交 C++20 Coroutine Task（R-073 / R-080 / D-114 / D-115 / D-129）
+    template <typename T>
+    SubmissionResult<T> try_spawn(Task<T>&& task) {
+        return try_spawn_impl(std::nullopt, std::move(task));
+    }
+
+    template <typename T>
+    SubmissionResult<T> try_spawn(TaskOptions options, Task<T>&& task) {
+        return try_spawn_impl(options, std::move(task));
+    }
+
+private:
+    template <typename F, typename... Args>
+    auto submit_impl(std::optional<TaskOptions> options, F&& f, Args&&... args)
+        -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
         using Traits = detail::InvocationTraits<F, Args...>;
 
         static_assert(Traits::is_valid,
@@ -106,6 +154,16 @@ public:
         const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
         const bool can_block = !is_worker; // R-061 / D-085: 仅普通非 Worker 线程可 Block
 
+        Priority resolved_priority = Priority::Normal;
+        if (options.has_value()) {
+            validate_priority(options->priority);
+            resolved_priority = options->priority;
+        } else if (is_internal) {
+            resolved_priority = detail::current_executing_task_priority();
+        } else {
+            resolved_priority = Priority::Normal;
+        }
+
         const auto decision = acquire_admission(can_block, is_internal);
         if (decision == detail::AdmissionDecision::Stopping) {
             throw submission_rejected(SubmissionError::Stopping);
@@ -123,7 +181,7 @@ public:
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
-            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid);
+            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority);
             invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
                 state, std::forward<F>(f), std::forward<Args>(args)...);
         } catch (...) {
@@ -137,9 +195,9 @@ public:
         return TaskHandle<ResultType>(std::move(state));
     }
 
-    // 非阻塞尝试提交任务（R-061 / R-062 / D-088）。
     template <typename F, typename... Args>
-    auto try_submit(F&& f, Args&&... args) -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
+    auto try_submit_impl(std::optional<TaskOptions> options, F&& f, Args&&... args)
+        -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
         using Traits = detail::InvocationTraits<F, Args...>;
 
         static_assert(Traits::is_valid,
@@ -156,6 +214,16 @@ public:
         }
 
         const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+
+        Priority resolved_priority = Priority::Normal;
+        if (options.has_value()) {
+            validate_priority(options->priority);
+            resolved_priority = options->priority;
+        } else if (is_internal) {
+            resolved_priority = detail::current_executing_task_priority();
+        } else {
+            resolved_priority = Priority::Normal;
+        }
 
         // try_submit 永不等待 capacity（R-061 / D-088）
         const auto decision = acquire_admission(false /* no block */, is_internal);
@@ -175,7 +243,7 @@ public:
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
-            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid);
+            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority);
             invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
                 state, std::forward<F>(f), std::forward<Args>(args)...);
         } catch (...) {
@@ -189,9 +257,8 @@ public:
         return SubmissionResult<ResultType>(TaskHandle<ResultType>(std::move(state)));
     }
 
-    // 异步提交 C++20 Coroutine Task（R-073 / D-114 / D-115）
     template <typename T>
-    TaskHandle<T> spawn(Task<T>&& task) {
+    TaskHandle<T> spawn_impl(std::optional<TaskOptions> options, Task<T>&& task) {
         if (!valid()) {
             throw std::logic_error("operating on empty/moved-from Scheduler");
         }
@@ -202,6 +269,16 @@ public:
         const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
         const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
         const bool can_block = !is_worker;
+
+        Priority resolved_priority = Priority::Normal;
+        if (options.has_value()) {
+            validate_priority(options->priority);
+            resolved_priority = options->priority;
+        } else if (is_internal) {
+            resolved_priority = detail::current_executing_task_priority();
+        } else {
+            resolved_priority = Priority::Normal;
+        }
 
         const auto decision = acquire_admission(can_block, is_internal);
         if (decision == detail::AdmissionDecision::Stopping) {
@@ -219,7 +296,7 @@ public:
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
-            state = std::make_shared<detail::TaskSharedState<T>>(tid);
+            state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority);
             auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
@@ -246,9 +323,8 @@ public:
         return TaskHandle<T>(std::move(state));
     }
 
-    // 非阻塞尝试提交 C++20 Coroutine Task（R-073 / D-114 / D-115）
     template <typename T>
-    SubmissionResult<T> try_spawn(Task<T>&& task) {
+    SubmissionResult<T> try_spawn_impl(std::optional<TaskOptions> options, Task<T>&& task) {
         if (!valid()) {
             throw std::logic_error("operating on empty/moved-from Scheduler");
         }
@@ -257,6 +333,16 @@ public:
         }
 
         const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+
+        Priority resolved_priority = Priority::Normal;
+        if (options.has_value()) {
+            validate_priority(options->priority);
+            resolved_priority = options->priority;
+        } else if (is_internal) {
+            resolved_priority = detail::current_executing_task_priority();
+        } else {
+            resolved_priority = Priority::Normal;
+        }
 
         const auto decision = acquire_admission(false /* no block */, is_internal);
         if (decision == detail::AdmissionDecision::Stopping) {
@@ -274,7 +360,7 @@ public:
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
-            state = std::make_shared<detail::TaskSharedState<T>>(tid);
+            state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority);
             auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
@@ -308,6 +394,7 @@ private:
     detail::AdmissionDecision acquire_admission(bool block, bool is_internal) const;
     void rollback_external_slot() const;
     void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const;
+    GraphRun run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph);
     std::uint64_t register_timer(std::chrono::steady_clock::time_point wake_time,
                                  std::shared_ptr<AwaitHandshake> handshake,
                                  std::function<void()> resume_action) const;

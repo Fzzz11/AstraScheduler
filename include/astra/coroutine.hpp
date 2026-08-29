@@ -265,7 +265,7 @@ public:
             return;
         }
 
-        TaskExecutionContextGuard guard(state->id());
+        TaskExecutionContextGuard guard(state->id(), state->priority());
 
         try {
             if (coro && !coro.done()) {
@@ -288,6 +288,10 @@ public:
             state->request_cancel();
         }
     }
+
+    [[nodiscard]] Priority priority() const noexcept override {
+        return state ? state->priority() : Priority::Normal;
+    }
 };
 
 template <typename T>
@@ -304,7 +308,7 @@ public:
 
     void execute() override {
         state->transition_to_running();
-        TaskExecutionContextGuard guard(state->id());
+        TaskExecutionContextGuard guard(state->id(), state->priority());
 
         try {
             if (coro && !coro.done()) {
@@ -327,6 +331,10 @@ public:
 
     [[nodiscard]] bool is_resume_segment() const noexcept override {
         return true;
+    }
+
+    [[nodiscard]] Priority priority() const noexcept override {
+        return state ? state->priority() : Priority::Normal;
     }
 };
 
@@ -355,6 +363,10 @@ public:
 
     [[nodiscard]] bool is_coroutine_node() const noexcept override {
         return true;
+    }
+
+    [[nodiscard]] Priority priority() const noexcept override {
+        return task_state ? task_state->priority() : Priority::Normal;
     }
 };
 
@@ -714,7 +726,7 @@ template <typename Rep, typename Period>
 }
 
 // -----------------------------------------------------------------------------
-// TaskGraph::emplace_coroutine (R-077 / D-123)
+// TaskGraph::emplace_coroutine (R-077 / R-080 / D-123 / D-129)
 // -----------------------------------------------------------------------------
 inline NodeId TaskGraph::emplace_coroutine(Task<void>&& task) {
     if (!task.valid()) {
@@ -724,7 +736,23 @@ inline NodeId TaskGraph::emplace_coroutine(Task<void>&& task) {
     const NodeId id{seq};
     nodes_.push_back(FrozenTaskGraph::NodeData{
         id,
-        std::make_unique<detail::GraphCoroutineNodeInvoker>(task.release_handle())
+        std::make_unique<detail::GraphCoroutineNodeInvoker>(task.release_handle()),
+        std::nullopt
+    });
+    return id;
+}
+
+inline NodeId TaskGraph::emplace_coroutine(TaskOptions options, Task<void>&& task) {
+    validate_priority(options.priority);
+    if (!task.valid()) {
+        throw std::logic_error("cannot emplace empty/invalid Task<void> into TaskGraph");
+    }
+    const std::uint64_t seq = nodes_.size() + 1;
+    const NodeId id{seq};
+    nodes_.push_back(FrozenTaskGraph::NodeData{
+        id,
+        std::make_unique<detail::GraphCoroutineNodeInvoker>(task.release_handle()),
+        options
     });
     return id;
 }

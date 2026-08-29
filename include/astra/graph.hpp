@@ -91,6 +91,7 @@ public:
     struct NodeData {
         NodeId id{};
         std::unique_ptr<detail::TaskInvokerBase> invoker{nullptr};
+        std::optional<TaskOptions> options{std::nullopt};
     };
 
     FrozenTaskGraph() noexcept = default;
@@ -152,6 +153,7 @@ public:
     // 添加任务节点，返回 graph-local 强类型 NodeId（D-108 / D-161）
     // 约束 Callable 返回类型必须恰好为 void（R-071 / D-108）
     template <typename F>
+        requires (!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
     NodeId emplace(F&& f) {
         using Traits = detail::InvocationTraits<F>;
         static_assert(Traits::is_valid,
@@ -163,13 +165,34 @@ public:
         const NodeId id{seq};
         nodes_.push_back(FrozenTaskGraph::NodeData{
             id,
-            detail::make_graph_node_invoker<Traits::is_ordinary_invocable>(std::forward<F>(f))
+            detail::make_graph_node_invoker<Traits::is_ordinary_invocable>(std::forward<F>(f)),
+            std::nullopt
         });
         return id;
     }
 
-    // R-077 / D-123: 显式添加 Task<void> 协程节点
+    template <typename F>
+    NodeId emplace(TaskOptions options, F&& f) {
+        validate_priority(options.priority);
+        using Traits = detail::InvocationTraits<F>;
+        static_assert(Traits::is_valid,
+            "Callable must be invocable as f() or f(std::stop_token)");
+        static_assert(std::is_void_v<typename Traits::ResultType>,
+            "TaskGraph Node Callable must return void (R-071 / D-108)");
+
+        const std::uint64_t seq = nodes_.size() + 1;
+        const NodeId id{seq};
+        nodes_.push_back(FrozenTaskGraph::NodeData{
+            id,
+            detail::make_graph_node_invoker<Traits::is_ordinary_invocable>(std::forward<F>(f)),
+            options
+        });
+        return id;
+    }
+
+    // R-077 / R-080 / D-123 / D-129: 显式添加 Task<void> 协程节点
     NodeId emplace_coroutine(Task<void>&& task);
+    NodeId emplace_coroutine(TaskOptions options, Task<void>&& task);
 
     // 添加有向边 (from -> to)
     void add_edge(NodeId from, NodeId to, EdgePolicy policy = EdgePolicy::RequireSuccess) {
