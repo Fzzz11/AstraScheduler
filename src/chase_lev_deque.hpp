@@ -21,12 +21,24 @@ enum class DequeResultStatus : std::uint8_t {
 // =============================================================================
 template <typename T>
 class ChaseLevSeqCstOracle {
+private:
+    // AST-053（TSan 证据）：动态 grow 的 buffer 必须经原子指针发布（steal 端
+    // acquire 读取）且旧 buffer 永久保留（R-067 retention），否则并发 steal
+    // 读 cells_ 与 owner 的 unique_ptr 换装构成 data race。
+    struct OracleBuffer {
+        std::size_t capacity;
+        std::unique_ptr<std::atomic<T>[]> cells;
+        explicit OracleBuffer(std::size_t cap)
+            : capacity(cap), cells(std::make_unique<std::atomic<T>[]>(cap)) {}
+    };
+
 public:
     explicit ChaseLevSeqCstOracle(std::size_t initial_capacity = 64)
-        : capacity_(initial_capacity),
-          cells_(std::make_unique<std::atomic<T>[]>(initial_capacity)),
-          top_(0),
-          bottom_(0) {}
+        : top_(0), bottom_(0) {
+        auto buf = std::make_unique<OracleBuffer>(initial_capacity);
+        published_.store(buf.get(), std::memory_order_relaxed);
+        retired_.push_back(std::move(buf));
+    }
 
     ~ChaseLevSeqCstOracle() = default;
 
@@ -34,22 +46,24 @@ public:
     ChaseLevSeqCstOracle& operator=(const ChaseLevSeqCstOracle&) = delete;
 
     void push(T item) {
+        OracleBuffer* buf = published_.load(std::memory_order_acquire);
         std::int64_t b = bottom_.load(std::memory_order_seq_cst);
         std::int64_t t = top_.load(std::memory_order_seq_cst);
-        if (b - t >= static_cast<std::int64_t>(capacity_)) {
-            grow(b, t);
+        if (b - t >= static_cast<std::int64_t>(buf->capacity)) {
+            buf = grow(b, t, buf);
         }
-        cells_[static_cast<std::size_t>(b) & (capacity_ - 1)].store(item, std::memory_order_seq_cst);
+        buf->cells[static_cast<std::size_t>(b) & (buf->capacity - 1)].store(item, std::memory_order_seq_cst);
         bottom_.store(b + 1, std::memory_order_seq_cst);
     }
 
     DequeResultStatus pop(T& out) {
+        OracleBuffer* buf = published_.load(std::memory_order_acquire);
         std::int64_t b = bottom_.load(std::memory_order_seq_cst) - 1;
         bottom_.store(b, std::memory_order_seq_cst);
         std::int64_t t = top_.load(std::memory_order_seq_cst);
 
         if (t <= b) {
-            T item = cells_[static_cast<std::size_t>(b) & (capacity_ - 1)].load(std::memory_order_seq_cst);
+            T item = buf->cells[static_cast<std::size_t>(b) & (buf->capacity - 1)].load(std::memory_order_seq_cst);
             if (t == b) {
                 // 争抢最后一个元素
                 if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_seq_cst)) {
@@ -69,11 +83,12 @@ public:
     }
 
     DequeResultStatus steal(T& out) {
+        OracleBuffer* buf = published_.load(std::memory_order_acquire);
         std::int64_t t = top_.load(std::memory_order_seq_cst);
         std::int64_t b = bottom_.load(std::memory_order_seq_cst);
 
         if (t < b) {
-            T item = cells_[static_cast<std::size_t>(t) & (capacity_ - 1)].load(std::memory_order_seq_cst);
+            T item = buf->cells[static_cast<std::size_t>(t) & (buf->capacity - 1)].load(std::memory_order_seq_cst);
             if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_seq_cst)) {
                 out = item;
                 return DequeResultStatus::Success;
@@ -85,31 +100,34 @@ public:
     }
 
     bool empty() const noexcept {
+        OracleBuffer* buf = published_.load(std::memory_order_acquire);
         std::int64_t b = bottom_.load(std::memory_order_seq_cst);
         std::int64_t t = top_.load(std::memory_order_seq_cst);
         return b <= t;
     }
 
     std::size_t size() const noexcept {
+        OracleBuffer* buf = published_.load(std::memory_order_acquire);
         std::int64_t b = bottom_.load(std::memory_order_seq_cst);
         std::int64_t t = top_.load(std::memory_order_seq_cst);
         return (b > t) ? static_cast<std::size_t>(b - t) : 0;
     }
 
 private:
-    void grow(std::int64_t b, std::int64_t t) {
-        std::size_t new_cap = capacity_ * 2;
-        auto new_cells = std::make_unique<std::atomic<T>[]>(new_cap);
+    OracleBuffer* grow(std::int64_t b, std::int64_t t, OracleBuffer* old_buf) {
+        auto new_buf = std::make_unique<OracleBuffer>(old_buf->capacity * 2);
         for (std::int64_t i = t; i < b; ++i) {
-            T val = cells_[static_cast<std::size_t>(i) & (capacity_ - 1)].load(std::memory_order_seq_cst);
-            new_cells[static_cast<std::size_t>(i) & (new_cap - 1)].store(val, std::memory_order_seq_cst);
+            T val = old_buf->cells[static_cast<std::size_t>(i) & (old_buf->capacity - 1)].load(std::memory_order_seq_cst);
+            new_buf->cells[static_cast<std::size_t>(i) & (new_buf->capacity - 1)].store(val, std::memory_order_seq_cst);
         }
-        cells_ = std::move(new_cells);
-        capacity_ = new_cap;
+        OracleBuffer* raw = new_buf.get();
+        retired_.push_back(std::move(new_buf));  // R-067 retention：旧 buffer 永久保留
+        published_.store(raw, std::memory_order_release);
+        return raw;
     }
 
-    std::size_t capacity_;
-    std::unique_ptr<std::atomic<T>[]> cells_;
+    std::atomic<OracleBuffer*> published_{nullptr};
+    std::vector<std::unique_ptr<OracleBuffer>> retired_;
     std::atomic<std::int64_t> top_;
     std::atomic<std::int64_t> bottom_;
 };

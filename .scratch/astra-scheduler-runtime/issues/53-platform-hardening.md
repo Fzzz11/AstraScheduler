@@ -50,5 +50,14 @@ Claimed by: agent
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-167, D-145, D-164, D-146
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
 - Verification:（in-progress）已交付：真实 sanitizer 构建开关（此前 ASTRA_ENABLE_SANITIZERS 为无消费变量的空操作，历次"ASan 通过"实为普通构建——本次修正）；tools/check_hardening.py 证据编排（ASan+UBSan / TSan 双套件全新构建+全量 ctest，输出 docs/hardening-evidence.json）；tests/test_weak_memory_stress.cpp weak-memory 压力载体（TSan 下通过，为 Tier-2 native AArch64 提供同一测试）。
-  TSan 首轮发现 8 个失败测试（真实竞争家族）：~Impl 非原子读 handoff_dispatched（已修复：atomic<bool>+acquire/release，~Impl:583 与 ~Scheduler:2422 报告清除）；剩余已知问题 chase_lev_deque.hpp grow() 与 steal 读 cells_ 的发布竞争（涉及 R-067/R-068 growth 发布协议设计）、graph.cpp GraphRun::wait 谓词竞争、reaper handoff 深层生命周期（coroutine_resume_handshake 下 SEGV）——待后续继续修复。
+  TSan 竞争修复进展（第二轮）：ChaseLevSeqCstOracle 的 grow() 裸 unique_ptr
+  换装与 steal 读 cells_ 的发布竞争已修复（移植生产版 active_buffer_ 原子发布
+  + R-067 旧 buffer retention 模式，chase_lev_ordering_test TSan 报告清零）；
+  admission_backpressure 测试自身 unique_ptr 解引用竞争已修复（waiter 持
+  Handle 拷贝 + 显式 shutdown 走同路径，TSan 报告清零，Debug 8 次循环稳定）。
+  剩余 5 个失败测试同属一个深层家族：orphan handoff 后 reaper 线程析构 Impl
+  时与其他线程的访问竞争（完整 TSan 双栈证据已采集，~Impl cond_destroy vs
+  main post_task_internal signal），涉及 AST-006/007 的 Impl 生命周期协议
+  重设计（R-020/R-021 primary 范畴），以及 coroutine_resume_handshake 的
+  挂起/恢复边界报告（R-074/AST-056 后续）。Debug 全量 51/51 通过。
   Tier-2 AArch64：本环境无 native 硬件，stress 载体已交付并显式记录 deferred（D-167 要求 native 证据，不伪造）。
