@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-004, R-093, R-094)
 Milestone: v1.0.0
 Blocked by: AST-031, AST-037, AST-041, AST-048, AST-053
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -31,9 +31,9 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-004]` 规格规则带有 Applies to，且不会把整体目标误写为单版本范围。
-- [ ] `[R-093]` 同一安装header/library版本一致，查询不启动Reaper或分配。
-- [ ] `[R-094]` 每个实现Ticket有目标版本且每个tag可独立构建运行。
+- [x] `[R-004]`（supporting 验证）规格规则带有 Applies to，且不会把整体目标误写为单版本范围。
+- [x] `[R-093]`（supporting 验证）同一安装header/library版本一致（单一版本源三处校验：project VERSION/installed version.hpp/CMake version file），查询不启动Reaper或分配（check_cmake_package R-093 gates）。
+- [x] `[R-094]`（supporting 验证）每个实现Ticket有目标版本且每个tag可独立构建运行（v1 冻结表面 manifest 化，漂移 gate 化）。
 
 ## Out of scope
 
@@ -46,4 +46,9 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-004, R-093, R-094
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-004, D-145, D-164, D-146
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tools/check_api_freeze.py` + golden manifest `tools/api_manifest/v1.0.0.json`（17 个 public headers SHA-256、110 个 astra 命名空间导出符号、版本三元组三处一致性）：
+  ① surface 冻结 gate：任何 header 增/删/改或符号增删都使 gate 失败（RED 实证：临时添加 header → "header ADDED" 拒绝）；
+  ② header 自包含编译矩阵（每个 installed header 单独 -fsyntax-only）全部通过；
+  ③ 版本一致性校验通过（project VERSION = version.hpp 宏 = CMake package version）。
+  不承诺跨 toolchain ABI（R-093/D-145）；golden 更新需 --update-golden 显式 review。
+  Debug 全量 51/51 通过、gates 15/15、traceability 通过（tickets=56）。
