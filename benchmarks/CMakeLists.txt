@@ -32,6 +32,43 @@ target_compile_features(astra_bench_harness_selftest PRIVATE cxx_std_20)
 target_link_libraries(astra_bench_harness_selftest PRIVATE Threads::Threads)
 add_test(NAME astra_bench_harness_selftest COMMAND astra_bench_harness_selftest)
 
+# --- 固定 benchmark corpus（AST-050 / R-003 / R-090 / D-142）---
+add_executable(astra_bench_corpus
+  astra_bench_corpus.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_bench_corpus PRIVATE Threads::Threads)
+target_include_directories(astra_bench_corpus PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+)
+target_compile_features(astra_bench_corpus PRIVATE cxx_std_20)
+
+add_executable(astra_bench_corpus_selftest astra_bench_corpus_selftest.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_bench_corpus_selftest PRIVATE Threads::Threads)
+target_include_directories(astra_bench_corpus_selftest PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+)
+target_compile_features(astra_bench_corpus_selftest PRIVATE cxx_std_20)
+add_test(NAME astra_bench_corpus_selftest COMMAND astra_bench_corpus_selftest)
+
 # --- pinned Google Benchmark micro cases（R-089 / D-141）---
 # 固定 v1.8.3：版本更新通过独立 review，不随网络最新版本漂移。
 # 下载失败（无网络环境）时跳过 micro target，不影响 scenario runner。
