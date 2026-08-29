@@ -35,15 +35,16 @@ option(ASTRA_BUILD_TESTS "Build the AstraScheduler test entry points" ON)
 
 find_package(Threads REQUIRED)
 
-add_library(AstraScheduler
-  src/version.cpp
-  src/scheduler.cpp
-  src/reaper_registry.cpp
-  src/finalization.cpp
-  src/graph.cpp
-  src/trace_collector.cpp
-  src/trace_export.cpp
+set(ASTRA_SCHEDULER_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/trace_export.cpp
 )
+add_library(AstraScheduler ${ASTRA_SCHEDULER_SOURCES})
 add_library(AstraScheduler::AstraScheduler ALIAS AstraScheduler)
 
 # R-110：CMake target 声明 cxx_std_20（通过 PUBLIC compile feature 传播给 consumer）。

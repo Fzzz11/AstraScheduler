@@ -33,12 +33,14 @@ import subprocess
 import tempfile
 import unittest
 from collections import namedtuple
+from functools import lru_cache
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT_CMAKE = REPO_ROOT / "CMakeLists.txt"
 CONSUMER_TEMPLATE = REPO_ROOT / "tests" / "consumer"
 CXX = os.environ.get("CXX", "g++")
+DEFAULT_BUILD_JOBS = 2
 
 # install 树中允许出现的文件后缀（R-111：仅 Linux 产物）。
 FORBIDDEN_INSTALL_SUFFIXES = (".dll", ".lib", ".exe")
@@ -64,6 +66,33 @@ def run_checked(command, cwd=None, context=""):
     return proc.stdout
 
 
+def cmake_build_command(build):
+    """Return a CMake build command with an explicit, memory-safe job limit."""
+    raw_jobs = os.environ.get(
+        "CMAKE_BUILD_PARALLEL_LEVEL", str(DEFAULT_BUILD_JOBS)
+    )
+    try:
+        jobs = int(raw_jobs)
+    except ValueError as exc:
+        raise ValueError(
+            "CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer"
+        ) from exc
+    if jobs < 1:
+        raise ValueError(
+            "CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer"
+        )
+    return ["cmake", "--build", str(build), "--parallel", str(jobs)]
+
+
+@lru_cache(maxsize=None)
+def run_consumer_once(binary):
+    """Run one built consumer once and share its successful result across gates."""
+    binary = Path(binary)
+    if not binary.is_file():
+        raise FileNotFoundError(f"consumer binary missing: {binary}")
+    return run_checked([str(binary)], context=f"run consumer {binary}")
+
+
 def _cmake_build_install(build, install, extra_args, label):
     """configure → build → ctest → install 的统一构建流程。"""
     run_checked(
@@ -72,7 +101,7 @@ def _cmake_build_install(build, install, extra_args, label):
         context=f"configure {label}",
     )
     run_checked(
-        ["cmake", "--build", str(build), "--parallel"],
+        cmake_build_command(build),
         context=f"build {label}",
     )
     run_checked(
@@ -97,22 +126,19 @@ def _build_consumer(workdir, prefix, name):
         context=f"configure {name}",
     )
     run_checked(
-        ["cmake", "--build", str(build)],
+        cmake_build_command(build),
         context=f"build {name}",
     )
     return source
 
 
-# 模块级共享构建缓存：多个测试类复用同一次 build/install/consumer，
-# 避免每个类重复完整构建；进程退出时经 atexit 清理临时目录。
+# 模块级共享构建缓存：多个测试类复用同一次 build/install/consumer；
+# 成功与失败都只执行一次，进程退出时经 atexit 清理临时目录。
 _SHARED_BUILDS = None
+_SHARED_BUILD_ERROR = None
 
 
-def _get_shared_builds():
-    global _SHARED_BUILDS
-    if _SHARED_BUILDS is not None:
-        return _SHARED_BUILDS
-
+def _create_shared_builds():
     # RED 失败点：仓库尚未提供 compiled library / CMake package。
     if not ROOT_CMAKE.is_file():
         raise FileNotFoundError(
@@ -142,7 +168,7 @@ def _get_shared_builds():
     static_consumer = _build_consumer(workdir, static_install, "consumer-static")
     shared_consumer = _build_consumer(workdir, shared_install, "consumer-shared")
 
-    _SHARED_BUILDS = {
+    return {
         "workdir": workdir,
         "static_build": static_build,
         "static_install": static_install,
@@ -151,7 +177,26 @@ def _get_shared_builds():
         "static_consumer": static_consumer,
         "shared_consumer": shared_consumer,
     }
+
+
+def _get_shared_builds():
+    global _SHARED_BUILDS, _SHARED_BUILD_ERROR
+    if _SHARED_BUILDS is not None:
+        return _SHARED_BUILDS
+    if _SHARED_BUILD_ERROR is not None:
+        raise _SHARED_BUILD_ERROR
+
+    try:
+        _SHARED_BUILDS = _create_shared_builds()
+    except Exception as error:
+        _SHARED_BUILD_ERROR = error
+        raise
     return _SHARED_BUILDS
+
+
+def setUpModule():
+    """Build both package variants once before any rule-specific unittest runs."""
+    _get_shared_builds()
 
 
 class PackageBuildFixture(unittest.TestCase):
@@ -176,7 +221,7 @@ class PackageBuildFixture(unittest.TestCase):
         return binary
 
     def _run_consumer(self, consumer):
-        run_checked([str(self._consumer_binary(consumer))], context="run consumer")
+        return run_consumer_once(self._consumer_binary(consumer))
 
     def _compile_commands(self, consumer):
         path = consumer / "build" / "compile_commands.json"
