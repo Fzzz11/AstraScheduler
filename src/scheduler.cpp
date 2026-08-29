@@ -136,6 +136,16 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             std::atomic<std::uint64_t> deadline_missed{0};
             std::atomic<std::uint64_t> deadline_cancelled_before_start{0};
 
+            // Wait/Await 诊断（AST-048 / R-096 / D-149）
+            std::atomic<std::uint64_t> task_wait_calls{0};
+            std::atomic<std::uint64_t> graph_wait_calls{0};
+            std::atomic<std::uint64_t> wait_for_timeouts{0};
+            std::atomic<std::uint64_t> same_runtime_helping_waits{0};
+            std::atomic<std::uint64_t> cross_runtime_helping_waits{0};
+            std::atomic<std::uint64_t> coroutine_await_registrations{0};
+            std::atomic<std::uint64_t> direct_self_wait_rejections{0};
+            std::atomic<std::uint64_t> helping_depth_rejections{0};
+
             // Detailed 延迟直方图 (R-085 / D-137)
             struct ShardedHistogram {
                 std::atomic<std::uint64_t> count{0};
@@ -167,6 +177,9 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             ShardedHistogram deadline_start_lateness;
             ShardedHistogram worker_park_duration;
             ShardedHistogram runtime_join_latency;
+            ShardedHistogram thread_wait_duration;
+            ShardedHistogram helping_wait_duration;
+            ShardedHistogram coroutine_await_duration;
         };
 
         std::vector<std::unique_ptr<WorkerShard>> worker_shards;
@@ -234,6 +247,11 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     bool startup_failed{false};
     bool stop_requested{false};
     bool handoff_dispatched{false};
+
+    // Trace 附加上下文（AST-048 / R-096）：wait/await 诊断事件的 producer 槽位。
+    std::shared_ptr<TraceCollector> trace_collector;
+    std::vector<TraceSlot*> trace_worker_slots;
+    TraceSlot* trace_external_slot{nullptr};
     std::size_t workers_ready{0};
     std::size_t external_pending_count{0};
     std::size_t active_task_count{0};
@@ -494,7 +512,9 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         //    全部 producer buffer 预分配；Recording 中分配失败抛出 → startup rollback，
         //    不允许无 buffer 的部分 Runtime。
         if (options.trace_collector) {
-            detail::trace_attach_runtime(options.trace_collector, runtime_id, options.worker_count);
+            trace_collector = options.trace_collector;
+            detail::trace_attach_runtime(options.trace_collector, runtime_id, options.worker_count,
+                                         &trace_worker_slots, &trace_external_slot);
         }
 
         // 3. 创建 Worker 并通过启动栅栏进行同步强事务管理（R-097, D-155）
@@ -1279,11 +1299,156 @@ void record_metrics_cancelled_before_start(TaskId id, bool has_deadline) noexcep
     }
 }
 
+// ============================================================================
+// Wait/Await 诊断辅助（AST-048 / R-096 / D-149）。
+// 全部 noexcept、无分配；Metrics Off / Trace 未附加时为零成本 fast path。
+// ============================================================================
+
+TraceSlot* wait_diagnostic_trace_slot(Scheduler::Impl& impl) noexcept {
+    if (!impl.trace_collector) {
+        return nullptr;
+    }
+    if (t_current_worker_impl == &impl &&
+        t_current_worker_index < impl.trace_worker_slots.size()) {
+        return impl.trace_worker_slots[t_current_worker_index];
+    }
+    return impl.trace_external_slot;
+}
+
+// wait/await 诊断 trace 事件：source 侧取当前 worker runtime（external caller
+// 归属 target runtime 的 external/control lane），target 侧携带逻辑 identity。
+void emit_wait_trace_event(Scheduler::Impl* impl, TraceEventKind kind, TaskId source,
+                           TaskId target, GraphRunId graph_target,
+                           std::uint16_t reason) noexcept {
+    if (!impl || !impl->trace_collector) {
+        return;
+    }
+    TraceSlot* slot = wait_diagnostic_trace_slot(*impl);
+    if (!slot) {
+        return;
+    }
+    detail::TraceEmitDesc d{};
+    d.kind = kind;
+    d.runtime_id = impl->runtime_id;
+    d.task_sequence = source.valid() ? source.sequence() : 0;
+    d.target_runtime_id = target.valid() ? RuntimeId{target.runtime_id().value()} : RuntimeId{};
+    d.target_task_sequence = target.valid() ? target.sequence() : 0;
+    d.graph_run_sequence = graph_target.valid() ? graph_target.sequence() : 0;
+    d.reason = reason;
+    detail::trace_emit_desc(*impl->trace_collector, slot, d);
+}
+
+// WaitEnd 的 scope-exit 配对：duration histogram、timeout 计数与 trace 配对。
+struct WaitDiagnosticsGuard {
+    Scheduler::Impl* impl;
+    TaskId source;
+    TaskId target;
+    GraphRunId graph_target;
+    std::chrono::steady_clock::time_point begin;
+    const std::optional<std::chrono::steady_clock::time_point>& deadline;
+    const TaskSharedStateBase* task_state;
+    const GraphRunSharedState* graph_state;
+    bool helping;
+
+    ~WaitDiagnosticsGuard() noexcept {
+        const bool completed =
+            task_state ? task_state->is_completed()
+                       : graph_state->run_state.load(std::memory_order_acquire) != GraphRunState::Running;
+        const auto now = std::chrono::steady_clock::now();
+        const bool timed_out = !completed && deadline.has_value() && now >= *deadline;
+        const auto dur_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - begin).count());
+        if (impl && impl->metrics.level != MetricsLevel::Off) {
+            auto& shard = impl->metrics.shard_for_current();
+            if (impl->metrics.level == MetricsLevel::Detailed) {
+                if (helping) {
+                    shard.helping_wait_duration.record(dur_ns);
+                } else {
+                    shard.thread_wait_duration.record(dur_ns);
+                }
+            }
+            if (timed_out) {
+                Scheduler::Impl::MetricsTracker::saturating_inc(shard.wait_for_timeouts);
+            }
+        }
+        emit_wait_trace_event(impl, TraceEventKind::WaitEnd, source, target, graph_target,
+                              completed ? 1u : (timed_out ? 2u : 0u));
+    }
+};
+
 void record_metrics_unobserved_failure(TaskId id) noexcept {
     auto* impl = find_runtime_impl(id.runtime_id());
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
     auto& shard = impl->metrics.shard_for_current();
     Scheduler::Impl::MetricsTracker::saturating_inc(shard.unobserved_failures);
+    // R-060：仅在活动 Trace 可用时尽力发出 unobserved failure 诊断事件。
+    emit_wait_trace_event(impl, TraceEventKind::UnobservedFailure, id, TaskId{}, GraphRunId{}, 0);
+}
+
+// --- Coroutine await 诊断入口（TaskHandleAwaiter 调用，R-096 / D-149）---
+
+void record_wait_call(TaskId target, bool timed_out) noexcept {
+    Scheduler::Impl* impl = t_current_worker_impl
+                                ? static_cast<Scheduler::Impl*>(t_current_worker_impl)
+                                : find_runtime_impl(target.runtime_id());
+    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
+    auto& shard = impl->metrics.shard_for_current();
+    const bool worker = t_current_worker_impl != nullptr;
+    if (worker) {
+        if (target.runtime_id() == impl->runtime_id) {
+            Scheduler::Impl::MetricsTracker::saturating_inc(shard.same_runtime_helping_waits);
+        } else {
+            Scheduler::Impl::MetricsTracker::saturating_inc(shard.cross_runtime_helping_waits);
+        }
+    } else {
+        Scheduler::Impl::MetricsTracker::saturating_inc(shard.task_wait_calls);
+    }
+    if (timed_out) {
+        Scheduler::Impl::MetricsTracker::saturating_inc(shard.wait_for_timeouts);
+    }
+    // 即时已完成等待记录零/最小 bucket（D-149）
+    if (impl->metrics.level == MetricsLevel::Detailed) {
+        (worker ? shard.helping_wait_duration : shard.thread_wait_duration).record(0);
+    }
+}
+
+void record_self_wait_rejection(TaskId target) noexcept {
+    if (auto* impl = find_runtime_impl(target.runtime_id());
+        impl && impl->metrics.level != MetricsLevel::Off) {
+        Scheduler::Impl::MetricsTracker::saturating_inc(
+            impl->metrics.shard_for_current().direct_self_wait_rejections);
+    }
+}
+
+void record_await_registration(TaskId source, TaskId target) noexcept {
+    if (auto* impl = find_runtime_impl(target.runtime_id());
+        impl && impl->metrics.level != MetricsLevel::Off) {
+        Scheduler::Impl::MetricsTracker::saturating_inc(
+            impl->metrics.shard_for_current().coroutine_await_registrations);
+    }
+    Scheduler::Impl* src_impl = t_current_worker_impl
+                                    ? static_cast<Scheduler::Impl*>(t_current_worker_impl)
+                                    : find_runtime_impl(target.runtime_id());
+    emit_wait_trace_event(src_impl, TraceEventKind::AwaitArmed, source, target, GraphRunId{}, 0);
+}
+
+void record_await_triggered(TaskId source, TaskId target, bool cancelled) noexcept {
+    Scheduler::Impl* src_impl = t_current_worker_impl
+                                    ? static_cast<Scheduler::Impl*>(t_current_worker_impl)
+                                    : find_runtime_impl(target.runtime_id());
+    emit_wait_trace_event(src_impl, TraceEventKind::AwaitTriggered, source, target, GraphRunId{},
+                          cancelled ? 2u : 1u);
+}
+
+void record_await_resumed(TaskId source, TaskId target, std::uint64_t duration_ns) noexcept {
+    if (auto* impl = find_runtime_impl(target.runtime_id());
+        impl && impl->metrics.level == MetricsLevel::Detailed) {
+        impl->metrics.shard_for_current().coroutine_await_duration.record(duration_ns);
+    }
+    Scheduler::Impl* src_impl = t_current_worker_impl
+                                    ? static_cast<Scheduler::Impl*>(t_current_worker_impl)
+                                    : find_runtime_impl(target.runtime_id());
+    emit_wait_trace_event(src_impl, TraceEventKind::AwaitResumed, source, target, GraphRunId{}, 0);
 }
 
 void record_metrics_suspended(TaskId id) noexcept {
@@ -1516,10 +1681,44 @@ void perform_caller_wait(
     if (t_current_worker_impl != nullptr &&
         t_current_executing_task_id != TaskId{} &&
         t_current_executing_task_id == target.id()) {
+        // R-096 / D-149：self rejection 计数（不改变语义）
+        if (auto* impl = find_runtime_impl(target.id().runtime_id());
+            impl && impl->metrics.level != MetricsLevel::Off) {
+            Scheduler::Impl::MetricsTracker::saturating_inc(
+                impl->metrics.shard_for_current().direct_self_wait_rejections);
+        }
         throw std::logic_error("direct self-wait detected on TaskHandle");
     }
 
-    // 2. 已完成即时返回
+    // --- Wait/Await 诊断（R-096 / D-149）：入口计数 + WaitBegin，scope-exit 配对 ---
+    Scheduler::Impl* diag_impl = nullptr;
+    bool diag_helping = false;
+    if (t_current_worker_impl != nullptr) {
+        diag_impl = static_cast<Scheduler::Impl*>(t_current_worker_impl);
+        diag_helping = true;
+    } else {
+        diag_impl = find_runtime_impl(target.id().runtime_id());
+    }
+    if (diag_impl && diag_impl->metrics.level != MetricsLevel::Off) {
+        auto& shard = diag_impl->metrics.shard_for_current();
+        if (diag_helping) {
+            if (target.id().runtime_id() == diag_impl->runtime_id) {
+                Scheduler::Impl::MetricsTracker::saturating_inc(shard.same_runtime_helping_waits);
+            } else {
+                Scheduler::Impl::MetricsTracker::saturating_inc(shard.cross_runtime_helping_waits);
+            }
+        } else {
+            Scheduler::Impl::MetricsTracker::saturating_inc(shard.task_wait_calls);
+        }
+    }
+    const auto diag_begin = std::chrono::steady_clock::now();
+    emit_wait_trace_event(diag_impl, TraceEventKind::WaitBegin,
+                          t_current_executing_task_id, target.id(), GraphRunId{}, 0);
+    WaitDiagnosticsGuard diag_guard{
+        diag_impl, t_current_executing_task_id, target.id(), GraphRunId{},
+        diag_begin, deadline, &target, nullptr, diag_helping};
+
+    // 2. 已完成即时返回（即时等待也计 call 与最小 bucket，D-149）
     if (target.is_completed()) {
         return;
     }
@@ -1549,6 +1748,11 @@ void perform_caller_wait(
 
     // R-059 / D-078 / D-079: 检查 Helping depth 超限
     if (t_current_helping_depth >= impl->options.max_helping_depth) {
+        // R-096 / D-149：depth rejection 计数（不改变语义）
+        if (impl->metrics.level != MetricsLevel::Off) {
+            Scheduler::Impl::MetricsTracker::saturating_inc(
+                impl->metrics.shard_for_current().helping_depth_rejections);
+        }
         throw helping_depth_exceeded{};
     }
 
@@ -1656,7 +1860,35 @@ void perform_graph_caller_wait(
         throw std::logic_error("cannot wait on own GraphRun inside its node execution");
     }
 
-    // 2. 已完成即时返回
+    // --- Wait 诊断（R-096 / D-149）：graph_wait_calls + WaitBegin/End 配对 ---
+    Scheduler::Impl* diag_impl = nullptr;
+    bool diag_helping = false;
+    if (t_current_worker_impl != nullptr) {
+        diag_impl = static_cast<Scheduler::Impl*>(t_current_worker_impl);
+        diag_helping = true;
+    } else {
+        diag_impl = find_runtime_impl(target.id.runtime_id());
+    }
+    if (diag_impl && diag_impl->metrics.level != MetricsLevel::Off) {
+        auto& shard = diag_impl->metrics.shard_for_current();
+        if (diag_helping) {
+            if (target.id.runtime_id() == diag_impl->runtime_id) {
+                Scheduler::Impl::MetricsTracker::saturating_inc(shard.same_runtime_helping_waits);
+            } else {
+                Scheduler::Impl::MetricsTracker::saturating_inc(shard.cross_runtime_helping_waits);
+            }
+        } else {
+            Scheduler::Impl::MetricsTracker::saturating_inc(shard.graph_wait_calls);
+        }
+    }
+    const auto diag_begin = std::chrono::steady_clock::now();
+    emit_wait_trace_event(diag_impl, TraceEventKind::WaitBegin,
+                          t_current_executing_task_id, TaskId{}, target.id, 0);
+    WaitDiagnosticsGuard diag_guard{
+        diag_impl, t_current_executing_task_id, TaskId{}, target.id,
+        diag_begin, deadline, nullptr, &target, diag_helping};
+
+    // 2. 已完成即时返回（即时等待也计 call 与最小 bucket，D-149）
     if (target.run_state.load(std::memory_order_acquire) != GraphRunState::Running) {
         return;
     }
@@ -2598,6 +2830,15 @@ RuntimeMetricsSnapshot Scheduler::metrics_snapshot() const {
         add_to(snapshot.counters.deadline_met, shard.deadline_met.load(std::memory_order_relaxed));
         add_to(snapshot.counters.deadline_missed, shard.deadline_missed.load(std::memory_order_relaxed));
         add_to(snapshot.counters.deadline_cancelled_before_start, shard.deadline_cancelled_before_start.load(std::memory_order_relaxed));
+
+        add_to(snapshot.counters.task_wait_calls, shard.task_wait_calls.load(std::memory_order_relaxed));
+        add_to(snapshot.counters.graph_wait_calls, shard.graph_wait_calls.load(std::memory_order_relaxed));
+        add_to(snapshot.counters.wait_for_timeouts, shard.wait_for_timeouts.load(std::memory_order_relaxed));
+        add_to(snapshot.counters.same_runtime_helping_waits, shard.same_runtime_helping_waits.load(std::memory_order_relaxed));
+        add_to(snapshot.counters.cross_runtime_helping_waits, shard.cross_runtime_helping_waits.load(std::memory_order_relaxed));
+        add_to(snapshot.counters.coroutine_await_registrations, shard.coroutine_await_registrations.load(std::memory_order_relaxed));
+        add_to(snapshot.counters.direct_self_wait_rejections, shard.direct_self_wait_rejections.load(std::memory_order_relaxed));
+        add_to(snapshot.counters.helping_depth_rejections, shard.helping_depth_rejections.load(std::memory_order_relaxed));
     };
 
     if (impl_->metrics.control_shard) {
@@ -2631,6 +2872,9 @@ RuntimeMetricsSnapshot Scheduler::metrics_snapshot() const {
             accumulate_hist(snapshot.histograms.deadline_start_lateness, shard.deadline_start_lateness);
             accumulate_hist(snapshot.histograms.worker_park_duration, shard.worker_park_duration);
             accumulate_hist(snapshot.histograms.runtime_join_latency, shard.runtime_join_latency);
+            accumulate_hist(snapshot.histograms.thread_wait_duration, shard.thread_wait_duration);
+            accumulate_hist(snapshot.histograms.helping_wait_duration, shard.helping_wait_duration);
+            accumulate_hist(snapshot.histograms.coroutine_await_duration, shard.coroutine_await_duration);
         };
 
         if (impl_->metrics.control_shard) {

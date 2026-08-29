@@ -59,9 +59,11 @@ namespace detail {
 // Scheduler startup 附加（D-158）：为该 Runtime 的全部 Worker 注册独立 producer，
 // 并确保 external/control 与 Reaper 独立 producer 槽位存在；Collector 处于
 // Recording 时在 startup barrier 前完成全部 buffer 预分配，失败抛出使 startup
-// rollback。collector 为空则 no-op。
+// rollback。collector 为空则 no-op。worker_slots 按序输出每 Worker 槽位。
 void trace_attach_runtime(const std::shared_ptr<TraceCollector>& collector,
-                          RuntimeId runtime_id, std::size_t worker_count);
+                          RuntimeId runtime_id, std::size_t worker_count,
+                          std::vector<TraceSlot*>* worker_slots = nullptr,
+                          TraceSlot** external_slot = nullptr);
 
 // 最小 producer/emit seam：测试与后续事件接线使用。
 // emit 无分配、无 I/O、无用户 callback、无阻塞；Stopped/category disabled/
@@ -81,6 +83,8 @@ struct ASTRA_NO_EXPORT TraceEmitDesc {
     TraceEventKind kind{TraceEventKind::Admission};
     RuntimeId runtime_id{};
     std::uint64_t task_sequence{0};
+    RuntimeId target_runtime_id{};
+    std::uint64_t target_task_sequence{0};
     std::uint64_t graph_run_sequence{0};
     std::uint32_t node_id{0};
     std::uint32_t worker_id{0};

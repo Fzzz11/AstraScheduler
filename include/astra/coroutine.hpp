@@ -405,6 +405,9 @@ struct TaskHandleAwaiter {
     TaskHandle<T> handle;
     std::shared_ptr<AwaitHandshake> handshake{std::make_shared<AwaitHandshake>()};
     std::optional<std::stop_callback<std::function<void()>>> stop_cb;
+    // AST-048 / R-096：await 诊断的 source identity 与 arm 时间戳。
+    TaskId source_id{};
+    std::chrono::steady_clock::time_point armed_at{};
 
     explicit TaskHandleAwaiter(const TaskHandle<T>& h) : handle(h) {}
 
@@ -413,6 +416,7 @@ struct TaskHandleAwaiter {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
         }
         if (current_executing_task_id() == handle.task_id()) {
+            record_self_wait_rejection(handle.task_id());
             throw std::logic_error("direct self-await detected (D-120 / R-076)");
         }
         const auto st = handle.state();
@@ -430,6 +434,7 @@ struct TaskHandleAwaiter {
         }
 
         if (task_state->id() == handle.task_id()) {
+            record_self_wait_rejection(handle.task_id());
             throw std::logic_error("direct self-await detected (D-120 / R-076)");
         }
 
@@ -448,22 +453,37 @@ struct TaskHandleAwaiter {
             }
         };
 
-        auto hs = handshake;
-        handle.shared_state_internal()->add_completion_callback([hs, post_action]() mutable {
-            hs->trigger(post_action);
-        });
+        source_id = task_state->id();
+        armed_at = std::chrono::steady_clock::now();
 
-        stop_cb.emplace(task_state->stop_token(), [hs, post_action]() mutable {
+        auto hs = handshake;
+        handle.shared_state_internal()->add_completion_callback(
+            [hs, post_action, src = source_id, tgt = handle.task_id()]() mutable {
+                record_await_triggered(src, tgt, false);
+                hs->trigger(post_action);
+            });
+
+        stop_cb.emplace(task_state->stop_token(), [hs, post_action, src = source_id, tgt = handle.task_id()]() mutable {
+            record_await_triggered(src, tgt, true);
             hs->trigger_cancel(post_action);
         });
 
         task_state->transition_to_suspended();
         hs->arm(std::move(post_action));
+        // R-096 / D-149：await 注册计数与 AwaitArmed trace 事件（source/target identity）。
+        record_await_registration(source_id, handle.task_id());
         return true;
     }
 
     decltype(auto) await_resume() {
         stop_cb.reset();
+        // R-096 / D-149：AwaitResumed 与 await 时长 histogram（arm → resume）。
+        if (source_id.valid()) {
+            const auto dur_ns = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - armed_at).count());
+            record_await_resumed(source_id, handle.task_id(), dur_ns);
+        }
         if (handshake->is_cancelled()) {
             throw task_cancelled{};
         }

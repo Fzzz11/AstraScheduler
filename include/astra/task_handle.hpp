@@ -90,6 +90,13 @@ ASTRA_EXPORT void record_metrics_resumed(TaskId id) noexcept;
 ASTRA_EXPORT void record_metrics_resume_segment(TaskId id) noexcept;
 ASTRA_EXPORT void record_metrics_explicit_yield() noexcept;
 
+// Wait/Await 诊断入口（AST-048 / R-096 / D-149），实现于 scheduler.cpp。
+ASTRA_EXPORT void record_wait_call(TaskId target, bool timed_out) noexcept;
+ASTRA_EXPORT void record_self_wait_rejection(TaskId target) noexcept;
+ASTRA_EXPORT void record_await_registration(TaskId source, TaskId target) noexcept;
+ASTRA_EXPORT void record_await_triggered(TaskId source, TaskId target, bool cancelled) noexcept;
+ASTRA_EXPORT void record_await_resumed(TaskId source, TaskId target, std::uint64_t duration_ns) noexcept;
+
 ASTRA_EXPORT void record_metrics_ready_queue_wait(TaskId id, std::uint64_t duration_ns) noexcept;
 ASTRA_EXPORT void record_metrics_execution_segment(TaskId id, std::uint64_t duration_ns) noexcept;
 ASTRA_EXPORT void record_metrics_task_wall_time(TaskId id, std::uint64_t duration_ns) noexcept;
@@ -334,7 +341,10 @@ public:
     template <typename Rep, typename Period>
     WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
         if (duration <= std::chrono::duration<Rep, Period>::zero()) {
-            return is_completed() ? WaitResult::Completed : WaitResult::TimedOut;
+            const bool completed = is_completed();
+            // R-096 / D-149：即时等待也计 call 与零/最小 bucket；TimedOut 计超时。
+            record_wait_call(id_, !completed);
+            return completed ? WaitResult::Completed : WaitResult::TimedOut;
         }
         const auto deadline = std::chrono::steady_clock::now() + duration;
         perform_caller_wait(*this, deadline);

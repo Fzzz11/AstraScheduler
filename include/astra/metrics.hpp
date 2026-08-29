@@ -47,6 +47,10 @@ struct RuntimeMetricsHistograms {
     Log2Histogram deadline_start_lateness{};
     Log2Histogram worker_park_duration{};
     Log2Histogram runtime_join_latency{};
+    // R-096 / D-149：wait/await 时长（Detailed）
+    Log2Histogram thread_wait_duration{};
+    Log2Histogram helping_wait_duration{};
+    Log2Histogram coroutine_await_duration{};
 };
 
 // -----------------------------------------------------------------------------
@@ -86,6 +90,16 @@ struct RuntimeMetricsCounters {
     std::uint64_t timer_registrations{0};
     std::uint64_t timer_fires{0};
     std::uint64_t timer_cancellations{0};
+
+    // 同步等待与 Await 诊断（R-096 / D-149）
+    std::uint64_t task_wait_calls{0};
+    std::uint64_t graph_wait_calls{0};
+    std::uint64_t wait_for_timeouts{0};
+    std::uint64_t same_runtime_helping_waits{0};
+    std::uint64_t cross_runtime_helping_waits{0};
+    std::uint64_t coroutine_await_registrations{0};
+    std::uint64_t direct_self_wait_rejections{0};
+    std::uint64_t helping_depth_rejections{0};
 
     // 任务图（Task Graph）
     std::uint64_t graph_admission_attempts{0};

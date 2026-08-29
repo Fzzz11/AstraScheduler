@@ -25,7 +25,7 @@ void test_R087_layout_version_golden() {
     using astra::TraceEvent;
     static_assert(std::is_trivially_copyable<TraceEvent>::value, "TraceEvent must be trivially copyable");
     // 固定布局：无指针、无 string_view、无析构对象（golden：80 bytes，8 对齐）。
-    static_assert(sizeof(TraceEvent) == 80, "TraceEvent layout is versioned and must not drift");
+    static_assert(sizeof(TraceEvent) == 96, "TraceEvent layout is versioned and must not drift");
     static_assert(alignof(TraceEvent) == 8, "TraceEvent must be 8-byte aligned");
 
     TraceEvent ev{};

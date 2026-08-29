@@ -71,6 +71,7 @@ const char* trace_event_kind_name(std::uint16_t kind) {
         case TraceEventKind::FinalizationEscalate: return "finalization_escalate";
         case TraceEventKind::CoordinatorExit: return "coordinator_exit";
         case TraceEventKind::FinalizationComplete: return "finalization_complete";
+        case TraceEventKind::UnobservedFailure: return "unobserved_failure";
     }
     return nullptr;  // unknown kind：由校验阶段显式失败
 }
@@ -200,6 +201,10 @@ ChromeTraceExportResult write_chrome_trace(const TraceSnapshot& snapshot, std::o
         if ((ev.task_id != 0 || ev.graph_run_id != 0 || ev.segment_sequence != 0) && ev.runtime_id == 0) {
             throw std::invalid_argument("task-bearing trace event is missing RuntimeId");
         }
+        if ((ev.target_task_id != 0 || ev.target_runtime_id != 0) &&
+            (ev.target_runtime_id == 0 || ev.target_task_id == 0)) {
+            throw std::invalid_argument("wait edge trace event has incomplete target identity");
+        }
         if (ev.node_id != 0 && ev.graph_run_id == 0) {
             throw std::invalid_argument("trace event carries NodeId without GraphRunId");
         }
@@ -291,6 +296,12 @@ ChromeTraceExportResult write_chrome_trace(const TraceSnapshot& snapshot, std::o
         if (ev.task_id != 0) {
             json += ",\"task\":";
             json += std::to_string(ev.task_id);
+        }
+        if (ev.target_runtime_id != 0) {
+            json += ",\"target_runtime\":";
+            json += std::to_string(ev.target_runtime_id);
+            json += ",\"target_task\":";
+            json += std::to_string(ev.target_task_id);
         }
         if (ev.graph_run_id != 0) {
             json += ",\"graph_run\":";

@@ -774,6 +774,25 @@ target_include_directories(astra_trace_export_test PRIVATE
 target_compile_features(astra_trace_export_test PRIVATE cxx_std_20)
 add_test(NAME astra_trace_export_test COMMAND astra_trace_export_test)
 
+add_executable(astra_wait_await_diagnostics_test
+  test_wait_await_diagnostics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_wait_await_diagnostics_test PRIVATE Threads::Threads)
+target_include_directories(astra_wait_await_diagnostics_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_wait_await_diagnostics_test PRIVATE cxx_std_20)
+add_test(NAME astra_wait_await_diagnostics_test COMMAND astra_wait_await_diagnostics_test)
+
 
 
 

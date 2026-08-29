@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-060, R-096)
 Milestone: v0.7.0
 Blocked by: AST-012, AST-031, AST-035, AST-043, AST-046
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -29,8 +29,8 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-060]` 关闭Metrics/Trace没有隐藏输出，启用时未观察失败可计数而不改变执行。
-- [ ] `[R-096]` 离线trace可重建wait edge，运行语义不受诊断启发式改变。
+- [x] `[R-060]` 关闭Metrics/Trace没有隐藏输出，启用时未观察失败可计数而不改变执行。
+- [x] `[R-096]` 离线trace可重建wait edge，运行语义不受诊断启发式改变。
 
 ## Out of scope
 
@@ -43,5 +43,5 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-060, R-096
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-081, D-082, D-120, D-151, D-050, D-051, D-149
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tests/test_wait_await_diagnostics.cpp`（8 用例：外部 wait 计数+thread_wait_duration+timeout、same/cross-runtime helping wait、coroutine await registrations+duration、direct self-wait rejection、helping depth rejection（deterministic gate 模式）、graph wait calls、trace WaitBegin/End+AwaitArmed/Triggered/Resumed 离线 edge 重建、unobserved failure Basic/Off/Trace 三态）Debug 46/46 与 ASan 46/46 通过；`tools/check_release_gates.py` 15/15 通过；traceability 校验通过。schema 演进：TraceEvent 扩展 target identity 双端字段（80→96 bytes，AST-046 golden 同步更新，pre-freeze 同 milestone 兼容演进）+ 新增 UnobservedFailure=38 事件（向后兼容新增）。
  

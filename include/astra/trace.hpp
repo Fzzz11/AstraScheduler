@@ -80,9 +80,11 @@ struct TraceEvent {
     std::uint64_t timestamp_ns{0};         // capture-relative steady timestamp
     std::uint64_t producer_id{0};
     std::uint64_t local_sequence{0};       // 每 producer buffer 内严格递增
-    std::uint64_t runtime_id{0};           // RuntimeId value
-    std::uint64_t task_id{0};              // TaskId sequence（0 = 无 Task identity）
-    std::uint64_t graph_run_id{0};         // GraphRunId sequence（0 = 非 Graph）
+    std::uint64_t runtime_id{0};           // source RuntimeId value（wait/await edge 的 source 侧）
+    std::uint64_t task_id{0};              // source TaskId sequence（0 = 无 source Task identity）
+    std::uint64_t target_runtime_id{0};    // wait/await edge target RuntimeId（0 = 无 target）
+    std::uint64_t target_task_id{0};       // wait/await edge target TaskId sequence
+    std::uint64_t graph_run_id{0};         // GraphRunId sequence（0 = 非 Graph；graph wait 的 target）
     std::uint32_t node_id{0};              // graph-local NodeId
     std::uint32_t worker_id{0};            // 0 = 非 Worker producer
     std::uint32_t segment_sequence{0};     // coroutine segment 序（0 = 首段前无）
@@ -134,6 +136,7 @@ enum class TraceEventKind : std::uint16_t {
     FinalizationEscalate = 35,
     CoordinatorExit = 36,
     FinalizationComplete = 37,
+    UnobservedFailure = 38,   // R-060：仅在活动 Trace 可用时尽力发出的诊断事件
 };
 
 // EventKind → TraceCategory 固定映射（D-158 category 集合）。
@@ -186,6 +189,7 @@ enum class TraceEventKind : std::uint16_t {
         case TraceEventKind::FinalizationEscalate:
         case TraceEventKind::CoordinatorExit:
         case TraceEventKind::FinalizationComplete:
+        case TraceEventKind::UnobservedFailure:
             return TraceCategory::RuntimeLifecycle;
     }
     return TraceCategory::None;

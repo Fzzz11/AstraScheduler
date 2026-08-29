@@ -363,7 +363,9 @@ struct CollectorAccess {
 };
 
 void trace_attach_runtime(const std::shared_ptr<TraceCollector>& collector,
-                          RuntimeId runtime_id, std::size_t worker_count) {
+                          RuntimeId runtime_id, std::size_t worker_count,
+                          std::vector<TraceSlot*>* worker_slots,
+                          TraceSlot** external_slot) {
     if (!collector) {
         return;
     }
@@ -372,10 +374,18 @@ void trace_attach_runtime(const std::shared_ptr<TraceCollector>& collector,
     // Reaper coordinator 向附着 Collector 注册独立 producer（D-138）；
     // external/control 共享入口为每 Collector 单例。
     impl.open_slot_locked(TraceProducerKind::Reaper, runtime_id, 0, /*singleton=*/true);
-    impl.open_slot_locked(TraceProducerKind::ExternalControl, runtime_id, 0, /*singleton=*/true);
+    TraceSlot* ext = impl.open_slot_locked(TraceProducerKind::ExternalControl, runtime_id, 0,
+                                           /*singleton=*/true);
+    if (external_slot) {
+        *external_slot = ext;
+    }
     for (std::size_t w = 0; w < worker_count; ++w) {
-        impl.open_slot_locked(TraceProducerKind::Worker, runtime_id, static_cast<std::uint32_t>(w),
-                              /*singleton=*/false);
+        TraceSlot* slot = impl.open_slot_locked(TraceProducerKind::Worker, runtime_id,
+                                                static_cast<std::uint32_t>(w),
+                                                /*singleton=*/false);
+        if (worker_slots) {
+            worker_slots->push_back(slot);
+        }
     }
 }
 
@@ -473,6 +483,8 @@ void trace_emit_desc(TraceCollector& collector, TraceSlot* slot, const TraceEmit
     event.kind = static_cast<std::uint16_t>(desc.kind);
     event.runtime_id = desc.runtime_id.value();
     event.task_id = desc.task_sequence;
+    event.target_runtime_id = desc.target_runtime_id.value();
+    event.target_task_id = desc.target_task_sequence;
     event.graph_run_id = desc.graph_run_sequence;
     event.node_id = desc.node_id;
     event.worker_id = desc.worker_id;
