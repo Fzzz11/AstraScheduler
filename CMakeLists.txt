@@ -35,6 +35,23 @@ option(ASTRA_BUILD_TESTS "Build the AstraScheduler test entry points" ON)
 
 find_package(Threads REQUIRED)
 
+# AST-053 / R-111 / D-167：Tier-1 sanitizer 证据开关（仅开发构建使用；
+# R-110 例外边界——这些选项属于内部诊断，不得传播给安装的 consumer）。
+# ASan/UBSan 与 TSan 互斥（运行时不能叠加）。
+option(ASTRA_ENABLE_SANITIZERS "Enable ASan+UBSan instrumentation (Linux GCC/Clang)" OFF)
+option(ASTRA_ENABLE_TSAN "Enable TSan instrumentation (Linux GCC/Clang)" OFF)
+if(ASTRA_ENABLE_SANITIZERS AND ASTRA_ENABLE_TSAN)
+  message(FATAL_ERROR "ASTRA_ENABLE_SANITIZERS and ASTRA_ENABLE_TSAN are mutually exclusive")
+endif()
+if(ASTRA_ENABLE_SANITIZERS)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+if(ASTRA_ENABLE_TSAN)
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
+endif()
+
 set(ASTRA_SCHEDULER_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler.cpp

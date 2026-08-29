@@ -86,6 +86,7 @@ astra_add_internal_test(astra_trace_export_test test_trace_export.cpp)
 astra_add_public_test(astra_wait_await_diagnostics_test test_wait_await_diagnostics.cpp)
 astra_add_public_test(astra_coroutine_frame_lifetime_test test_coroutine_frame_lifetime.cpp)
 astra_add_internal_test(astra_platform_invariants_test test_platform_invariants.cpp)
+astra_add_internal_test(astra_weak_memory_stress_test test_weak_memory_stress.cpp)
 
 # Package gate 资源使用回归：并行度有界、测试复用库产物、consumer 单次执行。
 add_test(NAME check_package_efficiency COMMAND

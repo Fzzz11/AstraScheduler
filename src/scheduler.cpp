@@ -246,7 +246,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     bool startup_done{false};
     bool startup_failed{false};
     bool stop_requested{false};
-    bool handoff_dispatched{false};
+    std::atomic<bool> handoff_dispatched{false};
 
     // Trace 附加上下文（AST-048 / R-096）：wait/await 诊断事件的 producer 槽位。
     std::shared_ptr<TraceCollector> trace_collector;
@@ -575,7 +575,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     ~Impl() {
         unregister_runtime_impl(this);
         // 非 Worker 正常析构（若尚未经过 Worker handoff 移交且未处于 Stopped 状态）
-        if (!handoff_dispatched) {
+        if (!handoff_dispatched.load(std::memory_order_acquire)) {
             if (get_status().state != SchedulerState::Stopped) {
                 shutdown_sync(ShutdownMode::Graceful);
             }
@@ -750,7 +750,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     void execute_worker_orphan_handoff(std::shared_ptr<Impl> self) noexcept {
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex);
-            handoff_dispatched = true;
+            handoff_dispatched.store(true, std::memory_order_release);
             stop_requested = true;
         }
         // R-022: 请求 Graceful Shutdown，保留当前模式
