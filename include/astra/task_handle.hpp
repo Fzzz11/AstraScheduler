@@ -62,6 +62,7 @@ struct TaskInvokerBase {
     [[nodiscard]] virtual bool is_resume_segment() const noexcept { return false; }
     [[nodiscard]] virtual bool is_coroutine_node() const noexcept { return false; }
     [[nodiscard]] virtual Priority priority() const noexcept { return Priority::Normal; }
+    [[nodiscard]] virtual std::optional<TaskDeadline> deadline() const noexcept { return std::nullopt; }
 };
 
 ASTRA_EXPORT TaskId current_executing_task_id() noexcept;
@@ -453,6 +454,10 @@ public:
 
     [[nodiscard]] Priority priority() const noexcept override {
         return state_ ? state_->priority() : Priority::Normal;
+    }
+
+    [[nodiscard]] std::optional<TaskDeadline> deadline() const noexcept override {
+        return state_ ? state_->deadline() : std::nullopt;
     }
 
 private:

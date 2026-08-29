@@ -29,24 +29,40 @@ struct GraphTaskInvokerModel;
 template <typename F>
 struct GraphTaskInvokerModel<true, F> final : TaskInvokerBase {
     F func;
+    Priority priority_{Priority::Normal};
+    std::optional<TaskDeadline> deadline_{std::nullopt};
 
-    explicit GraphTaskInvokerModel(F&& f) : func(std::move(f)) {}
-    explicit GraphTaskInvokerModel(const F& f) : func(f) {}
+    explicit GraphTaskInvokerModel(F&& f, Priority p = Priority::Normal, std::optional<TaskDeadline> dl = std::nullopt)
+        : func(std::move(f)), priority_(p), deadline_(dl) {}
+    explicit GraphTaskInvokerModel(const F& f, Priority p = Priority::Normal, std::optional<TaskDeadline> dl = std::nullopt)
+        : func(f), priority_(p), deadline_(dl) {}
 
     void execute() override {
         func();
     }
 
     void cancel_pre_start() noexcept override {}
+
+    [[nodiscard]] Priority priority() const noexcept override {
+        return priority_;
+    }
+
+    [[nodiscard]] std::optional<TaskDeadline> deadline() const noexcept override {
+        return deadline_;
+    }
 };
 
 template <typename F>
 struct GraphTaskInvokerModel<false, F> final : TaskInvokerBase {
     F func;
+    Priority priority_{Priority::Normal};
+    std::optional<TaskDeadline> deadline_{std::nullopt};
     std::stop_source stop_source;
 
-    explicit GraphTaskInvokerModel(F&& f) : func(std::move(f)) {}
-    explicit GraphTaskInvokerModel(const F& f) : func(f) {}
+    explicit GraphTaskInvokerModel(F&& f, Priority p = Priority::Normal, std::optional<TaskDeadline> dl = std::nullopt)
+        : func(std::move(f)), priority_(p), deadline_(dl) {}
+    explicit GraphTaskInvokerModel(const F& f, Priority p = Priority::Normal, std::optional<TaskDeadline> dl = std::nullopt)
+        : func(f), priority_(p), deadline_(dl) {}
 
     void execute() override {
         func(stop_source.get_token());
@@ -55,12 +71,24 @@ struct GraphTaskInvokerModel<false, F> final : TaskInvokerBase {
     void cancel_pre_start() noexcept override {
         stop_source.request_stop();
     }
+
+    [[nodiscard]] Priority priority() const noexcept override {
+        return priority_;
+    }
+
+    [[nodiscard]] std::optional<TaskDeadline> deadline() const noexcept override {
+        return deadline_;
+    }
 };
 
 template <bool Ordinary, typename F>
-inline std::unique_ptr<TaskInvokerBase> make_graph_node_invoker(F&& f) {
+inline std::unique_ptr<TaskInvokerBase> make_graph_node_invoker(
+    F&& f,
+    Priority p = Priority::Normal,
+    std::optional<TaskDeadline> dl = std::nullopt) {
     using DecayedF = std::decay_t<F>;
-    return std::make_unique<GraphTaskInvokerModel<Ordinary, DecayedF>>(std::forward<F>(f));
+    return std::make_unique<GraphTaskInvokerModel<Ordinary, DecayedF>>(
+        std::forward<F>(f), p, dl);
 }
 }  // namespace detail
 

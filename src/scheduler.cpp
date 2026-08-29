@@ -128,24 +128,79 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         std::unique_ptr<detail::TaskInvokerBase> invoker;
         bool is_external{false};
     };
+
+    struct EdfEntry {
+        TaskDeadline deadline;
+        std::uint64_t admission_seq{0};
+        QueuedTask task;
+
+        bool operator>(const EdfEntry& other) const noexcept {
+            if (deadline != other.deadline) {
+                return deadline > other.deadline;
+            }
+            return admission_seq > other.admission_seq;
+        }
+
+        bool operator<(const EdfEntry& other) const noexcept {
+            if (deadline != other.deadline) {
+                return deadline < other.deadline;
+            }
+            return admission_seq < other.admission_seq;
+        }
+    };
+
+    std::atomic<std::uint64_t> global_admission_seq{0};
+    std::array<std::vector<EdfEntry>, 4> global_edf_heaps;
     std::array<std::deque<QueuedTask>, 4> global_injection_queues;
 
-    bool pop_global_weighted(std::size_t& calendar_idx, QueuedTask& out) {
+    bool pop_from_global_band_locked(std::size_t band_idx, std::size_t& deadline_burst, QueuedTask& out) {
+        auto& edf_heap = global_edf_heaps[band_idx];
+        auto& fifo_queue = global_injection_queues[band_idx];
+
+        if (edf_heap.empty() && fifo_queue.empty()) {
+            return false;
+        }
+
+        if (!edf_heap.empty() && !fifo_queue.empty()) {
+            if (deadline_burst < 8) {
+                std::pop_heap(edf_heap.begin(), edf_heap.end(), std::greater<EdfEntry>{});
+                out = std::move(edf_heap.back().task);
+                edf_heap.pop_back();
+                ++deadline_burst;
+                return true;
+            } else {
+                out = std::move(fifo_queue.front());
+                fifo_queue.pop_front();
+                deadline_burst = 0;
+                return true;
+            }
+        } else if (!edf_heap.empty()) {
+            std::pop_heap(edf_heap.begin(), edf_heap.end(), std::greater<EdfEntry>{});
+            out = std::move(edf_heap.back().task);
+            edf_heap.pop_back();
+            ++deadline_burst;
+            return true;
+        } else {
+            out = std::move(fifo_queue.front());
+            fifo_queue.pop_front();
+            deadline_burst = 0;
+            return true;
+        }
+    }
+
+    bool pop_global_weighted(std::size_t& calendar_idx, std::array<std::size_t, 4>& deadline_bursts, QueuedTask& out) {
         const Priority target_p = kPriorityCalendar[calendar_idx % kPriorityCalendarLength];
-        auto& target_q = global_injection_queues[static_cast<std::size_t>(target_p)];
-        if (!target_q.empty()) {
-            out = std::move(target_q.front());
-            target_q.pop_front();
+        const std::size_t target_idx = static_cast<std::size_t>(target_p);
+
+        if (pop_from_global_band_locked(target_idx, deadline_bursts[target_idx], out)) {
             calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
             return true;
         }
 
         for (Priority p : kFallbackPriorityOrder) {
             if (p == target_p) continue;
-            auto& q = global_injection_queues[static_cast<std::size_t>(p)];
-            if (!q.empty()) {
-                out = std::move(q.front());
-                q.pop_front();
+            const std::size_t p_idx = static_cast<std::size_t>(p);
+            if (pop_from_global_band_locked(p_idx, deadline_bursts[p_idx], out)) {
                 calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
                 return true;
             }
@@ -154,10 +209,12 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     bool global_queues_empty() const noexcept {
-        return global_injection_queues[0].empty() &&
-               global_injection_queues[1].empty() &&
-               global_injection_queues[2].empty() &&
-               global_injection_queues[3].empty();
+        for (std::size_t i = 0; i < 4; ++i) {
+            if (!global_edf_heaps[i].empty() || !global_injection_queues[i].empty()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     struct LockedLocalDeque {
@@ -389,6 +446,25 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     void cancel_all_unstarted_tasks_locked() noexcept {
+        for (auto& heap : global_edf_heaps) {
+            std::vector<EdfEntry> remaining_edf;
+            for (auto& entry : heap) {
+                if (entry.task.invoker && entry.task.invoker->is_resume_segment()) {
+                    remaining_edf.push_back(std::move(entry));
+                } else {
+                    if (entry.task.invoker) {
+                        entry.task.invoker->cancel_pre_start();
+                    }
+                    if (entry.task.is_external && external_pending_count > 0) {
+                        --external_pending_count;
+                        slot_cv.notify_one();
+                    }
+                }
+            }
+            heap = std::move(remaining_edf);
+            std::make_heap(heap.begin(), heap.end(), std::greater<EdfEntry>{});
+        }
+
         for (auto& q : global_injection_queues) {
             std::deque<QueuedTask> remaining_global;
             while (!q.empty()) {
@@ -791,6 +867,25 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task, bool is_external) {
         if (!task) return;
         const Priority p = task->priority();
+        const auto dl = task->deadline();
+        const bool is_resume = task->is_resume_segment();
+        const std::size_t band_idx = static_cast<std::size_t>(p);
+
+        // R-083 / D-133: 带 Deadline 且从未 Running 的任务进入对应 Priority band 的 Global EDF min-heap
+        if (dl.has_value() && !is_resume) {
+            {
+                std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                const std::uint64_t seq = ++global_admission_seq;
+                global_edf_heaps[band_idx].push_back(EdfEntry{*dl, seq, {std::move(task), is_external}});
+                std::push_heap(global_edf_heaps[band_idx].begin(),
+                               global_edf_heaps[band_idx].end(),
+                               std::greater<EdfEntry>{});
+            }
+            work_epoch.fetch_add(1, std::memory_order_release);
+            work_cv.notify_one();
+            return;
+        }
+
         if (!is_external && detail::t_current_worker_impl == this &&
             detail::t_current_worker_runtime_id == runtime_id &&
             detail::t_current_worker_index < local_deques.size()) {
@@ -798,7 +893,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         } else {
             {
                 std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                global_injection_queues[static_cast<std::size_t>(p)].push_back({std::move(task), is_external});
+                global_injection_queues[band_idx].push_back({std::move(task), is_external});
             }
         }
         work_epoch.fetch_add(1, std::memory_order_release);
@@ -1011,6 +1106,7 @@ void perform_caller_wait(
     thread_local std::size_t t_help_local_cal = 0;
     thread_local std::size_t t_help_global_cal = 0;
     thread_local std::size_t t_help_steal_cal = 0;
+    thread_local std::array<std::size_t, 4> t_help_deadline_bursts{0, 0, 0, 0};
 
     while (!target.is_completed()) {
         if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
@@ -1034,7 +1130,7 @@ void perform_caller_wait(
             // R-059 / D-080: Immediate 模式下不得 first-start 新 Task
             if (st.state != SchedulerState::Stopped &&
                 st.shutdown_mode != ShutdownMode::Immediate &&
-                impl->pop_global_weighted(t_help_global_cal, task)) {
+                impl->pop_global_weighted(t_help_global_cal, t_help_deadline_bursts, task)) {
                 ++impl->active_task_count;
                 found_task = true;
                 if (task.is_external && impl->external_pending_count > 0) {
@@ -1136,6 +1232,7 @@ void perform_graph_caller_wait(
     thread_local std::size_t t_graph_help_local_cal = 0;
     thread_local std::size_t t_graph_help_global_cal = 0;
     thread_local std::size_t t_graph_help_steal_cal = 0;
+    thread_local std::array<std::size_t, 4> t_graph_help_deadline_bursts{0, 0, 0, 0};
 
     while (target.run_state.load(std::memory_order_acquire) == GraphRunState::Running) {
         if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
@@ -1158,7 +1255,7 @@ void perform_graph_caller_wait(
             const auto st = Scheduler::Impl::unpack(impl->packed_status.load(std::memory_order_acquire));
             if (st.state != SchedulerState::Stopped &&
                 st.shutdown_mode != ShutdownMode::Immediate &&
-                impl->pop_global_weighted(t_graph_help_global_cal, task)) {
+                impl->pop_global_weighted(t_graph_help_global_cal, t_graph_help_deadline_bursts, task)) {
                 ++impl->active_task_count;
                 found_task = true;
                 if (task.is_external && impl->external_pending_count > 0) {
@@ -1298,6 +1395,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
     std::size_t local_calendar_idx = 0;
     std::size_t global_calendar_idx = 0;
     std::size_t steal_calendar_idx = 0;
+    std::array<std::size_t, 4> global_deadline_bursts{0, 0, 0, 0};
     std::uint64_t rng_state = (static_cast<std::uint64_t>(runtime_id.value()) << 32) ^
                               static_cast<std::uint64_t>(worker_index + 1) ^
                               0x9E3779B97F4A7C15ULL;
@@ -1325,7 +1423,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
         // 2. 若 Local 为空或防饥饿阈值触发，探测 Global Injection Queue (FIFO)
         if (!found_task) {
             std::unique_lock<std::mutex> lock(lifecycle_mutex);
-            if (pop_global_weighted(global_calendar_idx, task)) {
+            if (pop_global_weighted(global_calendar_idx, global_deadline_bursts, task)) {
                 ++active_task_count;
                 found_task = true;
                 consecutive_local_count = 0;
@@ -1414,7 +1512,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
                 process_due_timers();
 
-                if (pop_global_weighted(global_calendar_idx, task)) {
+                if (pop_global_weighted(global_calendar_idx, global_deadline_bursts, task)) {
                     ++active_task_count;
                     found_task = true;
                     consecutive_local_count = 0;
@@ -1804,7 +1902,7 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
             };
 
             impl_ptr->post_task_internal(
-                detail::make_graph_node_invoker<true>(std::move(task_fn)),
+                detail::make_graph_node_invoker<true>(std::move(task_fn), node_p, task_state->deadline()),
                 !is_internal);
             return;
         }
@@ -1845,7 +1943,7 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
         };
 
         impl_ptr->post_task_internal(
-            detail::make_graph_node_invoker<true>(std::move(task_fn)),
+            detail::make_graph_node_invoker<true>(std::move(task_fn), node_p, entry.deadline),
             !is_internal);
     };
 

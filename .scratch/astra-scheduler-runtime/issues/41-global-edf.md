@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-083)
 Milestone: v0.6.0
 Blocked by: AST-027, AST-039, AST-040
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-083]` 同banddeadline顺序可测，低Priority早deadline不越过band策略抢占高Priority。
+- [x] `[R-083]` 同banddeadline顺序可测，低Priority早deadline不越过band策略抢占高Priority。
 
 ## Out of scope
 
@@ -40,5 +40,5 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-083
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-133, D-134, D-147
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Passed in WSL Linux x86_64 GCC 13.3.0 (`tests/test_global_edf.cpp`, `ctest` in `build/wsl-gcc-debug` 39/39, `build/wsl-gcc-asan` 39/39, `check_release_gates.py` 15/15).
 

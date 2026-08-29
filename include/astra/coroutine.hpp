@@ -292,6 +292,10 @@ public:
     [[nodiscard]] Priority priority() const noexcept override {
         return state ? state->priority() : Priority::Normal;
     }
+
+    [[nodiscard]] std::optional<TaskDeadline> deadline() const noexcept override {
+        return state ? state->deadline() : std::nullopt;
+    }
 };
 
 template <typename T>
@@ -367,6 +371,10 @@ public:
 
     [[nodiscard]] Priority priority() const noexcept override {
         return task_state ? task_state->priority() : Priority::Normal;
+    }
+
+    [[nodiscard]] std::optional<TaskDeadline> deadline() const noexcept override {
+        return task_state ? task_state->deadline() : std::nullopt;
     }
 };
 
