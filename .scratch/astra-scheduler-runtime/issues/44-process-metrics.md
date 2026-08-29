@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-095)
 Milestone: v0.7.0
 Blocked by: AST-007, AST-020, AST-021, AST-043
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-095]` 未创建Scheduler时查询无线程副作用，finalization超时/升级可离线诊断。
+- [x] `[R-095]` 未创建Scheduler时查询无线程副作用，finalization超时/升级可离线诊断。
 
 ## Out of scope
 
@@ -40,5 +40,5 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-095
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-148
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tests/test_process_metrics.cpp` (42/42 passed in debug and ASan builds), `tools/check_release_gates.py` (15/15 passed), traceability validation passed (decisions=168, rules=105, tickets=55).
 

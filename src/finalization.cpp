@@ -45,6 +45,8 @@ void FinalizationControl::request_immediate() const noexcept {
 }
 
 FinalizationControl begin_finalization() noexcept {
+    // 每次 API invocation 累计 begin_calls，即使共享同一 Finalization（D-148）。
+    detail::ReaperRegistry::instance().note_finalization_begin();
     detail::ReaperRegistry::instance().close_registration();
     static auto shared_impl = std::make_shared<FinalizationControl::Impl>();
     return FinalizationControl(shared_impl);

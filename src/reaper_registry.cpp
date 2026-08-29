@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 
 namespace astra::detail {
@@ -44,6 +45,7 @@ bool ReaperRegistry::register_runtime(
     slot->cleanup_fn = std::move(cleanup_fn);
     slots_.push_back(std::move(slot));
     registered_ids_.push_back(id.value());
+    total_registrations_.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -74,8 +76,9 @@ void ReaperRegistry::close_registration() noexcept {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_ == RegistrationState::Open) {
+            mark_finalization_started_locked();
             if (registered_ids_.empty() && !coordinator_thread_) {
-                state_ = RegistrationState::Finalized;
+                mark_finalized_locked();
                 finalization_cv_.notify_all();
             } else {
                 state_ = RegistrationState::Finalizing;
@@ -94,6 +97,7 @@ void ReaperRegistry::close_registration() noexcept {
 }
 
 void ReaperRegistry::request_all_immediate() noexcept {
+    finalization_escalations_.fetch_add(1, std::memory_order_relaxed);
     std::vector<std::function<void()>> immediate_callbacks;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -124,14 +128,15 @@ void ReaperRegistry::execute_worker_handoff(
     std::function<void()> cleanup_fn) noexcept {
     
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& s : slots_) {
-        if (s->runtime_id == id) {
-            s->handoff_executed.store(true, std::memory_order_release);
-            s->retained_state = std::move(state);
-            s->cleanup_fn = std::move(cleanup_fn);
-            break;
-        }
-    }
+            for (auto& s : slots_) {
+                if (s->runtime_id == id) {
+                    s->handoff_executed.store(true, std::memory_order_release);
+                    s->retained_state = std::move(state);
+                    s->cleanup_fn = std::move(cleanup_fn);
+                    total_handoffs_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+            }
     coordinator_cv_.notify_one();
 }
 
@@ -213,6 +218,10 @@ void ReaperRegistry::coordinator_loop() noexcept {
                 }
             }
 
+            if (!works.empty()) {
+                total_joins_.fetch_add(static_cast<std::uint64_t>(works.size()), std::memory_order_relaxed);
+            }
+
             lock.unlock();
 
             // 锁外执行 join 与状态发布，防止 head-of-line 锁竞争
@@ -237,7 +246,7 @@ void ReaperRegistry::wait_finalization() {
     std::unique_lock<std::mutex> lock(mutex_);
     while (state_ != RegistrationState::Finalized) {
         if (!coordinator_thread_) {
-            state_ = RegistrationState::Finalized;
+            mark_finalized_locked();
             finalization_cv_.notify_all();
             return;
         }
@@ -251,7 +260,7 @@ void ReaperRegistry::wait_finalization() {
                     t->join();
                 }
                 lock.lock();
-                state_ = RegistrationState::Finalized;
+                mark_finalized_locked();
                 coordinator_join_in_progress_ = false;
                 finalization_cv_.notify_all();
                 return;
@@ -271,6 +280,15 @@ void ReaperRegistry::wait_finalization() {
 }
 
 FinalizationWaitResult ReaperRegistry::wait_finalization_for(std::chrono::nanoseconds timeout_ns) {
+    const auto result = wait_finalization_for_impl(timeout_ns);
+    if (result == FinalizationWaitResult::TimedOut) {
+        // 只统计真实返回 TimedOut 的等待（D-148 invariant）。
+        finalization_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return result;
+}
+
+FinalizationWaitResult ReaperRegistry::wait_finalization_for_impl(std::chrono::nanoseconds timeout_ns) {
     if (current_worker_runtime_id() != RuntimeId{0}) {
         throw std::logic_error("FinalizationControl::wait_for cannot be called by a worker thread");
     }
@@ -281,7 +299,7 @@ FinalizationWaitResult ReaperRegistry::wait_finalization_for(std::chrono::nanose
     }
 
     if (!coordinator_thread_) {
-        state_ = RegistrationState::Finalized;
+        mark_finalized_locked();
         finalization_cv_.notify_all();
         return FinalizationWaitResult::Completed;
     }
@@ -296,7 +314,7 @@ FinalizationWaitResult ReaperRegistry::wait_finalization_for(std::chrono::nanose
                     t->join();
                 }
                 lock.lock();
-                state_ = RegistrationState::Finalized;
+                mark_finalized_locked();
                 coordinator_join_in_progress_ = false;
                 finalization_cv_.notify_all();
                 return FinalizationWaitResult::Completed;
@@ -317,7 +335,7 @@ FinalizationWaitResult ReaperRegistry::wait_finalization_for(std::chrono::nanose
                     t->join();
                 }
                 lock.lock();
-                state_ = RegistrationState::Finalized;
+                mark_finalized_locked();
                 coordinator_join_in_progress_ = false;
                 finalization_cv_.notify_all();
                 return FinalizationWaitResult::Completed;
@@ -346,7 +364,7 @@ FinalizationWaitResult ReaperRegistry::wait_finalization_for(std::chrono::nanose
                         t->join();
                     }
                     lock.lock();
-                    state_ = RegistrationState::Finalized;
+                    mark_finalized_locked();
                     coordinator_join_in_progress_ = false;
                     finalization_cv_.notify_all();
                     return FinalizationWaitResult::Completed;
@@ -369,6 +387,94 @@ std::size_t ReaperRegistry::coordinator_thread_count() const noexcept {
     return coordinator_thread_ ? 1 : 0;
 }
 
+void ReaperRegistry::mark_finalization_started_locked() noexcept {
+    if (finalization_started_at_ == std::chrono::steady_clock::time_point{}) {
+        finalization_started_at_ = std::chrono::steady_clock::now();
+    }
+}
+
+void ReaperRegistry::mark_finalized_locked() noexcept {
+    mark_finalization_started_locked();
+    state_ = RegistrationState::Finalized;
+    if (finalization_completed_at_ == std::chrono::steady_clock::time_point{}) {
+        finalization_completed_at_ = std::chrono::steady_clock::now();
+    }
+}
+
+void ReaperRegistry::note_finalization_begin() noexcept {
+    finalization_begin_calls_.fetch_add(1, std::memory_order_relaxed);
+}
+
+astra::ProcessMetricsSnapshot ReaperRegistry::process_snapshot() const noexcept {
+    const auto t_start = std::chrono::steady_clock::now();
+    astra::ProcessMetricsSnapshot snap{};
+    snap.capture_started_at = t_start;
+    snap.counters.runtime_registrations = total_registrations_.load(std::memory_order_relaxed);
+    snap.counters.runtime_handoffs = total_handoffs_.load(std::memory_order_relaxed);
+    snap.counters.runtimes_joined = total_joins_.load(std::memory_order_relaxed);
+    snap.counters.finalization_begin_calls = finalization_begin_calls_.load(std::memory_order_relaxed);
+    snap.counters.finalization_wait_timeouts = finalization_wait_timeouts_.load(std::memory_order_relaxed);
+    snap.counters.finalization_escalations = finalization_escalations_.load(std::memory_order_relaxed);
+
+    // 单一控制面锁：gauges 与状态/时间锚点在同一线性化点读取（D-148）。
+    std::unique_lock<std::mutex> lock(mutex_);
+    snap.gauges.registered_runtimes = static_cast<std::uint64_t>(registered_ids_.size());
+    for (const auto& s : slots_) {
+        if (s->join_ready.load(std::memory_order_acquire)) {
+            if (!s->join_claimed.load(std::memory_order_acquire)) {
+                ++snap.gauges.join_ready_runtimes;
+            }
+        } else if (s->handoff_executed.load(std::memory_order_acquire)) {
+            ++snap.gauges.pending_runtimes;
+        }
+    }
+
+    switch (state_) {
+        case RegistrationState::Finalizing:
+            snap.service_state = astra::ProcessServiceState::Finalizing;
+            snap.finalization_state = astra::ProcessFinalizationState::Finalizing;
+            break;
+        case RegistrationState::Finalized:
+            snap.service_state = astra::ProcessServiceState::Finalized;
+            snap.finalization_state = astra::ProcessFinalizationState::Finalized;
+            break;
+        case RegistrationState::Open:
+            if (coordinator_thread_ || total_registrations_.load(std::memory_order_relaxed) != 0) {
+                snap.service_state = astra::ProcessServiceState::Active;
+            } else {
+                snap.service_state = astra::ProcessServiceState::NotStarted;
+            }
+            snap.finalization_state = astra::ProcessFinalizationState::NotStarted;
+            break;
+    }
+
+    snap.finalization_started_at = finalization_started_at_;
+    const auto now = std::chrono::steady_clock::now();
+    constexpr auto kEpoch = std::chrono::steady_clock::time_point{};
+    if (state_ == RegistrationState::Finalizing && finalization_started_at_ != kEpoch) {
+        snap.finalization_elapsed_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - finalization_started_at_).count());
+    } else if (state_ == RegistrationState::Finalized && finalization_started_at_ != kEpoch &&
+               finalization_completed_at_ != kEpoch) {
+        const auto duration = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            finalization_completed_at_ - finalization_started_at_).count());
+        snap.finalization_elapsed_ns = duration;
+        snap.finalization_completion_duration_ns = duration;
+    }
+    lock.unlock();
+
+    snap.saturated =
+        snap.counters.runtime_registrations == std::numeric_limits<std::uint64_t>::max() ||
+        snap.counters.runtime_handoffs == std::numeric_limits<std::uint64_t>::max() ||
+        snap.counters.runtimes_joined == std::numeric_limits<std::uint64_t>::max() ||
+        snap.counters.finalization_begin_calls == std::numeric_limits<std::uint64_t>::max() ||
+        snap.counters.finalization_wait_timeouts == std::numeric_limits<std::uint64_t>::max() ||
+        snap.counters.finalization_escalations == std::numeric_limits<std::uint64_t>::max();
+
+    snap.capture_finished_at = std::chrono::steady_clock::now();
+    return snap;
+}
+
 void ReaperRegistry::reset_for_testing() noexcept {
     std::unique_ptr<std::thread> thread_to_join;
     {
@@ -382,6 +488,14 @@ void ReaperRegistry::reset_for_testing() noexcept {
         coordinator_exited_ = false;
         coordinator_join_in_progress_ = false;
         inject_coordinator_fail_ = false;
+        total_registrations_.store(0, std::memory_order_relaxed);
+        total_handoffs_.store(0, std::memory_order_relaxed);
+        total_joins_.store(0, std::memory_order_relaxed);
+        finalization_begin_calls_.store(0, std::memory_order_relaxed);
+        finalization_wait_timeouts_.store(0, std::memory_order_relaxed);
+        finalization_escalations_.store(0, std::memory_order_relaxed);
+        finalization_started_at_ = std::chrono::steady_clock::time_point{};
+        finalization_completed_at_ = std::chrono::steady_clock::time_point{};
         coordinator_cv_.notify_all();
         finalization_cv_.notify_all();
         thread_to_join = std::move(coordinator_thread_);
@@ -425,3 +539,12 @@ std::size_t ReaperRegistry::registered_count() const noexcept {
 }
 
 }  // namespace astra::detail
+
+namespace astra {
+
+astra::ProcessMetricsSnapshot process_metrics_snapshot() noexcept {
+    // Side-effect-free（R-095 / D-148）：仅读取既有单例状态，绝不初始化服务。
+    return detail::ReaperRegistry::instance().process_snapshot();
+}
+
+}  // namespace astra

@@ -4,6 +4,7 @@
 #include <astra/export.hpp>
 #include <astra/finalization.hpp>
 #include <astra/id.hpp>
+#include <astra/process_metrics.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -97,11 +98,19 @@ public:
     // 获取当前 Reaper coordinator 线程数（R-107：恰好为 1，或未启动时为 0）。
     [[nodiscard]] std::size_t coordinator_thread_count() const noexcept;
 
+    // --- Process Metrics（AST-044 / R-095 / D-148）---
+    // 在单一控制面锁内逐字段填充 process 快照；查询绝不初始化服务。
+    [[nodiscard]] astra::ProcessMetricsSnapshot process_snapshot() const noexcept;
+    // 每次 begin_finalization API invocation 累计一次 begin_calls（D-148）。
+    void note_finalization_begin() noexcept;
+
     // 阻塞等待 Finalization 完成（R-032 / R-039 / R-042）。
     void wait_finalization();
 
     // 限时等待 Finalization 完成（R-033 / R-040 / R-041 / R-042）。
     [[nodiscard]] FinalizationWaitResult wait_finalization_for(std::chrono::nanoseconds timeout_ns);
+
+    [[nodiscard]] FinalizationWaitResult wait_finalization_for_impl(std::chrono::nanoseconds timeout_ns);
 
     // --- 测试与故障注入专用 Seam ---
     void reset_for_testing() noexcept;
@@ -137,6 +146,20 @@ private:
     bool inject_reservation_fail_{false};
     std::size_t inject_worker_fail_at_{0}; // 0 表示不注入
     bool inject_coordinator_fail_{false};
+
+    // Process Metrics 累计 counter 与 Finalization 时间锚点（R-095 / D-148）。
+    // 累计 counter 只增不减；时间锚点由 mutex_ 保护。
+    std::atomic<std::uint64_t> total_registrations_{0};
+    std::atomic<std::uint64_t> total_handoffs_{0};
+    std::atomic<std::uint64_t> total_joins_{0};
+    std::atomic<std::uint64_t> finalization_begin_calls_{0};
+    std::atomic<std::uint64_t> finalization_wait_timeouts_{0};
+    std::atomic<std::uint64_t> finalization_escalations_{0};
+    std::chrono::steady_clock::time_point finalization_started_at_{};
+    std::chrono::steady_clock::time_point finalization_completed_at_{};
+
+    void mark_finalization_started_locked() noexcept;
+    void mark_finalized_locked() noexcept;
 };
 
 }  // namespace astra::detail
