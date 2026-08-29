@@ -42,6 +42,7 @@ add_library(AstraScheduler
   src/finalization.cpp
   src/graph.cpp
   src/trace_collector.cpp
+  src/trace_export.cpp
 )
 add_library(AstraScheduler::AstraScheduler ALIAS AstraScheduler)
 

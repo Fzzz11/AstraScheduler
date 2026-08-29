@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-088, R-109)
 Milestone: v0.7.0
 Blocked by: AST-045, AST-046
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -29,8 +29,8 @@ capture 后离线稳定导出 Chrome Trace，显式报告 drop/schema loss；Log
 
 ## Acceptance criteria
 
-- [ ] `[R-088]` 零loss相同snapshot/版本byte-stable，损坏输入明确失败且原snapshot可重试。
-- [ ] `[R-109]` Task hot path不获取logger I/O锁，Trace overflow/export不递归进入日志系统。
+- [x] `[R-088]` 零loss相同snapshot/版本byte-stable，损坏输入明确失败且原snapshot可重试。
+- [x] `[R-109]` Task hot path不获取logger I/O锁，Trace overflow/export不递归进入日志系统。
 
 ## Out of scope
 
@@ -43,5 +43,5 @@ capture 后离线稳定导出 Chrome Trace，显式报告 drop/schema loss；Log
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-088, R-109
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-140
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tests/test_trace_export.cpp`（6 用例：byte-stable 确定性导出与完整 metadata、drop 后有效 JSON + trace_complete=false 不合成事件、未知 kind/category 不一致/空 snapshot 显式失败且 snapshot 可重试、unmatched segment end 降级 instant + schema_gaps、输出仅进入提供的 ostream 且 emit/export 无 logger 递归、pretty-print 变体）Debug 45/45 与 ASan 45/45 通过；`tools/check_release_gates.py` 15/15 通过；traceability 校验通过。R-109 附加事实：代码库无 logger（Task 热路径无日志锁），Reaper 仅 D-040 fail-fast 前 fputs 尽力诊断。
 
