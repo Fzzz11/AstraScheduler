@@ -190,7 +190,7 @@ TraceCollector::~TraceCollector() {
     if (impl_) {
         const auto gen = impl_->current.load(std::memory_order_acquire);
         if (gen && gen->active.load(std::memory_order_acquire)) {
-            gen->active.store(false, std::memory_order_acq_rel);
+            gen->active.store(false, std::memory_order_release);
             while (gen->inflight.load(std::memory_order_acquire) != 0) {
                 std::this_thread::yield();
             }
@@ -290,7 +290,7 @@ TraceSnapshot TraceCollector::stop_capture(TraceCapture::Impl& capture) {
     }
 
     // 线性化禁止新事件，随后等待已进入的 bounded emit 临界区退出。
-    generation->active.store(false, std::memory_order_acq_rel);
+    generation->active.store(false, std::memory_order_release);
     while (generation->inflight.load(std::memory_order_acquire) != 0) {
         std::this_thread::yield();
     }
@@ -345,7 +345,7 @@ void TraceCollector::abort_capture(TraceCapture::Impl& capture) noexcept {
         return;
     }
     // 活动析构 abort：disable/quiesce 后丢弃该代全部数据（D-163）。
-    generation->active.store(false, std::memory_order_acq_rel);
+    generation->active.store(false, std::memory_order_release);
     while (generation->inflight.load(std::memory_order_acquire) != 0) {
         std::this_thread::yield();
     }

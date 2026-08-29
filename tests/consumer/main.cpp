@@ -626,8 +626,8 @@ int main() {
 
     // 22. AST-033: Coroutine resume ownership & AwaitHandshake (R-074)
     astra::AwaitHandshake hs_test;
-    if (hs_test.is_armed() || hs_test.is_triggered() || hs_test.is_resolved()) {
-        std::printf("AwaitHandshake initial state must be 0\n");
+    if (hs_test.state() != astra::AwaitHandshake::State::Init || hs_test.is_resolved()) {
+        std::printf("AwaitHandshake initial state must be Init\n");
         return 1;
     }
     bool hs_ran = false;

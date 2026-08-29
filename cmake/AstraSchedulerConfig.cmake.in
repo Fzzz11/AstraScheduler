@@ -1,5 +1,23 @@
 @PACKAGE_INIT@
 
+# AST-052 / R-111 / D-167：Supported Configuration 仅限 64-bit Linux。
+# 非 Linux 目标或 32-bit 目标不受支持；package 拒绝配置而非给出口头声明。
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR
+    "AstraScheduler supports 64-bit Linux only (R-111/D-167); "
+    "found CMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}")
+endif()
+if(CMAKE_SIZEOF_VOID_P AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR
+    "AstraScheduler supports 64-bit targets only (R-111/D-167); "
+    "found pointer size ${CMAKE_SIZEOF_VOID_P}")
+endif()
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  message(WARNING
+    "AstraScheduler Tier-1 toolchains are GCC 13+/Clang 17+ on Linux (R-111/D-167); "
+    "found ${CMAKE_CXX_COMPILER_ID}. Continuing, but this configuration is not release-gated.")
+endif()
+
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 

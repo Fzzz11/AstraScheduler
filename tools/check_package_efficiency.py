@@ -25,6 +25,7 @@ INTERNAL_TEST_TARGETS = {
     "astra_graph_coroutine_identity_test",
     "astra_move_only_submit_test",
     "astra_park_handshake_test",
+    "astra_platform_invariants_test",
     "astra_process_metrics_test",
     "astra_reaper_coordinator_test",
     "astra_runtime_state_handoff_test",

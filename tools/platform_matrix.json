@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "project": "AstraScheduler",
+  "tier_1": [
+    {
+      "platform": "linux-x86_64",
+      "compilers": ["gcc>=13", "clang>=17"],
+      "status": "supported",
+      "gate": "release-gated",
+      "evidence": "WSL/native Linux x86_64 build, unit/integration tests, package consumer, sanitizers"
+    }
+  ],
+  "tier_2": [
+    {
+      "platform": "linux-aarch64",
+      "compilers": ["gcc", "clang"],
+      "status": "supported",
+      "gate": "periodic-native-weak-memory-validation",
+      "evidence": "native Linux AArch64 weak-memory stress (not cross-compile/QEMU compile only)"
+    }
+  ],
+  "unsupported": [
+    {"platform": "windows-msvc", "reason": "Linux-only supported configuration (R-111 / D-167)"},
+    {"platform": "macos", "reason": "non-Linux OS unsupported (R-111 / D-167)"},
+    {"platform": "other-non-linux", "reason": "non-Linux OS unsupported (R-111 / D-167)"},
+    {"platform": "32-bit", "reason": "64-bit only (R-111 / D-167)"}
+  ],
+  "notes": [
+    "偶然编译成功不得升级支持状态（R-111）。",
+    "Linux atomic 能力不足时按 R-101 报告 Locked fallback，不改变平台支持状态。",
+    "每个受支持 OS 进程只加载一个 Astra implementation instance（R-107 / D-159）。",
+    "多个 DSO 各自静态嵌入 Astra 实现不享有 process-wide 保证，属 unsupported topology。"
+  ]
+}

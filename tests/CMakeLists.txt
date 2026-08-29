@@ -85,10 +85,17 @@ astra_add_internal_test(astra_trace_event_schema_test test_trace_event_schema.cp
 astra_add_internal_test(astra_trace_export_test test_trace_export.cpp)
 astra_add_public_test(astra_wait_await_diagnostics_test test_wait_await_diagnostics.cpp)
 astra_add_public_test(astra_coroutine_frame_lifetime_test test_coroutine_frame_lifetime.cpp)
+astra_add_internal_test(astra_platform_invariants_test test_platform_invariants.cpp)
 
 # Package gate 资源使用回归：并行度有界、测试复用库产物、consumer 单次执行。
 add_test(NAME check_package_efficiency COMMAND
          ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1
          python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_package_efficiency.py)
 set_tests_properties(check_package_efficiency PROPERTIES
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# AST-052 / R-111：Linux-only tier matrix 与 package 声明审计（以仓库根为工作目录）。
+add_test(NAME check_platform_matrix COMMAND
+         ${CMAKE_COMMAND} -E env python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_platform_matrix.py)
+set_tests_properties(check_platform_matrix PROPERTIES
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
