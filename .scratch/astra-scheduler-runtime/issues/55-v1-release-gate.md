@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-003, R-091, R-111, R-094)
 Milestone: v1.0.0
 Blocked by: AST-051, AST-053, AST-054
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -33,10 +33,10 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-003]` Benchmark 可在同一工作负载下运行 Global Queue 基线与后续 Scheduler。
-- [ ] `[R-091]` 性能结论可追溯原始重复，偶发共享runner噪声不阻断发布。
-- [ ] `[R-111]` v1 release evidence只声明Linux x86_64 GCC/Clang与native Linux AArch64支持，且不存在Windows/MSVC release artifact或支持声明。
-- [ ] `[R-094]` 每个实现Ticket有目标版本且每个tag可独立构建运行。
+- [x] `[R-003]` Benchmark 可在同一工作负载下运行 Global Queue 基线（in-tree global_fifo_baseline）与后续 Scheduler。
+- [x] `[R-091]` 性能结论可追溯原始重复（corpus artifact raw repetitions + 稳健统计），偶发共享runner噪声不阻断发布（双门槛 gate：effect + bootstrap CI）。
+- [x] `[R-111]` v1 release evidence只声明Linux x86_64 GCC/Clang与native Linux AArch64支持（platform matrix 审计 ok），且不存在Windows/MSVC release artifact或支持声明。
+- [x] `[R-094]` 每个实现Ticket有目标版本且每个tag可独立构建运行（v1.0.0 release checklist verdict=ok：10/10 检查含全量测试/sanitizer/package/api freeze/版本一致性）。
 
 ## Out of scope
 
@@ -49,5 +49,8 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-003, R-091, R-111, R-094
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-001, D-143, D-167, D-146
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tools/check_release_baseline.py` verdict=ok（docs/release/1.0.0/release-evidence.json，10/10 检查）：
+  release gates 15/15、traceability 通过（tickets=56）、全量 Debug 51/51、hardening verdict=ok（真实 ASan+UBSan/TSan，Tier-2 deferred 显式记录）、package consumer 通过、平台矩阵审计 ok、API freeze（v1.0.0 golden：17 headers/110 symbols）、版本一致性 1.0.0、corpus baseline（astra_version=1.0.0，固定 seed，checksum 可重算）。
+  版本升至 1.0.0（project VERSION 单一版本源，consumer 钉住值同步）。
+  Tier-2 native AArch64 weak-memory 证据如实 deferred（无 native 硬件；stress 载体 tests/test_weak_memory_stress.cpp 已交付）；TSan 5 个已知问题测试已分类记录（owner: AST-006/007/033）。
  

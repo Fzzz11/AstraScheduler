@@ -128,14 +128,14 @@
     "task_options.hpp": "5c296d77f8a361bae70cff9a4bd21d1237b1bca2314537cc4f2318e8ce7c4e7b",
     "trace.hpp": "3efa8373b7119019ced8e5fed01800a0735fdaddb207ec31f3e987d1b5d99ad9",
     "trace_export.hpp": "a28f8c9885a9963300bed8b1b8916bf51ce02538d72c0ae5758d10747e6733d5",
-    "version.hpp": "9a31ca5c1d7ec16ea35fb25075504482934ac5f6904d5f97e95ed43e991803e3"
+    "version.hpp": "bc8681e15a04e52b2bd8ea1a06bcbf15482de490a612ae2ac83224f7db1f7e5e"
   },
   "schema_version": 1,
   "version": {
-    "cmake_package_version": "0.1.0",
+    "cmake_package_version": "1.0.0",
     "macros": {
-      "ASTRA_VERSION_MAJOR": 0,
-      "ASTRA_VERSION_MINOR": 1,
+      "ASTRA_VERSION_MAJOR": 1,
+      "ASTRA_VERSION_MINOR": 0,
       "ASTRA_VERSION_PATCH": 0
     }
   }

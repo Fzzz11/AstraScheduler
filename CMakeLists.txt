@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.21)
 #（AST-002 / R-110；AST-003 / R-093）。
 # Supported Configuration 仅 64-bit Linux（R-111 / D-167）。
 
-project(AstraScheduler VERSION 0.1.0 LANGUAGES CXX)
+project(AstraScheduler VERSION 1.0.0 LANGUAGES CXX)
 
 # R-111：Supported Configuration 仅 64-bit Linux；非 Linux / 32-bit 在 configure
 # 边界即被拒绝，不得进入 release gate 或 package 支持声明。

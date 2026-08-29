@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "tool": "check_release_baseline",
+  "expected_version": "1.0.0",
+  "checks": {
+    "release_gates": {
+      "command": "python3 tools/check_release_gates.py",
+      "exit_code": 0,
+      "duration_s": 0.3,
+      "output_tail": "test_R004_every_rule_has_nonempty_applies_to (__main__.R004SpecScopeTests) ... ok\ntest_R004_spec_states_cross_version_scope (__main__.R004SpecScopeTests)\n\u6574\u4f53\u76ee\u6807\u4e0d\u5f97\u88ab\u6536\u7a84\u4e3a\u5355\u4e00\u7248\u672c\u8303\u56f4\u3002 ... ok\ntest_R004_spec_status_is_approved (__main__.R004SpecScopeTests)\n\u95e8\u7981\uff1a\u53ea\u6709 approved \u72b6\u6001\u7684 spec \u624d\u80fd\u652f\u6491\u62c6\u7968/\u5b9e\u73b0\u5de5\u4f5c\u3002 ... ok\ntest_R005_every_ticket_records_exactly_one_target_milestone (__main__.R005TicketVersioningTests) ... ok\ntest_R005_issue_directory_exists_with_tickets (__main__.R005TicketVersioningTests) ... ok\ntest_R005_no_single_ticket_spans_the_whole_project (__main__.R005TicketVersioningTests) ... ok\ntest_R094_ci_entry_point_runs_the_gate_checks (__main__.R094MilestoneGateTests) ... ok\ntest_R094_every_milestone_row_carries_scope_and_release_evidence (__main__.R094MilestoneGateTests) ... ok\ntest_R094_milestone_matrix_fixes_per_tag_definition_of_done (__main__.R094MilestoneGateTests) ... ok\ntest_R094_milestone_matrix_lists_all_tags_in_order (__main__.R094MilestoneGateTests) ... ok\ntest_R094_milestone_matrix_provides_rule_traceability_entry_points (__main__.R094MilestoneGateTests) ... ok\ntest_R112_completed_AST001_owns_rule_and_records_wsl_evidence (__main__.R112WslDevelopmentGateTests) ... ok\ntest_R112_development_guide_fixes_wsl_commands_and_cache_isolation (__main__.R112WslDevelopmentGateTests) ... ok\ntest_R112_milestone_document_uses_wsl_for_local_verification (__main__.R112WslDevelopmentGateTests) ... ok\ntest_R112_project_instructions_fix_linux_only_wsl_entry (__main__.R112WslDevelopmentGateTests) ... ok\n\n----------------------------------------------------------------------\nRan 15 tests in 0.169s\n\nOK\n"
+    },
+    "traceability": {
+      "command": "python3 /mnt/c/Users/fzt/.zcode/skills/decision-ledger/scripts/validate_traceability.py --ledger .scratch/astra-scheduler-runtime/decision-log.md --spec .scratch/astra-scheduler-runtime/spec.md --tickets-dir .scratch/astra-scheduler-runtime/issues",
+      "exit_code": 0,
+      "duration_s": 0.3,
+      "output_tail": "Traceability valid: decisions=168, rules=105, tickets=56, covered_rules=105\n"
+    },
+    "full_test_suite": {
+      "command": "ctest --test-dir build/wsl-gcc-debug",
+      "exit_code": 0,
+      "duration_s": 7.2,
+      "output_tail": "Test #28: astra_graph_edge_policies_test ..........   Passed    0.02 sec\n      Start 29: astra_graph_run_control_test\n29/51 Test #29: astra_graph_run_control_test ............   Passed    0.03 sec\n      Start 30: astra_coroutine_spawn_test\n30/51 Test #30: astra_coroutine_spawn_test ..............   Passed    0.01 sec\n      Start 31: astra_coroutine_resume_handshake_test\n31/51 Test #31: astra_coroutine_resume_handshake_test ...   Passed    0.03 sec\n      Start 32: astra_suspended_cancellation_test\n32/51 Test #32: astra_suspended_cancellation_test .......   Passed    0.14 sec\n      Start 33: astra_source_runtime_await_test\n33/51 Test #33: astra_source_runtime_await_test .........   Passed    0.08 sec\n      Start 34: astra_graph_coroutine_identity_test\n34/51 Test #34: astra_graph_coroutine_identity_test .....   Passed    0.05 sec\n      Start 35: astra_worker_timers_test\n35/51 Test #35: astra_worker_timers_test ................   Passed    0.17 sec\n      Start 36: astra_base_priority_test\n36/51 Test #36: astra_base_priority_test ................   Passed    0.02 sec\n      Start 37: astra_priority_bands_test\n37/51 Test #37: astra_priority_bands_test ...............   Passed    0.04 sec\n      Start 38: astra_task_deadline_test\n38/51 Test #38: astra_task_deadline_test ................   Passed    0.07 sec\n      Start 39: astra_global_edf_test\n39/51 Test #39: astra_global_edf_test ...................   Passed    0.13 sec\n      Start 40: astra_runtime_metrics_test\n40/51 Test #40: astra_runtime_metrics_test ..............   Passed    0.09 sec\n      Start 41: astra_metrics_snapshot_test\n41/51 Test #41: astra_metrics_snapshot_test .............   Passed    0.05 sec\n      Start 42: astra_process_metrics_test\n42/51 Test #42: astra_process_metrics_test ..............   Passed    0.02 sec\n      Start 43: astra_trace_collector_test\n43/51 Test #43: astra_trace_collector_test ..............   Passed    0.02 sec\n      Start 44: astra_trace_event_schema_test\n44/51 Test #44: astra_trace_event_schema_test ...........   Passed    0.01 sec\n      Start 45: astra_trace_export_test\n45/51 Test #45: astra_trace_export_test .................   Passed    0.02 sec\n      Start 46: astra_wait_await_diagnostics_test\n46/51 Test #46: astra_wait_await_diagnostics_test .......   Passed    0.21 sec\n      Start 47: astra_coroutine_frame_lifetime_test\n47/51 Test #47: astra_coroutine_frame_lifetime_test .....   Passed    0.36 sec\n      Start 48: astra_platform_invariants_test\n48/51 Test #48: astra_platform_invariants_test ..........   Passed    0.01 sec\n      Start 49: astra_weak_memory_stress_test\n49/51 Test #49: astra_weak_memory_stress_test ...........   Passed    0.28 sec\n      Start 50: check_package_efficiency\n50/51 Test #50: check_package_efficiency ................   Passed    3.16 sec\n      Start 51: check_platform_matrix\n51/51 Test #51: check_platform_matrix ...................   Passed    0.06 sec\n\n100% tests passed, 0 tests failed out of 51\n\nTotal Test time (real) =   7.18 sec\n"
+    },
+    "hardening": {
+      "exit_code": 0,
+      "verdict": "ok",
+      "tier_1": {
+        "asan-ubsan": true,
+        "tsan": true
+      },
+      "tier_2": {
+        "platform": "linux-aarch64",
+        "status": "deferred",
+        "reason": "native Linux AArch64 runner unavailable on this host; weak-memory stress carrier tests/test_weak_memory_stress.cpp is provided and must run on native AArch64 hardware (D-167)"
+      }
+    },
+    "package_consumer": {
+      "command": "python3 tools/check_cmake_package.py",
+      "exit_code": 0,
+      "duration_s": 150.9,
+      "output_tail": "AST025_consumer_runs_all_chase_lev_ordering_checks (__main__.AST025ChaseLevOrderingGates) ... ok\ntest_AST026_consumer_runs_all_chase_lev_growth_checks (__main__.AST026ChaseLevGrowthGates) ... ok\ntest_AST027_consumer_runs_all_chase_lev_indices_checks (__main__.AST027ChaseLevIndicesGates) ... ok\ntest_AST028_consumer_runs_all_task_graph_freeze_checks (__main__.AST028TaskGraphFreezeGates) ... ok\ntest_AST029_consumer_runs_all_graph_admission_checks (__main__.AST029GraphAdmissionGates) ... ok\ntest_AST030_consumer_runs_all_graph_edge_policy_checks (__main__.AST030GraphEdgePoliciesGates) ... ok\ntest_AST031_consumer_runs_all_graph_run_control_checks (__main__.AST031GraphRunControlGates) ... ok\ntest_AST032_consumer_runs_all_coroutine_spawn_checks (__main__.AST032CoroutineSpawnGates) ... ok\ntest_AST033_consumer_runs_all_coroutine_resume_handshake_checks (__main__.AST033CoroutineResumeHandshakeGates) ... ok\ntest_AST034_consumer_runs_all_suspended_cancellation_checks (__main__.AST034SuspendedCancellationGates) ... ok\ntest_AST035_consumer_runs_all_source_runtime_await_checks (__main__.AST035SourceRuntimeAwaitGates) ... ok\ntest_R093_find_package_rejects_version_mismatch_at_configure (__main__.R093VersionContractGates) ... skipped 'no same-major older version exists to request'\ntest_R093_installed_version_sources_stay_consistent (__main__.R093VersionContractGates) ... ok\ntest_R093_manual_link_detects_doctored_header_mismatch (__main__.R093VersionContractGates) ... ok\ntest_R093_same_install_consumers_verify_version_contract (__main__.R093VersionContractGates) ... ok\ntest_R110_consumer_compile_line_carries_no_internal_options_or_paths (__main__.R110PackageConsumerGates) ... ok\ntest_R110_consumer_compile_line_uses_cxx20 (__main__.R110PackageConsumerGates) ... ok\ntest_R110_independent_consumer_smoke_runs_shared (__main__.R110PackageConsumerGates) ... ok\ntest_R110_independent_consumer_smoke_runs_static (__main__.R110PackageConsumerGates) ... ok\ntest_R110_package_exports_config_targets_and_version_files (__main__.R110PackageConsumerGates) ... ok\ntest_R110_public_header_rejects_fno_exceptions (__main__.R110PackageConsumerGates) ... ok\ntest_R110_public_headers_install_only_under_include_astra (__main__.R110PackageConsumerGates) ... ok\ntest_R110_shared_library_hides_internal_symbols (__main__.R110PackageConsumerGates) ... ok\ntest_R111_install_tree_contains_only_linux_artifacts (__main__.R111LinuxOnlyVariantGates) ... ok\ntest_R111_public_header_rejects_32bit_compilation (__main__.R111LinuxOnlyVariantGates) ... ok\ntest_R111_public_header_rejects_non_linux_compilation (__main__.R111LinuxOnlyVariantGates) ... ok\ntest_R111_shared_is_opt_in_variant (__main__.R111LinuxOnlyVariantGates) ... ok\ntest_R111_static_and_shared_both_install_and_consume (__main__.R111LinuxOnlyVariantGates) ... ok\ntest_R111_static_is_default_variant (__main__.R111LinuxOnlyVariantGates) ... ok\n\n----------------------------------------------------------------------\nRan 50 tests in 150.795s\n\nOK (skipped=1)\n"
+    },
+    "platform_matrix": {
+      "command": "python3 tools/check_platform_matrix.py",
+      "exit_code": 0,
+      "duration_s": 0.1,
+      "output_tail": "platform matrix audit ok: Linux-only tier matrix, no Windows/MSVC release declarations\n"
+    },
+    "api_freeze": {
+      "command": "python3 tools/check_api_freeze.py",
+      "exit_code": 0,
+      "duration_s": 136.2,
+      "output_tail": "API freeze gate OK: 17 headers, 110 exported symbols unchanged vs golden v1 manifest.\n"
+    },
+    "version_consistency": {
+      "exit_code": 0,
+      "version": "1.0.0"
+    },
+    "benchmark_corpus_baseline": {
+      "exit_code": 0,
+      "astra_version": "1.0.0",
+      "cases": 4,
+      "seed_recorded": true
+    },
+    "tier_2_aarch64": {
+      "exit_code": 0,
+      "status": "deferred"
+    }
+  },
+  "verdict": "ok"
+}

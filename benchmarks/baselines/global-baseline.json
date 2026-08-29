@@ -1,1 +1,1 @@
-{"schema_version":1,"astra_version":"0.1.0","seed":4707198747840361776,"cases":[{"name":"micro_empty","checksum":4096},{"name":"cpu_calibrated","checksum":3430057746644312961},{"name":"imbalanced","checksum":12845210945171641983},{"name":"fork_join","checksum":11507622267387057675}]}
+{"schema_version":1,"astra_version":"1.0.0","seed":4707198747840361776,"cases":[{"name":"micro_empty","checksum":4096},{"name":"cpu_calibrated","checksum":3430057746644312961},{"name":"imbalanced","checksum":12845210945171641983},{"name":"fork_join","checksum":11507622267387057675}]}
