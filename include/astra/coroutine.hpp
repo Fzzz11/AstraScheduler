@@ -266,14 +266,20 @@ public:
         }
 
         TaskExecutionContextGuard guard(state->id(), state->priority());
-
+        const auto t_start = std::chrono::steady_clock::now();
         try {
             if (coro && !coro.done()) {
                 coro.resume();
             }
+            const auto t_end = std::chrono::steady_clock::now();
+            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
         } catch (const task_cancelled&) {
+            const auto t_end = std::chrono::steady_clock::now();
+            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
             state->set_cancelled();
         } catch (...) {
+            const auto t_end = std::chrono::steady_clock::now();
+            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
             state->set_exception(std::current_exception());
         }
 
@@ -312,16 +318,28 @@ public:
 
     void execute() override {
         state->transition_to_running();
+        const auto now = std::chrono::steady_clock::now();
+        const auto pub = state->ready_published_at();
+        if (now >= pub && pub != std::chrono::steady_clock::time_point{}) {
+            record_metrics_ready_queue_wait(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(now - pub).count());
+        }
         record_metrics_resume_segment(state->id());
         TaskExecutionContextGuard guard(state->id(), state->priority());
+        const auto t_start = std::chrono::steady_clock::now();
 
         try {
             if (coro && !coro.done()) {
                 coro.resume();
             }
+            const auto t_end = std::chrono::steady_clock::now();
+            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
         } catch (const task_cancelled&) {
+            const auto t_end = std::chrono::steady_clock::now();
+            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
             state->set_cancelled();
         } catch (...) {
+            const auto t_end = std::chrono::steady_clock::now();
+            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
             state->set_exception(std::current_exception());
         }
 
@@ -423,6 +441,7 @@ struct TaskHandleAwaiter {
 
         auto post_action = [coro, task_state, rescheduler]() mutable {
             if (rescheduler) {
+                task_state->set_ready_published_at(std::chrono::steady_clock::now());
                 auto invoker = std::make_unique<CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
                     coro, std::move(task_state));
                 rescheduler(std::move(invoker));
@@ -498,6 +517,7 @@ struct GraphRunAwaiter {
 
         auto post_action = [coro, task_state, rescheduler]() mutable {
             if (rescheduler) {
+                task_state->set_ready_published_at(std::chrono::steady_clock::now());
                 auto invoker = std::make_unique<CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
                     coro, std::move(task_state));
                 rescheduler(std::move(invoker));
@@ -604,6 +624,7 @@ struct YieldAwaiter {
 
         auto rescheduler = task_state->get_rescheduler();
         if (rescheduler) {
+            task_state->set_ready_published_at(std::chrono::steady_clock::now());
             auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
                 coro, std::move(task_state));
             rescheduler(std::move(invoker));
@@ -671,13 +692,14 @@ struct SleepAwaiter {
         auto ctx = std::make_shared<RegistrationContext>();
 
         stop_cb.emplace(task_state->stop_token(), [handshake = this->handshake, coro, task_state, rescheduler, canceller, ctx]() mutable {
-            handshake->trigger_cancel([coro, task_state, rescheduler, canceller, ctx]() mutable {
-                ctx->cancelled.store(true, std::memory_order_release);
-                std::uint64_t tid = ctx->timer_id.load(std::memory_order_acquire);
-                if (tid != 0 && canceller) {
-                    canceller(tid);
-                }
+            ctx->cancelled.store(true, std::memory_order_release);
+            std::uint64_t tid = ctx->timer_id.load(std::memory_order_acquire);
+            if (tid != 0 && canceller) {
+                canceller(tid);
+            }
+            handshake->trigger_cancel([coro, task_state, rescheduler]() mutable {
                 if (rescheduler) {
+                    task_state->set_ready_published_at(std::chrono::steady_clock::now());
                     auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
                         coro, std::move(task_state));
                     rescheduler(std::move(invoker));
@@ -692,6 +714,7 @@ struct SleepAwaiter {
 
         auto on_expiry = [coro, task_state, rescheduler]() mutable {
             if (rescheduler) {
+                task_state->set_ready_published_at(std::chrono::steady_clock::now());
                 auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
                     coro, std::move(task_state));
                 rescheduler(std::move(invoker));
@@ -700,7 +723,7 @@ struct SleepAwaiter {
 
         std::uint64_t tid = registrar(wake_time, handshake, on_expiry);
         ctx->timer_id.store(tid, std::memory_order_release);
-        if (ctx->cancelled.load(std::memory_order_acquire)) {
+        if (ctx->cancelled.load(std::memory_order_acquire) || task_state->stop_token().stop_requested()) {
             canceller(tid);
         }
 

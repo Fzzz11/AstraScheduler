@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-085)
 Milestone: v0.7.0
 Blocked by: AST-042
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-085]` 并发snapshot字段各自有效，静止后accepted/outcome/steal等关系收敛。
+- [x] `[R-085]` 并发snapshot字段各自有效，静止后accepted/outcome/steal等关系收敛。
 
 ## Out of scope
 
@@ -40,5 +40,5 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-085
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-137
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tests/test_metrics_snapshot.cpp`, `ctest` 41/41 passed in Debug and ASan, `tools/check_release_gates.py` PASSED.
 

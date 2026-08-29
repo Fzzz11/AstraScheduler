@@ -9,11 +9,45 @@
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 
 namespace astra {
+
+// -----------------------------------------------------------------------------
+// Log2Histogram (R-085 / D-137)
+// 固定 64 个 base-2 纳秒 bucket 的饱和直方图
+// -----------------------------------------------------------------------------
+struct Log2Histogram {
+    static constexpr std::size_t kBucketCount = 64;
+    std::uint64_t count{0};
+    std::uint64_t sum_ns{0};
+    std::uint64_t max_ns{0};
+    std::array<std::uint64_t, kBucketCount> buckets{};
+
+    static constexpr std::size_t bucket_for_ns(std::uint64_t ns) noexcept {
+        if (ns <= 1) return 0;
+        const std::size_t k = 63 - __builtin_clzll(ns);
+        return (k > 63) ? 63 : k;
+    }
+};
+
+// -----------------------------------------------------------------------------
+// Runtime Metrics Histograms (R-085 / D-137)
+// Detailed 模式下的延迟直方图
+// -----------------------------------------------------------------------------
+struct RuntimeMetricsHistograms {
+    Log2Histogram ready_queue_wait{};
+    Log2Histogram execution_segment{};
+    Log2Histogram task_wall_time{};
+    Log2Histogram blocking_admission_wait{};
+    Log2Histogram timer_wake_lateness{};
+    Log2Histogram deadline_start_lateness{};
+    Log2Histogram worker_park_duration{};
+    Log2Histogram runtime_join_latency{};
+};
 
 // -----------------------------------------------------------------------------
 // Runtime Metrics Counters (R-084 / D-136)
@@ -98,6 +132,7 @@ struct RuntimeMetricsSnapshot {
     bool enabled{true};
     RuntimeMetricsCounters counters{};
     RuntimeMetricsGauges gauges{};
+    RuntimeMetricsHistograms histograms{};
 };
 
 }  // namespace astra

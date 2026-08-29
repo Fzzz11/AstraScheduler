@@ -90,13 +90,25 @@ ASTRA_EXPORT void record_metrics_resumed(TaskId id) noexcept;
 ASTRA_EXPORT void record_metrics_resume_segment(TaskId id) noexcept;
 ASTRA_EXPORT void record_metrics_explicit_yield() noexcept;
 
+ASTRA_EXPORT void record_metrics_ready_queue_wait(TaskId id, std::uint64_t duration_ns) noexcept;
+ASTRA_EXPORT void record_metrics_execution_segment(TaskId id, std::uint64_t duration_ns) noexcept;
+ASTRA_EXPORT void record_metrics_task_wall_time(TaskId id, std::uint64_t duration_ns) noexcept;
+ASTRA_EXPORT void record_metrics_blocking_admission_wait(RuntimeId id, std::uint64_t duration_ns) noexcept;
+ASTRA_EXPORT void record_metrics_timer_wake_lateness(RuntimeId id, std::uint64_t duration_ns) noexcept;
+ASTRA_EXPORT void record_metrics_deadline_start_lateness(TaskId id, std::uint64_t duration_ns) noexcept;
+ASTRA_EXPORT void record_metrics_worker_park_duration(RuntimeId id, std::uint64_t duration_ns) noexcept;
+ASTRA_EXPORT void record_metrics_runtime_join_latency(RuntimeId id, std::uint64_t duration_ns) noexcept;
+
 class ASTRA_EXPORT TaskSharedStateBase {
 public:
     explicit TaskSharedStateBase(
         TaskId id,
         Priority priority = Priority::Normal,
         std::optional<TaskDeadline> deadline = std::nullopt)
-        : id_(id), priority_(priority), deadline_(deadline) {}
+        : id_(id), priority_(priority), deadline_(deadline),
+          admitted_at_ns_(std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count()),
+          ready_published_at_ns_(admitted_at_ns_.load(std::memory_order_relaxed)) {}
 
     virtual ~TaskSharedStateBase() {
         if (state_.load(std::memory_order_relaxed) == TaskState::Failed &&
@@ -124,6 +136,21 @@ public:
 
     [[nodiscard]] std::stop_token stop_token() noexcept {
         return stop_source_.get_token();
+    }
+
+    [[nodiscard]] std::chrono::steady_clock::time_point admitted_at() const noexcept {
+        return std::chrono::steady_clock::time_point(
+            std::chrono::nanoseconds(admitted_at_ns_.load(std::memory_order_relaxed)));
+    }
+
+    [[nodiscard]] std::chrono::steady_clock::time_point ready_published_at() const noexcept {
+        return std::chrono::steady_clock::time_point(
+            std::chrono::nanoseconds(ready_published_at_ns_.load(std::memory_order_acquire)));
+    }
+
+    void set_ready_published_at(std::chrono::steady_clock::time_point tp) noexcept {
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
+        ready_published_at_ns_.store(ns, std::memory_order_release);
     }
 
     using ReschedulerFunc = std::function<void(std::unique_ptr<TaskInvokerBase>)>;
@@ -160,6 +187,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_.load(std::memory_order_relaxed) == TaskState::Running) {
             state_.store(TaskState::Suspended, std::memory_order_release);
+            ready_published_at_ns_.store(0, std::memory_order_release);
             record_metrics_suspended(id_);
         }
     }
@@ -187,6 +215,15 @@ public:
         }
     }
 
+    void record_terminal_wall_time() noexcept {
+        const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const auto admitted_ns = admitted_at_ns_.load(std::memory_order_relaxed);
+        if (now_ns >= admitted_ns && admitted_ns > 0) {
+            record_metrics_task_wall_time(id_, static_cast<std::uint64_t>(now_ns - admitted_ns));
+        }
+    }
+
     void request_cancel() noexcept {
         std::vector<std::function<void()>> callbacks;
         bool was_ready = false;
@@ -200,6 +237,7 @@ public:
             }
         }
         if (was_ready) {
+            record_terminal_wall_time();
             record_metrics_cancelled_before_start(id_, deadline_.has_value());
         }
         cv_.notify_all();
@@ -214,13 +252,20 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
             state_.store(TaskState::Running, std::memory_order_release);
+            const auto now = std::chrono::steady_clock::now();
             if (deadline_.has_value() && deadline_disposition_ == DeadlineDisposition::None) {
-                const auto now = std::chrono::steady_clock::now();
                 if (now <= deadline_->time_point()) {
                     deadline_disposition_ = DeadlineDisposition::Met;
                 } else {
                     deadline_disposition_ = DeadlineDisposition::Missed;
+                    const auto lateness = std::chrono::duration_cast<std::chrono::nanoseconds>(now - deadline_->time_point()).count();
+                    record_metrics_deadline_start_lateness(id_, lateness);
                 }
+            }
+            const auto pub_ns = ready_published_at_ns_.load(std::memory_order_acquire);
+            const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+            if (now_ns >= pub_ns && pub_ns > 0) {
+                record_metrics_ready_queue_wait(id_, static_cast<std::uint64_t>(now_ns - pub_ns));
             }
             record_metrics_first_start(id_, deadline_.has_value() ? std::optional{deadline_disposition_} : std::nullopt);
             return true;
@@ -249,6 +294,7 @@ public:
             callbacks = std::move(completion_callbacks_);
             rescheduler_ = nullptr;
         }
+        record_terminal_wall_time();
         record_metrics_failed(id_);
         cv_.notify_all();
         for (auto& cb : callbacks) {
@@ -266,6 +312,7 @@ public:
             callbacks = std::move(completion_callbacks_);
             rescheduler_ = nullptr;
         }
+        record_terminal_wall_time();
         record_metrics_cancelled_cooperative(id_);
         cv_.notify_all();
         for (auto& cb : callbacks) {
@@ -319,6 +366,8 @@ protected:
     ReschedulerFunc rescheduler_;
     TimerRegistrar timer_registrar_{nullptr};
     TimerCanceller timer_canceller_{nullptr};
+    std::atomic<std::int64_t> admitted_at_ns_{0};
+    std::atomic<std::int64_t> ready_published_at_ns_{0};
 };
 
 template <typename T>
@@ -339,6 +388,7 @@ public:
             callbacks = std::move(completion_callbacks_);
             rescheduler_ = nullptr;
         }
+        record_terminal_wall_time();
         record_metrics_succeeded(id_);
         cv_.notify_all();
         for (auto& cb : callbacks) {
@@ -382,6 +432,7 @@ public:
             callbacks = std::move(completion_callbacks_);
             rescheduler_ = nullptr;
         }
+        record_terminal_wall_time();
         record_metrics_succeeded(id_);
         cv_.notify_all();
         for (auto& cb : callbacks) {
@@ -493,25 +544,40 @@ private:
     template <std::size_t... Is>
     void invoke_impl(std::index_sequence<Is...>) {
         TaskExecutionContextGuard context_guard(state_->id(), state_->priority());
+        const auto t_start = std::chrono::steady_clock::now();
         try {
             if constexpr (Ordinary) {
                 if constexpr (std::is_void_v<ResultType>) {
                     std::invoke(std::move(fn_), std::get<Is>(std::move(args_))...);
+                    const auto t_end = std::chrono::steady_clock::now();
+                    record_metrics_execution_segment(state_->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
                     state_->set_value();
                 } else {
-                    state_->set_value(std::invoke(std::move(fn_), std::get<Is>(std::move(args_))...));
+                    auto res = std::invoke(std::move(fn_), std::get<Is>(std::move(args_))...);
+                    const auto t_end = std::chrono::steady_clock::now();
+                    record_metrics_execution_segment(state_->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
+                    state_->set_value(std::move(res));
                 }
             } else {
                 if constexpr (std::is_void_v<ResultType>) {
                     std::invoke(std::move(fn_), state_->stop_token(), std::get<Is>(std::move(args_))...);
+                    const auto t_end = std::chrono::steady_clock::now();
+                    record_metrics_execution_segment(state_->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
                     state_->set_value();
                 } else {
-                    state_->set_value(std::invoke(std::move(fn_), state_->stop_token(), std::get<Is>(std::move(args_))...));
+                    auto res = std::invoke(std::move(fn_), state_->stop_token(), std::get<Is>(std::move(args_))...);
+                    const auto t_end = std::chrono::steady_clock::now();
+                    record_metrics_execution_segment(state_->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
+                    state_->set_value(std::move(res));
                 }
             }
         } catch (const task_cancelled&) {
+            const auto t_end = std::chrono::steady_clock::now();
+            record_metrics_execution_segment(state_->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
             state_->set_cancelled();
         } catch (...) {
+            const auto t_end = std::chrono::steady_clock::now();
+            record_metrics_execution_segment(state_->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
             state_->set_exception(std::current_exception());
         }
     }

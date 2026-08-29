@@ -133,6 +133,38 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             std::atomic<std::uint64_t> deadline_met{0};
             std::atomic<std::uint64_t> deadline_missed{0};
             std::atomic<std::uint64_t> deadline_cancelled_before_start{0};
+
+            // Detailed 延迟直方图 (R-085 / D-137)
+            struct ShardedHistogram {
+                std::atomic<std::uint64_t> count{0};
+                std::atomic<std::uint64_t> sum_ns{0};
+                std::atomic<std::uint64_t> max_ns{0};
+                std::array<std::atomic<std::uint64_t>, Log2Histogram::kBucketCount> buckets{};
+
+                ShardedHistogram() {
+                    for (auto& b : buckets) {
+                        b.store(0, std::memory_order_relaxed);
+                    }
+                }
+
+                void record(std::uint64_t ns) noexcept {
+                    MetricsTracker::saturating_inc(count);
+                    MetricsTracker::saturating_add(sum_ns, ns);
+                    std::uint64_t cur_max = max_ns.load(std::memory_order_relaxed);
+                    while (ns > cur_max && !max_ns.compare_exchange_weak(cur_max, ns, std::memory_order_relaxed)) {}
+                    const std::size_t b = Log2Histogram::bucket_for_ns(ns);
+                    MetricsTracker::saturating_inc(buckets[b]);
+                }
+            };
+
+            ShardedHistogram ready_queue_wait;
+            ShardedHistogram execution_segment;
+            ShardedHistogram task_wall_time;
+            ShardedHistogram blocking_admission_wait;
+            ShardedHistogram timer_wake_lateness;
+            ShardedHistogram deadline_start_lateness;
+            ShardedHistogram worker_park_duration;
+            ShardedHistogram runtime_join_latency;
         };
 
         std::vector<std::unique_ptr<WorkerShard>> worker_shards;
@@ -548,6 +580,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             shutdown_in_progress = true;
             s_lock.unlock();
 
+            const auto t_join_start = std::chrono::steady_clock::now();
             // Leader 负责 join 全部 worker 线程（恰好 join 一次）
             for (auto& t : worker_threads) {
                 if (t.joinable()) {
@@ -555,6 +588,11 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 }
             }
             worker_threads.clear();
+            const auto t_join_end = std::chrono::steady_clock::now();
+            if (metrics.level == MetricsLevel::Detailed && t_join_end >= t_join_start) {
+                metrics.shard_for_current().runtime_join_latency.record(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_join_end - t_join_start).count());
+            }
 
             const auto current_mode = get_status().shutdown_mode;
             packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
@@ -711,12 +749,18 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             shutdown_in_progress = true;
             s_lock.unlock();
 
+            const auto t_join_start = std::chrono::steady_clock::now();
             for (auto& t : worker_threads) {
                 if (t.joinable()) {
                     t.join();
                 }
             }
             worker_threads.clear();
+            const auto t_join_end = std::chrono::steady_clock::now();
+            if (metrics.level == MetricsLevel::Detailed && t_join_end >= t_join_start) {
+                metrics.shard_for_current().runtime_join_latency.record(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_join_end - t_join_start).count());
+            }
 
             const auto current_mode = get_status().shutdown_mode;
             packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
@@ -824,14 +868,20 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             if (metrics.level != MetricsLevel::Off) {
                 MetricsTracker::saturating_inc(metrics.shard_for_current().blocking_submit_waits);
             }
+            const auto t_wait_start = std::chrono::steady_clock::now();
             // Ordinary thread waiting on slot_cv (R-061 / D-086 / D-106)
             slot_cv.wait(lock, [this, count] {
                 const auto current_st = unpack(packed_status.load(std::memory_order_acquire));
                 return current_st.state != SchedulerState::Running ||
                        (external_pending_count + count <= options.external_pending_capacity);
             });
+            const auto t_wait_end = std::chrono::steady_clock::now();
             if (metrics.level != MetricsLevel::Off) {
                 MetricsTracker::saturating_inc(metrics.shard_for_current().blocking_submit_wakeups);
+                if (metrics.level == MetricsLevel::Detailed && t_wait_end >= t_wait_start) {
+                    metrics.shard_for_current().blocking_admission_wait.record(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(t_wait_end - t_wait_start).count());
+                }
             }
         }
     }
@@ -974,7 +1024,12 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
     void process_due_timers() {
         const auto now = std::chrono::steady_clock::now();
-        std::vector<std::pair<std::shared_ptr<AwaitHandshake>, std::function<void()>>> due_items;
+        struct DueItem {
+            std::shared_ptr<AwaitHandshake> handshake;
+            std::function<void()> resume_action;
+            std::chrono::steady_clock::time_point wake_time;
+        };
+        std::vector<DueItem> due_items;
         {
             std::lock_guard<std::mutex> lock(timer_mutex);
             while (!timer_heap.empty() && timer_heap.front()->wake_time <= now) {
@@ -988,15 +1043,23 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                     timer_heap[0]->heap_index = 0;
                     timer_heap_bubble_down(0);
                 }
-                due_items.push_back({std::move(entry->handshake), std::move(entry->resume_action)});
+                due_items.push_back({std::move(entry->handshake), std::move(entry->resume_action), entry->wake_time});
             }
         }
         if (metrics.level != MetricsLevel::Off && !due_items.empty()) {
             MetricsTracker::saturating_add(metrics.shard_for_current().timer_fires, due_items.size());
+            if (metrics.level == MetricsLevel::Detailed) {
+                for (const auto& item : due_items) {
+                    if (now >= item.wake_time) {
+                        const auto lateness = std::chrono::duration_cast<std::chrono::nanoseconds>(now - item.wake_time).count();
+                        metrics.shard_for_current().timer_wake_lateness.record(lateness);
+                    }
+                }
+            }
         }
-        for (auto& [hs, act] : due_items) {
-            if (hs && act) {
-                hs->trigger(act);
+        for (auto& item : due_items) {
+            if (item.handshake && item.resume_action) {
+                item.handshake->trigger(item.resume_action);
             }
         }
     }
@@ -1266,6 +1329,54 @@ void record_metrics_graph_run_completed(RuntimeId id) noexcept {
     if (impl->metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
         impl->metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
     }
+}
+
+void record_metrics_ready_queue_wait(TaskId id, std::uint64_t duration_ns) noexcept {
+    auto* impl = find_runtime_impl(id.runtime_id());
+    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
+    impl->metrics.shard_for_current().ready_queue_wait.record(duration_ns);
+}
+
+void record_metrics_execution_segment(TaskId id, std::uint64_t duration_ns) noexcept {
+    auto* impl = find_runtime_impl(id.runtime_id());
+    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
+    impl->metrics.shard_for_current().execution_segment.record(duration_ns);
+}
+
+void record_metrics_task_wall_time(TaskId id, std::uint64_t duration_ns) noexcept {
+    auto* impl = find_runtime_impl(id.runtime_id());
+    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
+    impl->metrics.shard_for_current().task_wall_time.record(duration_ns);
+}
+
+void record_metrics_blocking_admission_wait(RuntimeId id, std::uint64_t duration_ns) noexcept {
+    auto* impl = find_runtime_impl(id);
+    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
+    impl->metrics.shard_for_current().blocking_admission_wait.record(duration_ns);
+}
+
+void record_metrics_timer_wake_lateness(RuntimeId id, std::uint64_t duration_ns) noexcept {
+    auto* impl = find_runtime_impl(id);
+    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
+    impl->metrics.shard_for_current().timer_wake_lateness.record(duration_ns);
+}
+
+void record_metrics_deadline_start_lateness(TaskId id, std::uint64_t duration_ns) noexcept {
+    auto* impl = find_runtime_impl(id.runtime_id());
+    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
+    impl->metrics.shard_for_current().deadline_start_lateness.record(duration_ns);
+}
+
+void record_metrics_worker_park_duration(RuntimeId id, std::uint64_t duration_ns) noexcept {
+    auto* impl = find_runtime_impl(id);
+    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
+    impl->metrics.shard_for_current().worker_park_duration.record(duration_ns);
+}
+
+void record_metrics_runtime_join_latency(RuntimeId id, std::uint64_t duration_ns) noexcept {
+    auto* impl = find_runtime_impl(id);
+    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
+    impl->metrics.shard_for_current().runtime_join_latency.record(duration_ns);
 }
 
 TaskExecutionContextGuard::TaskExecutionContextGuard(TaskId new_id, Priority new_priority) noexcept
@@ -1871,13 +1982,19 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                 if (metrics.level != MetricsLevel::Off) {
                     MetricsTracker::saturating_inc(metrics.shard_for_current().worker_parks);
                 }
+                const auto t_park_start = std::chrono::steady_clock::now();
                 if (next_wake.has_value()) {
                     work_cv.wait_until(lock, *next_wake, predicate);
                 } else {
                     work_cv.wait(lock, predicate);
                 }
+                const auto t_park_end = std::chrono::steady_clock::now();
                 if (metrics.level != MetricsLevel::Off) {
                     MetricsTracker::saturating_inc(metrics.shard_for_current().worker_wakes);
+                    if (metrics.level == MetricsLevel::Detailed && t_park_end >= t_park_start) {
+                        metrics.shard_for_current().worker_park_duration.record(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(t_park_end - t_park_start).count());
+                    }
                 }
                 parked_workers.fetch_sub(1, std::memory_order_seq_cst);
 
@@ -2335,21 +2452,33 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
                     node_entry.deadline_disposition = DeadlineDisposition::Met;
                 } else {
                     node_entry.deadline_disposition = DeadlineDisposition::Missed;
+                    const auto lateness = std::chrono::duration_cast<std::chrono::nanoseconds>(now - node_entry.deadline->time_point()).count();
+                    detail::record_metrics_deadline_start_lateness(TaskId{impl_ptr->runtime_id, n_idx}, lateness);
                 }
             }
             detail::record_metrics_first_start(TaskId{impl_ptr->runtime_id, n_idx},
                 node_entry.deadline.has_value() ? std::optional{node_entry.deadline_disposition} : std::nullopt);
 
+            const auto t_exec_start = std::chrono::steady_clock::now();
             try {
                 if (node_entry.invoker) {
                     node_entry.invoker->execute();
                 }
+                const auto t_exec_end = std::chrono::steady_clock::now();
+                detail::record_metrics_execution_segment(TaskId{impl_ptr->runtime_id, n_idx},
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_exec_end - t_exec_start).count());
                 detail::record_metrics_succeeded(TaskId{impl_ptr->runtime_id, n_idx});
                 state->mark_node_terminal(n_idx, TaskState::Succeeded);
             } catch (const astra::task_cancelled&) {
+                const auto t_exec_end = std::chrono::steady_clock::now();
+                detail::record_metrics_execution_segment(TaskId{impl_ptr->runtime_id, n_idx},
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_exec_end - t_exec_start).count());
                 detail::record_metrics_cancelled_cooperative(TaskId{impl_ptr->runtime_id, n_idx});
                 state->mark_node_terminal(n_idx, TaskState::Cancelled);
             } catch (...) {
+                const auto t_exec_end = std::chrono::steady_clock::now();
+                detail::record_metrics_execution_segment(TaskId{impl_ptr->runtime_id, n_idx},
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_exec_end - t_exec_start).count());
                 detail::record_metrics_failed(TaskId{impl_ptr->runtime_id, n_idx});
                 state->mark_node_terminal(n_idx, TaskState::Failed, std::current_exception());
             }
@@ -2468,6 +2597,40 @@ RuntimeMetricsSnapshot Scheduler::metrics_snapshot() const {
     for (const auto& shard_ptr : impl_->metrics.worker_shards) {
         if (shard_ptr) {
             accumulate_shard(*shard_ptr);
+        }
+    }
+
+    if (impl_->options.metrics_level == MetricsLevel::Detailed) {
+        auto accumulate_hist = [&add_to](Log2Histogram& dst, const Impl::MetricsTracker::WorkerShard::ShardedHistogram& src) {
+            add_to(dst.count, src.count.load(std::memory_order_relaxed));
+            add_to(dst.sum_ns, src.sum_ns.load(std::memory_order_relaxed));
+            const std::uint64_t src_max = src.max_ns.load(std::memory_order_relaxed);
+            if (src_max > dst.max_ns) {
+                dst.max_ns = src_max;
+            }
+            for (std::size_t i = 0; i < Log2Histogram::kBucketCount; ++i) {
+                add_to(dst.buckets[i], src.buckets[i].load(std::memory_order_relaxed));
+            }
+        };
+
+        auto accumulate_histograms = [&](const Impl::MetricsTracker::WorkerShard& shard) {
+            accumulate_hist(snapshot.histograms.ready_queue_wait, shard.ready_queue_wait);
+            accumulate_hist(snapshot.histograms.execution_segment, shard.execution_segment);
+            accumulate_hist(snapshot.histograms.task_wall_time, shard.task_wall_time);
+            accumulate_hist(snapshot.histograms.blocking_admission_wait, shard.blocking_admission_wait);
+            accumulate_hist(snapshot.histograms.timer_wake_lateness, shard.timer_wake_lateness);
+            accumulate_hist(snapshot.histograms.deadline_start_lateness, shard.deadline_start_lateness);
+            accumulate_hist(snapshot.histograms.worker_park_duration, shard.worker_park_duration);
+            accumulate_hist(snapshot.histograms.runtime_join_latency, shard.runtime_join_latency);
+        };
+
+        if (impl_->metrics.control_shard) {
+            accumulate_histograms(*impl_->metrics.control_shard);
+        }
+        for (const auto& shard_ptr : impl_->metrics.worker_shards) {
+            if (shard_ptr) {
+                accumulate_histograms(*shard_ptr);
+            }
         }
     }
 

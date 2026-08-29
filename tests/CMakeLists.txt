@@ -608,6 +608,23 @@ target_include_directories(astra_runtime_metrics_test PRIVATE
 target_compile_features(astra_runtime_metrics_test PRIVATE cxx_std_20)
 add_test(NAME astra_runtime_metrics_test COMMAND astra_runtime_metrics_test)
 
+add_executable(astra_metrics_snapshot_test
+  test_metrics_snapshot.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_metrics_snapshot_test PRIVATE Threads::Threads)
+target_include_directories(astra_metrics_snapshot_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_metrics_snapshot_test PRIVATE cxx_std_20)
+add_test(NAME astra_metrics_snapshot_test COMMAND astra_metrics_snapshot_test)
+
+
 
 
 
