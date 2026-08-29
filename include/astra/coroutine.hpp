@@ -598,6 +598,122 @@ struct YieldAwaiter {
 }
 
 // -----------------------------------------------------------------------------
+// sleep_until / sleep_for (R-079 / D-126 / D-127 / D-128)
+// -----------------------------------------------------------------------------
+struct SleepAwaiter {
+    std::chrono::steady_clock::time_point wake_time;
+    std::shared_ptr<AwaitHandshake> handshake{nullptr};
+    std::optional<std::stop_callback<std::function<void()>>> stop_cb;
+
+    explicit SleepAwaiter(std::chrono::steady_clock::time_point wt) noexcept
+        : wake_time(wt) {}
+
+    constexpr bool await_ready() const noexcept {
+        return false;
+    }
+
+    template <typename PromiseType>
+    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+        static_assert(requires { coro.promise().shared_state; },
+                      "sleep is only permitted within astra::Task coroutines (D-126)");
+
+        auto task_state = coro.promise().shared_state;
+        if (!task_state) {
+            throw std::logic_error("invalid coroutine shared_state");
+        }
+
+        if (task_state->stop_token().stop_requested()) {
+            throw task_cancelled{};
+        }
+
+        if (wake_time <= std::chrono::steady_clock::now()) {
+            return false;
+        }
+
+        auto rescheduler = task_state->get_rescheduler();
+        auto registrar = task_state->get_timer_registrar();
+        auto canceller = task_state->get_timer_canceller();
+
+        if (!rescheduler || !registrar || !canceller) {
+            throw std::logic_error("cannot sleep outside an AstraScheduler coroutine runtime");
+        }
+
+        task_state->transition_to_suspended();
+
+        handshake = std::make_shared<AwaitHandshake>();
+
+        struct RegistrationContext {
+            std::atomic<std::uint64_t> timer_id{0};
+            std::atomic<bool> cancelled{false};
+        };
+        auto ctx = std::make_shared<RegistrationContext>();
+
+        stop_cb.emplace(task_state->stop_token(), [handshake = this->handshake, coro, task_state, rescheduler, canceller, ctx]() mutable {
+            handshake->trigger_cancel([coro, task_state, rescheduler, canceller, ctx]() mutable {
+                ctx->cancelled.store(true, std::memory_order_release);
+                std::uint64_t tid = ctx->timer_id.load(std::memory_order_acquire);
+                if (tid != 0 && canceller) {
+                    canceller(tid);
+                }
+                if (rescheduler) {
+                    auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
+                        coro, std::move(task_state));
+                    rescheduler(std::move(invoker));
+                }
+            });
+        });
+
+        if (task_state->stop_token().stop_requested()) {
+            stop_cb.reset();
+            throw task_cancelled{};
+        }
+
+        auto on_expiry = [coro, task_state, rescheduler]() mutable {
+            if (rescheduler) {
+                auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
+                    coro, std::move(task_state));
+                rescheduler(std::move(invoker));
+            }
+        };
+
+        std::uint64_t tid = registrar(wake_time, handshake, on_expiry);
+        ctx->timer_id.store(tid, std::memory_order_release);
+        if (ctx->cancelled.load(std::memory_order_acquire)) {
+            canceller(tid);
+        }
+
+        handshake->arm(on_expiry);
+        return true;
+    }
+
+    void await_resume() {
+        stop_cb.reset();
+        if (handshake && handshake->is_cancelled()) {
+            throw task_cancelled{};
+        }
+    }
+};
+
+[[nodiscard]] inline SleepAwaiter sleep_until(std::chrono::steady_clock::time_point wake_time) noexcept {
+    return SleepAwaiter(wake_time);
+}
+
+template <typename Rep, typename Period>
+[[nodiscard]] inline SleepAwaiter sleep_for(const std::chrono::duration<Rep, Period>& d) {
+    if (d <= std::chrono::duration<Rep, Period>::zero()) {
+        return SleepAwaiter(std::chrono::steady_clock::now() + d);
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto max_tp = std::chrono::steady_clock::time_point::max();
+    const auto max_dur = max_tp - now;
+    auto d_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(d);
+    if (d_ns > max_dur) {
+        return SleepAwaiter(max_tp);
+    }
+    return SleepAwaiter(now + d_ns);
+}
+
+// -----------------------------------------------------------------------------
 // TaskGraph::emplace_coroutine (R-077 / D-123)
 // -----------------------------------------------------------------------------
 inline NodeId TaskGraph::emplace_coroutine(Task<void>&& task) {

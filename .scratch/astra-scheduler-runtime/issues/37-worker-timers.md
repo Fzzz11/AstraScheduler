@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-079)
 Milestone: v0.5.0
 Blocked by: AST-024, AST-033, AST-034
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-079]` Runtime无额外timer线程，Wake Time前不因该timer恢复，取消可撤销heap entry。
+- [x] `[R-079]` Runtime无额外timer线程，Wake Time前不因该timer恢复，取消可撤销heap entry。
 
 ## Out of scope
 
@@ -40,5 +40,5 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-079
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-126, D-127, D-128
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Passed in WSL Linux x86_64 GCC 13.3.0 (`tests/test_worker_timers.cpp`, `ctest` in `build/wsl-gcc-debug` 35/35, `build/wsl-gcc-asan` 35/35, `check_release_gates.py` 15/15).
 

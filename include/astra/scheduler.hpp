@@ -23,6 +23,7 @@
 namespace astra {
 
 class Scheduler;
+class AwaitHandshake;
 
 namespace detail {
 class GraphRunSharedState;
@@ -223,6 +224,14 @@ public:
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
             state->set_rescheduler(std::move(rescheduler));
+            state->set_timer_functions(
+                [sched = *this](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
+                    return sched.register_timer(wt, std::move(hs), std::move(act));
+                },
+                [sched = *this](std::uint64_t tid) {
+                    sched.cancel_timer(tid);
+                }
+            );
             task.handle().promise().shared_state = state;
             auto coro_h = task.release_handle();
             invoker = std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state);
@@ -270,6 +279,14 @@ public:
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
             state->set_rescheduler(std::move(rescheduler));
+            state->set_timer_functions(
+                [sched = *this](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
+                    return sched.register_timer(wt, std::move(hs), std::move(act));
+                },
+                [sched = *this](std::uint64_t tid) {
+                    sched.cancel_timer(tid);
+                }
+            );
             task.handle().promise().shared_state = state;
             auto coro_h = task.release_handle();
             invoker = std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state);
@@ -291,6 +308,10 @@ private:
     detail::AdmissionDecision acquire_admission(bool block, bool is_internal) const;
     void rollback_external_slot() const;
     void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const;
+    std::uint64_t register_timer(std::chrono::steady_clock::time_point wake_time,
+                                 std::shared_ptr<AwaitHandshake> handshake,
+                                 std::function<void()> resume_action) const;
+    void cancel_timer(std::uint64_t timer_id) const;
 
     friend void detail::run_test_task_on_worker(Scheduler&, std::function<void()>);
     friend std::size_t detail::global_injection_queue_size(const Scheduler&);

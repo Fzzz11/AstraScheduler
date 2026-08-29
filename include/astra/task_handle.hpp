@@ -23,6 +23,8 @@
 
 namespace astra {
 
+class AwaitHandshake;
+
 // 检查并抛出取消异常辅助函数（R-054 / D-060）。
 inline void throw_if_stop_requested(std::stop_token token) {
     if (token.stop_requested()) {
@@ -85,6 +87,8 @@ public:
     }
 
     using ReschedulerFunc = std::function<void(std::unique_ptr<TaskInvokerBase>)>;
+    using TimerRegistrar = std::function<std::uint64_t(std::chrono::steady_clock::time_point, std::shared_ptr<AwaitHandshake>, std::function<void()>)>;
+    using TimerCanceller = std::function<void(std::uint64_t)>;
 
     void set_rescheduler(ReschedulerFunc rescheduler) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -94,6 +98,22 @@ public:
     [[nodiscard]] ReschedulerFunc get_rescheduler() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return rescheduler_;
+    }
+
+    void set_timer_functions(TimerRegistrar reg, TimerCanceller cancel) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        timer_registrar_ = std::move(reg);
+        timer_canceller_ = std::move(cancel);
+    }
+
+    [[nodiscard]] TimerRegistrar get_timer_registrar() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return timer_registrar_;
+    }
+
+    [[nodiscard]] TimerCanceller get_timer_canceller() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return timer_canceller_;
     }
 
     void transition_to_suspended() noexcept {
@@ -237,6 +257,8 @@ protected:
     mutable std::atomic<bool> observed_{false};
     std::vector<std::function<void()>> completion_callbacks_;
     ReschedulerFunc rescheduler_;
+    TimerRegistrar timer_registrar_{nullptr};
+    TimerCanceller timer_canceller_{nullptr};
 };
 
 template <typename T>

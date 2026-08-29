@@ -1,3 +1,4 @@
+#include <astra/coroutine.hpp>
 #include <astra/scheduler.hpp>
 #include "chase_lev_deque.hpp"
 #include "graph_shared_state.hpp"
@@ -356,8 +357,11 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                 uint16_t next = pack(SchedulerState::Stopping, requested_mode);
                 if (packed_status.compare_exchange_weak(current, next, std::memory_order_acq_rel)) {
                     if (requested_mode == ShutdownMode::Immediate) {
-                        std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                        cancel_all_unstarted_tasks_locked();
+                        {
+                            std::lock_guard<std::mutex> lock(lifecycle_mutex);
+                            cancel_all_unstarted_tasks_locked();
+                        }
+                        cancel_all_timers();
                     }
                     slot_cv.notify_all();
                     work_cv.notify_all();
@@ -372,6 +376,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
                             std::lock_guard<std::mutex> lock(lifecycle_mutex);
                             cancel_all_unstarted_tasks_locked();
                         }
+                        cancel_all_timers();
                         slot_cv.notify_all();
                         work_cv.notify_all();
                         break;
@@ -520,6 +525,180 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             }
         }
         slot_cv.notify_all();
+    }
+
+    struct TimerEntry {
+        std::uint64_t timer_id{0};
+        std::chrono::steady_clock::time_point wake_time{};
+        std::uint64_t sequence{0};
+        std::shared_ptr<AwaitHandshake> handshake{nullptr};
+        std::function<void()> resume_action{nullptr};
+        std::size_t heap_index{0};
+    };
+
+    std::atomic<std::uint64_t> next_timer_id{1};
+    std::atomic<std::uint64_t> next_timer_sequence{1};
+    std::mutex timer_mutex;
+    std::vector<std::shared_ptr<TimerEntry>> timer_heap;
+    std::unordered_map<std::uint64_t, std::shared_ptr<TimerEntry>> timer_map;
+
+    static bool compare_timer_entry(const TimerEntry& a, const TimerEntry& b) noexcept {
+        if (a.wake_time != b.wake_time) {
+            return a.wake_time < b.wake_time;
+        }
+        return a.sequence < b.sequence;
+    }
+
+    void timer_heap_bubble_up(std::size_t idx) {
+        while (idx > 0) {
+            std::size_t parent = (idx - 1) / 2;
+            if (compare_timer_entry(*timer_heap[idx], *timer_heap[parent])) {
+                std::swap(timer_heap[idx], timer_heap[parent]);
+                timer_heap[idx]->heap_index = idx;
+                timer_heap[parent]->heap_index = parent;
+                idx = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    void timer_heap_bubble_down(std::size_t idx) {
+        const std::size_t n = timer_heap.size();
+        while (true) {
+            std::size_t smallest = idx;
+            std::size_t left = 2 * idx + 1;
+            std::size_t right = 2 * idx + 2;
+            if (left < n && compare_timer_entry(*timer_heap[left], *timer_heap[smallest])) {
+                smallest = left;
+            }
+            if (right < n && compare_timer_entry(*timer_heap[right], *timer_heap[smallest])) {
+                smallest = right;
+            }
+            if (smallest != idx) {
+                std::swap(timer_heap[idx], timer_heap[smallest]);
+                timer_heap[idx]->heap_index = idx;
+                timer_heap[smallest]->heap_index = smallest;
+                idx = smallest;
+            } else {
+                break;
+            }
+        }
+    }
+
+    std::uint64_t register_timer(std::chrono::steady_clock::time_point wake_time,
+                                 std::shared_ptr<AwaitHandshake> handshake,
+                                 std::function<void()> resume_action) {
+        const std::uint64_t tid = next_timer_id.fetch_add(1, std::memory_order_relaxed);
+        const std::uint64_t seq = next_timer_sequence.fetch_add(1, std::memory_order_relaxed);
+        auto entry = std::make_shared<TimerEntry>();
+        entry->timer_id = tid;
+        entry->wake_time = wake_time;
+        entry->sequence = seq;
+        entry->handshake = std::move(handshake);
+        entry->resume_action = std::move(resume_action);
+
+        bool became_earliest = false;
+        {
+            std::lock_guard<std::mutex> lock(timer_mutex);
+            entry->heap_index = timer_heap.size();
+            timer_heap.push_back(entry);
+            timer_map[tid] = entry;
+            timer_heap_bubble_up(entry->heap_index);
+            if (timer_heap.front()->timer_id == tid) {
+                became_earliest = true;
+            }
+        }
+        if (became_earliest) {
+            work_epoch.fetch_add(1, std::memory_order_release);
+            work_cv.notify_one();
+        }
+        return tid;
+    }
+
+    void cancel_timer(std::uint64_t tid) {
+        std::lock_guard<std::mutex> lock(timer_mutex);
+        auto it = timer_map.find(tid);
+        if (it == timer_map.end()) {
+            return;
+        }
+        auto entry = std::move(it->second);
+        timer_map.erase(it);
+        const std::size_t idx = entry->heap_index;
+        const std::size_t last_idx = timer_heap.size() - 1;
+        if (idx == last_idx) {
+            timer_heap.pop_back();
+        } else {
+            timer_heap[idx] = std::move(timer_heap.back());
+            timer_heap.pop_back();
+            timer_heap[idx]->heap_index = idx;
+            timer_heap_bubble_down(idx);
+            timer_heap_bubble_up(idx);
+        }
+    }
+
+    void process_due_timers() {
+        const auto now = std::chrono::steady_clock::now();
+        std::vector<std::pair<std::shared_ptr<AwaitHandshake>, std::function<void()>>> due_items;
+        {
+            std::lock_guard<std::mutex> lock(timer_mutex);
+            while (!timer_heap.empty() && timer_heap.front()->wake_time <= now) {
+                auto entry = std::move(timer_heap.front());
+                timer_map.erase(entry->timer_id);
+                if (timer_heap.size() == 1) {
+                    timer_heap.pop_back();
+                } else {
+                    timer_heap[0] = std::move(timer_heap.back());
+                    timer_heap.pop_back();
+                    timer_heap[0]->heap_index = 0;
+                    timer_heap_bubble_down(0);
+                }
+                due_items.push_back({std::move(entry->handshake), std::move(entry->resume_action)});
+            }
+        }
+        for (auto& [hs, act] : due_items) {
+            if (hs && act) {
+                hs->trigger(act);
+            }
+        }
+    }
+
+    void cancel_all_timers() {
+        std::vector<std::pair<std::shared_ptr<AwaitHandshake>, std::function<void()>>> all_items;
+        {
+            std::lock_guard<std::mutex> lock(timer_mutex);
+            while (!timer_heap.empty()) {
+                auto entry = std::move(timer_heap.front());
+                timer_map.erase(entry->timer_id);
+                if (timer_heap.size() == 1) {
+                    timer_heap.pop_back();
+                } else {
+                    timer_heap[0] = std::move(timer_heap.back());
+                    timer_heap.pop_back();
+                    timer_heap[0]->heap_index = 0;
+                    timer_heap_bubble_down(0);
+                }
+                all_items.push_back({std::move(entry->handshake), std::move(entry->resume_action)});
+            }
+        }
+        for (auto& [hs, act] : all_items) {
+            if (hs && act) {
+                hs->trigger_cancel(act);
+            }
+        }
+    }
+
+    std::optional<std::chrono::steady_clock::time_point> earliest_wake_time() {
+        std::lock_guard<std::mutex> lock(timer_mutex);
+        if (timer_heap.empty()) {
+            return std::nullopt;
+        }
+        return timer_heap.front()->wake_time;
+    }
+
+    bool has_timers() {
+        std::lock_guard<std::mutex> lock(timer_mutex);
+        return !timer_heap.empty();
     }
 
     void worker_main(std::size_t worker_index);
@@ -1013,6 +1192,8 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
     // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested 且 Drain Closure 排空）
     while (true) {
+        process_due_timers();
+
         QueuedTask task;
         bool found_task = false;
 
@@ -1069,6 +1250,8 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
         // 4. 若仍未获取到任务，进入 Park Handshake 流程 (R-065)
         if (!found_task) {
+            process_due_timers();
+
             // (a) Active backoff: 少量自旋/yield 减少即时睡眠开销
             for (int spin = 0; spin < 16; ++spin) {
 #if defined(__x86_64__) || defined(_M_X64)
@@ -1084,13 +1267,14 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
             {
                 std::unique_lock<std::mutex> lock(lifecycle_mutex);
-                work_cv.wait(lock, [this, &my_local_deque, observed_epoch] {
+                const auto next_wake = earliest_wake_time();
+                auto predicate = [this, &my_local_deque, observed_epoch] {
                     if (stop_requested) {
                         const auto st = unpack(packed_status.load(std::memory_order_acquire));
                         if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
                             return true;
                         }
-                        if (!global_injection_queue.empty() || !my_local_deque.empty() || active_task_count == 0) {
+                        if (!global_injection_queue.empty() || !my_local_deque.empty() || (active_task_count == 0 && !has_timers())) {
                             return true;
                         }
                         for (const auto& d : local_deques) {
@@ -1108,8 +1292,16 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                         }
                     }
                     return false;
-                });
+                };
+
+                if (next_wake.has_value()) {
+                    work_cv.wait_until(lock, *next_wake, predicate);
+                } else {
+                    work_cv.wait(lock, predicate);
+                }
                 parked_workers.fetch_sub(1, std::memory_order_seq_cst);
+
+                process_due_timers();
 
                 if (!global_injection_queue.empty()) {
                     task = std::move(global_injection_queue.front());
@@ -1179,7 +1371,8 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                                 }
                             }
                         }
-                        if (!any_tasks && active_task_count == 0) {
+                        bool any_timers = has_timers();
+                        if (!any_tasks && active_task_count == 0 && !any_timers) {
                             work_cv.notify_all();
                             break;
                         }
@@ -1231,6 +1424,21 @@ void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invok
         throw std::logic_error("operating on empty/moved-from Scheduler");
     }
     impl_->post_task_internal(std::move(invoker), is_external);
+}
+
+std::uint64_t Scheduler::register_timer(std::chrono::steady_clock::time_point wake_time,
+                                        std::shared_ptr<AwaitHandshake> handshake,
+                                        std::function<void()> resume_action) const {
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    return impl_->register_timer(wake_time, std::move(handshake), std::move(resume_action));
+}
+
+void Scheduler::cancel_timer(std::uint64_t timer_id) const {
+    if (impl_) {
+        impl_->cancel_timer(timer_id);
+    }
 }
 
 Scheduler::Scheduler(SchedulerOptions options) {
@@ -1373,6 +1581,14 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
             auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(state->node_entries[idx].invoker.get());
             const TaskId task_id = detail::allocate_task_id(impl_->runtime_id);
             auto task_state = std::make_shared<detail::TaskSharedState<void>>(task_id);
+            task_state->set_timer_functions(
+                [impl = impl_.get()](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
+                    return impl->register_timer(wt, std::move(hs), std::move(act));
+                },
+                [impl = impl_.get()](std::uint64_t tid) {
+                    impl->cancel_timer(tid);
+                }
+            );
             coro_node->coro.promise().shared_state = task_state;
             coro_node->task_state = task_state;
         }
@@ -1431,7 +1647,7 @@ GraphRun Scheduler::run(FrozenTaskGraph&& graph) {
                 };
                 auto wrapper = std::make_unique<detail::GraphCoroutineResumeWrapper>(
                     std::move(invoker), state, task_state, u_id, std::move(trigger_fn));
-                impl->post_task_internal(std::move(wrapper), !is_internal);
+                impl->post_task_internal(std::move(wrapper), false /* is_external */);
             });
 
             auto task_fn = [impl, state, u_id, is_internal, self, trigger_successors, task_state, coro] {
