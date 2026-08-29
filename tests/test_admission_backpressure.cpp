@@ -282,10 +282,12 @@ void test_R061_block_waiter_wakes_on_shutdown_rejection() {
     // 阻塞在 submit 上的后台线程
     std::atomic<bool> waiter_started{false};
     std::atomic<bool> waiter_rejected{false};
-    std::thread waiter_thread([&]() {
+    std::thread waiter_thread([&, s_waiter = *s]() mutable {
+        // AST-053：waiter 持有自己的 Handle 拷贝（共享 Impl），
+        // 避免 s.reset() 与 submit 解引用 unique_ptr 的数据竞争。
         waiter_started.store(true);
         try {
-            s->submit([]() { return 2; });
+            s_waiter.submit([]() { return 2; });
         } catch (const astra::submission_rejected& e) {
             if (e.reason() == astra::SubmissionError::Stopping ||
                 e.reason() == astra::SubmissionError::Stopped) {
@@ -305,12 +307,14 @@ void test_R061_block_waiter_wakes_on_shutdown_rejection() {
         worker_release_promise.set_value();
     });
 
-    // 销毁 Scheduler 触发 Shutdown，关闭 gate 并唤醒 waiter
-    s.reset();
+    // AST-053：显式 shutdown 走与析构相同的 Stopping 唤醒路径，唤醒 waiter；
+    // waiter 持有自己的 Handle 拷贝，因此 reset 必须在 join 之后才是最后 Handle。
+    s->shutdown();
 
     release_thread.join();
     waiter_thread.join();
     TEST_ASSERT(waiter_rejected.load());
+    s.reset();  // waiter 已结束：此处才是最后 Handle 的 RAII 关停
 }
 
 // -----------------------------------------------------------------------------
