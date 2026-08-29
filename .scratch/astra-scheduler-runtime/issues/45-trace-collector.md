@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-086)
 Milestone: v0.7.0
 Blocked by: AST-004, AST-042
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-086]` buffer overflow或异常展开不阻塞Scheduler，Collector可安全启动下一代。
+- [x] `[R-086]` buffer overflow或异常展开不阻塞Scheduler，Collector可安全启动下一代。
 
 ## Out of scope
 
@@ -40,5 +40,5 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-086
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-138, D-158, D-163
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tests/test_trace_collector.cpp`（8 用例：disabled fast path、选项校验/强异常安全、重复 capture、并发 producer 零丢失、drop-newest 计 loss、Capture move/幂等 stop/活动析构 abort、Recording 中附加 Scheduler 与溢出活性、Snapshot 独立存活）Debug 43/43 与 ASan 43/43 通过；`tools/check_release_gates.py` 15/15 通过；traceability 校验通过。注：bad_alloc 注入未直接验证（无注入 seam），由 length_error/校验先于状态改变覆盖强异常安全路径；`astra_coroutine_resume_handshake_test` 存在与本 Ticket 无关的既有间歇性终止（已在不含本 Ticket 改动的 HEAD 上复现）。
 

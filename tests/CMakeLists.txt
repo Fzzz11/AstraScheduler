@@ -13,6 +13,7 @@ add_executable(astra_startup_transaction_test
   test_startup_transaction.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_startup_transaction_test PRIVATE Threads::Threads)
@@ -28,6 +29,7 @@ add_executable(astra_runtime_state_handoff_test
   test_runtime_state_handoff.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_runtime_state_handoff_test PRIVATE Threads::Threads)
@@ -43,6 +45,7 @@ add_executable(astra_reaper_coordinator_test
   test_reaper_coordinator.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_reaper_coordinator_test PRIVATE Threads::Threads)
@@ -58,6 +61,7 @@ add_executable(astra_global_worker_runtime_test
   test_global_worker_runtime.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_global_worker_runtime_test PRIVATE Threads::Threads)
@@ -73,6 +77,7 @@ add_executable(astra_move_only_submit_test
   test_move_only_submit.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_move_only_submit_test PRIVATE Threads::Threads)
@@ -88,6 +93,7 @@ add_executable(astra_admission_backpressure_test
   test_admission_backpressure.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_admission_backpressure_test PRIVATE Threads::Threads)
@@ -103,6 +109,7 @@ add_executable(astra_task_outcome_state_test
   test_task_outcome_state.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_task_outcome_state_test PRIVATE Threads::Threads)
@@ -118,6 +125,7 @@ add_executable(astra_helping_wait_test
   test_helping_wait.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_helping_wait_test PRIVATE Threads::Threads)
@@ -133,6 +141,7 @@ add_executable(astra_task_cancellation_test
   test_task_cancellation.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_task_cancellation_test PRIVATE Threads::Threads)
@@ -148,6 +157,7 @@ add_executable(astra_graceful_drain_test
   test_graceful_drain.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_graceful_drain_test PRIVATE Threads::Threads)
@@ -163,6 +173,7 @@ add_executable(astra_shutdown_guards_test
   test_shutdown_guards.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_shutdown_guards_test PRIVATE Threads::Threads)
@@ -178,6 +189,7 @@ add_executable(astra_immediate_escalation_test
   test_immediate_escalation.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_immediate_escalation_test PRIVATE Threads::Threads)
@@ -193,6 +205,7 @@ add_executable(astra_last_handle_raii_test
   test_last_handle_raii.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
 target_link_libraries(astra_last_handle_raii_test PRIVATE Threads::Threads)
@@ -208,6 +221,7 @@ add_executable(astra_finalization_control_api_test
   test_finalization_control_api.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -224,6 +238,7 @@ add_executable(astra_finalization_begin_test
   test_finalization_begin.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -240,6 +255,7 @@ add_executable(astra_finalization_wait_test
   test_finalization_wait.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -256,6 +272,7 @@ add_executable(astra_finalization_escalation_test
   test_finalization_escalation.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -272,6 +289,7 @@ add_executable(astra_locked_local_routing_test
   test_locked_local_routing.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -288,6 +306,7 @@ add_executable(astra_steal_round_test
   test_steal_round.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -304,6 +323,7 @@ add_executable(astra_park_handshake_test
   test_park_handshake.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -344,6 +364,7 @@ add_executable(astra_chase_lev_indices_test
   test_chase_lev_indices.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -360,6 +381,7 @@ add_executable(astra_task_graph_freeze_test
   test_task_graph_freeze.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -377,6 +399,7 @@ add_executable(astra_graph_admission_test
   test_graph_admission.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -394,6 +417,7 @@ add_executable(astra_graph_edge_policies_test
   test_graph_edge_policies.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -411,6 +435,7 @@ add_executable(astra_graph_run_control_test
   test_graph_run_control.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -427,6 +452,7 @@ add_test(NAME astra_graph_run_control_test COMMAND astra_graph_run_control_test)
 add_executable(astra_coroutine_spawn_test
   test_coroutine_spawn.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -443,6 +469,7 @@ add_test(NAME astra_coroutine_spawn_test COMMAND astra_coroutine_spawn_test)
 add_executable(astra_coroutine_resume_handshake_test
   test_coroutine_resume_handshake.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -460,6 +487,7 @@ add_executable(astra_suspended_cancellation_test
   test_suspended_cancellation.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -476,6 +504,7 @@ add_executable(astra_source_runtime_await_test
   test_source_runtime_await.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -493,6 +522,7 @@ add_executable(astra_graph_coroutine_identity_test
   test_graph_coroutine_identity.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -510,6 +540,7 @@ add_executable(astra_worker_timers_test
   test_worker_timers.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -527,6 +558,7 @@ add_executable(astra_base_priority_test
   test_base_priority.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -544,6 +576,7 @@ add_executable(astra_priority_bands_test
   test_priority_bands.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -561,6 +594,7 @@ add_executable(astra_task_deadline_test
   test_task_deadline.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -578,6 +612,7 @@ add_executable(astra_global_edf_test
   test_global_edf.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -595,6 +630,7 @@ add_executable(astra_runtime_metrics_test
   test_runtime_metrics.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -612,6 +648,7 @@ add_executable(astra_metrics_snapshot_test
   test_metrics_snapshot.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
@@ -628,6 +665,7 @@ add_executable(astra_process_metrics_test
   test_process_metrics.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
@@ -640,6 +678,24 @@ target_include_directories(astra_process_metrics_test PRIVATE
 )
 target_compile_features(astra_process_metrics_test PRIVATE cxx_std_20)
 add_test(NAME astra_process_metrics_test COMMAND astra_process_metrics_test)
+
+add_executable(astra_trace_collector_test
+  test_trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_trace_collector_test PRIVATE Threads::Threads)
+target_include_directories(astra_trace_collector_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_trace_collector_test PRIVATE cxx_std_20)
+add_test(NAME astra_trace_collector_test COMMAND astra_trace_collector_test)
 
 
 

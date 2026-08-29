@@ -1,8 +1,10 @@
 #include <astra/coroutine.hpp>
 #include <astra/scheduler.hpp>
+#include <astra/trace.hpp>
 #include "chase_lev_deque.hpp"
 #include "graph_shared_state.hpp"
 #include "reaper_registry.hpp"
+#include "trace_collector.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -488,7 +490,14 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             throw scheduler_creation_rejected(SchedulerCreationError::FinalizationStarted);
         }
 
-        // 2. 创建 Worker 并通过启动栅栏进行同步强事务管理（R-097, D-155）
+        // 2. Trace collector 附加（R-086 / D-158）：在 Worker 启动 barrier 前完成
+        //    全部 producer buffer 预分配；Recording 中分配失败抛出 → startup rollback，
+        //    不允许无 buffer 的部分 Runtime。
+        if (options.trace_collector) {
+            detail::trace_attach_runtime(options.trace_collector, runtime_id, options.worker_count);
+        }
+
+        // 3. 创建 Worker 并通过启动栅栏进行同步强事务管理（R-097, D-155）
         const std::size_t count = options.worker_count;
         active_workers.store(count, std::memory_order_relaxed);
         worker_threads.reserve(count);
