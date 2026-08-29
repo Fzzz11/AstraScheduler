@@ -164,6 +164,9 @@ private:
             resolved_priority = Priority::Normal;
         }
 
+        const std::optional<TaskDeadline> resolved_deadline =
+            options.has_value() ? options->deadline : std::nullopt;
+
         const auto decision = acquire_admission(can_block, is_internal);
         if (decision == detail::AdmissionDecision::Stopping) {
             throw submission_rejected(SubmissionError::Stopping);
@@ -181,7 +184,7 @@ private:
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
-            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority);
+            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority, resolved_deadline);
             invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
                 state, std::forward<F>(f), std::forward<Args>(args)...);
         } catch (...) {
@@ -224,6 +227,8 @@ private:
         } else {
             resolved_priority = Priority::Normal;
         }
+        const std::optional<TaskDeadline> resolved_deadline =
+            options.has_value() ? options->deadline : std::nullopt;
 
         // try_submit 永不等待 capacity（R-061 / D-088）
         const auto decision = acquire_admission(false /* no block */, is_internal);
@@ -243,7 +248,7 @@ private:
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
-            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority);
+            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority, resolved_deadline);
             invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
                 state, std::forward<F>(f), std::forward<Args>(args)...);
         } catch (...) {
@@ -279,6 +284,8 @@ private:
         } else {
             resolved_priority = Priority::Normal;
         }
+        const std::optional<TaskDeadline> resolved_deadline =
+            options.has_value() ? options->deadline : std::nullopt;
 
         const auto decision = acquire_admission(can_block, is_internal);
         if (decision == detail::AdmissionDecision::Stopping) {
@@ -296,7 +303,7 @@ private:
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
-            state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority);
+            state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority, resolved_deadline);
             auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
@@ -343,6 +350,8 @@ private:
         } else {
             resolved_priority = Priority::Normal;
         }
+        const std::optional<TaskDeadline> resolved_deadline =
+            options.has_value() ? options->deadline : std::nullopt;
 
         const auto decision = acquire_admission(false /* no block */, is_internal);
         if (decision == detail::AdmissionDecision::Stopping) {
@@ -360,7 +369,7 @@ private:
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
-            state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority);
+            state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority, resolved_deadline);
             auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };

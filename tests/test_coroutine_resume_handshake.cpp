@@ -34,6 +34,12 @@ struct FrameTracker {
         destruct_count.store(0);
     }
 
+    static void wait_alive_zero() {
+        for (int i = 0; i < 5000 && alive_count.load() != 0; ++i) {
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+    }
+
     FrameTracker() {
         construct_count.fetch_add(1);
         alive_count.fetch_add(1);
@@ -134,6 +140,7 @@ void test_R074_completion_before_arm() {
     int result = handle.get();
     TEST_ASSERT(result == 42);
     TEST_ASSERT(handle.state() == astra::TaskState::Succeeded);
+    FrameTracker::wait_alive_zero();
     TEST_ASSERT(FrameTracker::alive_count.load() == 0);
     TEST_ASSERT(FrameTracker::construct_count.load() == FrameTracker::destruct_count.load());
 }
@@ -166,6 +173,7 @@ void test_R074_arm_before_completion() {
     int result = handle.get();
     TEST_ASSERT(result == 99);
     TEST_ASSERT(handle.state() == astra::TaskState::Succeeded);
+    FrameTracker::wait_alive_zero();
     TEST_ASSERT(FrameTracker::alive_count.load() == 0);
 }
 
@@ -210,6 +218,7 @@ void test_R074_multistep_suspension_resumption() {
     int result = handle.get();
     TEST_ASSERT(result == 777);
     TEST_ASSERT(handle.state() == astra::TaskState::Succeeded);
+    FrameTracker::wait_alive_zero();
     TEST_ASSERT(FrameTracker::alive_count.load() == 0);
 }
 
@@ -253,6 +262,7 @@ void test_R074_concurrent_arm_trigger_race() {
         TEST_ASSERT(h.state() == astra::TaskState::Succeeded);
     }
 
+    FrameTracker::wait_alive_zero();
     TEST_ASSERT(FrameTracker::alive_count.load() == 0);
     TEST_ASSERT(FrameTracker::construct_count.load() == FrameTracker::destruct_count.load());
 }

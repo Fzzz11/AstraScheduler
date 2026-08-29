@@ -1698,17 +1698,20 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
     for (auto& node_data : nodes) {
         const std::size_t idx = node_data.id.value();
         Priority node_priority = graph_priority;
+        std::optional<TaskDeadline> node_deadline = std::nullopt;
         if (node_data.options.has_value()) {
             validate_priority(node_data.options->priority);
             node_priority = node_data.options->priority;
+            node_deadline = node_data.options->deadline;
         }
         state->node_entries[idx].id = node_data.id;
         state->node_entries[idx].invoker = std::move(node_data.invoker);
         state->node_entries[idx].priority = node_priority;
+        state->node_entries[idx].deadline = node_deadline;
         if (state->node_entries[idx].invoker && state->node_entries[idx].invoker->is_coroutine_node()) {
             auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(state->node_entries[idx].invoker.get());
             const TaskId task_id = detail::allocate_task_id(impl_->runtime_id);
-            auto task_state = std::make_shared<detail::TaskSharedState<void>>(task_id, node_priority);
+            auto task_state = std::make_shared<detail::TaskSharedState<void>>(task_id, node_priority, node_deadline);
             task_state->set_timer_functions(
                 [impl_ptr = impl_.get()](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
                     return impl_ptr->register_timer(wt, std::move(hs), std::move(act));
@@ -1817,6 +1820,15 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
             }
 
             detail::GraphNodeExecutionContextGuard node_guard(state->id, node_p);
+
+            if (node_entry.deadline.has_value() && node_entry.deadline_disposition == DeadlineDisposition::None) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now <= node_entry.deadline->time_point()) {
+                    node_entry.deadline_disposition = DeadlineDisposition::Met;
+                } else {
+                    node_entry.deadline_disposition = DeadlineDisposition::Missed;
+                }
+            }
 
             try {
                 if (node_entry.invoker) {

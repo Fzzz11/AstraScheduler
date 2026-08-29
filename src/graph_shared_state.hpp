@@ -24,6 +24,8 @@ public:
         NodeId id{};
         std::unique_ptr<TaskInvokerBase> invoker{nullptr};
         Priority priority{Priority::Normal};
+        std::optional<TaskDeadline> deadline{std::nullopt};
+        DeadlineDisposition deadline_disposition{DeadlineDisposition::None};
         std::atomic<std::size_t> remaining_predecessors{0};
         std::atomic<bool> has_failed_required_predecessor{false};
         std::vector<std::pair<NodeId, EdgePolicy>> successors;

@@ -3,7 +3,9 @@
 
 #include <astra/export.hpp>
 
+#include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 
 namespace astra {
@@ -26,11 +28,64 @@ inline void validate_priority(Priority p) {
     }
 }
 
+// 强类型任务截止时间，包装 steady_clock 绝对时刻（R-082 / D-132）。
+class TaskDeadline {
+public:
+    TaskDeadline() noexcept : target_(std::chrono::steady_clock::time_point::min()) {}
+    explicit TaskDeadline(std::chrono::steady_clock::time_point tp) noexcept : target_(tp) {}
+
+    static TaskDeadline at(std::chrono::steady_clock::time_point tp) noexcept {
+        return TaskDeadline(tp);
+    }
+
+    template <typename Rep, typename Period>
+    static TaskDeadline after(const std::chrono::duration<Rep, Period>& dur) noexcept {
+        const auto now = std::chrono::steady_clock::now();
+        using Duration = std::chrono::steady_clock::duration;
+        const auto req_dur = std::chrono::duration_cast<Duration>(dur);
+
+        if (req_dur >= Duration::zero()) {
+            const auto max_add = std::chrono::steady_clock::time_point::max() - now;
+            if (req_dur > max_add) {
+                return TaskDeadline(std::chrono::steady_clock::time_point::max());
+            }
+        } else {
+            const auto min_dur = std::chrono::steady_clock::duration::min();
+            if (now.time_since_epoch() < min_dur - req_dur) {
+                return TaskDeadline(std::chrono::steady_clock::time_point::min());
+            }
+        }
+        return TaskDeadline(now + req_dur);
+    }
+
+    [[nodiscard]] std::chrono::steady_clock::time_point time_point() const noexcept {
+        return target_;
+    }
+
+    friend bool operator==(const TaskDeadline& lhs, const TaskDeadline& rhs) noexcept {
+        return lhs.target_ == rhs.target_;
+    }
+
+    friend auto operator<=>(const TaskDeadline& lhs, const TaskDeadline& rhs) noexcept {
+        return lhs.target_ <=> rhs.target_;
+    }
+
+private:
+    std::chrono::steady_clock::time_point target_;
+};
+
+enum class DeadlineDisposition : std::uint8_t {
+    None = 0,
+    Met = 1,
+    Missed = 2,
+};
+
 // 统一任务配置选项值类型（R-080 / R-082 / D-129 / D-132）。
 struct TaskOptions {
     Priority priority{Priority::Normal};
+    std::optional<TaskDeadline> deadline{};
 
-    friend constexpr bool operator==(const TaskOptions&, const TaskOptions&) = default;
+    friend bool operator==(const TaskOptions&, const TaskOptions&) = default;
 };
 
 }  // namespace astra

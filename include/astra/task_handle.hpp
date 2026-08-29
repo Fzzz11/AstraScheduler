@@ -79,8 +79,11 @@ struct ASTRA_EXPORT TaskExecutionContextGuard {
 
 class ASTRA_EXPORT TaskSharedStateBase {
 public:
-    explicit TaskSharedStateBase(TaskId id, Priority priority = Priority::Normal)
-        : id_(id), priority_(priority) {}
+    explicit TaskSharedStateBase(
+        TaskId id,
+        Priority priority = Priority::Normal,
+        std::optional<TaskDeadline> deadline = std::nullopt)
+        : id_(id), priority_(priority), deadline_(deadline) {}
     virtual ~TaskSharedStateBase() = default;
 
     [[nodiscard]] TaskId id() const noexcept {
@@ -89,6 +92,15 @@ public:
 
     [[nodiscard]] Priority priority() const noexcept {
         return priority_;
+    }
+
+    [[nodiscard]] std::optional<TaskDeadline> deadline() const noexcept {
+        return deadline_;
+    }
+
+    [[nodiscard]] DeadlineDisposition deadline_disposition() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return deadline_disposition_;
     }
 
     [[nodiscard]] std::stop_token stop_token() noexcept {
@@ -177,6 +189,14 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
             state_.store(TaskState::Running, std::memory_order_release);
+            if (deadline_.has_value() && deadline_disposition_ == DeadlineDisposition::None) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now <= deadline_->time_point()) {
+                    deadline_disposition_ = DeadlineDisposition::Met;
+                } else {
+                    deadline_disposition_ = DeadlineDisposition::Missed;
+                }
+            }
             return true;
         }
         return false;
@@ -259,6 +279,8 @@ public:
 protected:
     TaskId id_;
     Priority priority_{Priority::Normal};
+    std::optional<TaskDeadline> deadline_{std::nullopt};
+    DeadlineDisposition deadline_disposition_{DeadlineDisposition::None};
     std::stop_source stop_source_;
     mutable std::mutex mutex_;
     mutable std::condition_variable cv_;
@@ -274,8 +296,11 @@ protected:
 template <typename T>
 class TaskSharedState : public TaskSharedStateBase {
 public:
-    explicit TaskSharedState(TaskId id, Priority priority = Priority::Normal)
-        : TaskSharedStateBase(id, priority) {}
+    explicit TaskSharedState(
+        TaskId id,
+        Priority priority = Priority::Normal,
+        std::optional<TaskDeadline> deadline = std::nullopt)
+        : TaskSharedStateBase(id, priority, deadline) {}
 
     void set_value(T val) {
         std::vector<std::function<void()>> callbacks;
@@ -314,8 +339,11 @@ private:
 template <>
 class TaskSharedState<void> : public TaskSharedStateBase {
 public:
-    explicit TaskSharedState(TaskId id, Priority priority = Priority::Normal)
-        : TaskSharedStateBase(id, priority) {}
+    explicit TaskSharedState(
+        TaskId id,
+        Priority priority = Priority::Normal,
+        std::optional<TaskDeadline> deadline = std::nullopt)
+        : TaskSharedStateBase(id, priority, deadline) {}
 
     void set_value() {
         std::vector<std::function<void()>> callbacks;
@@ -507,6 +535,20 @@ public:
         return state_->priority();
     }
 
+    [[nodiscard]] std::optional<TaskDeadline> deadline() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->deadline();
+    }
+
+    [[nodiscard]] DeadlineDisposition deadline_disposition() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->deadline_disposition();
+    }
+
     [[nodiscard]] TaskState state() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -594,6 +636,20 @@ public:
             throw std::logic_error("operating on empty/moved-from TaskHandle");
         }
         return state_->priority();
+    }
+
+    [[nodiscard]] std::optional<TaskDeadline> deadline() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->deadline();
+    }
+
+    [[nodiscard]] DeadlineDisposition deadline_disposition() const {
+        if (!state_) {
+            throw std::logic_error("operating on empty/moved-from TaskHandle");
+        }
+        return state_->deadline_disposition();
     }
 
     [[nodiscard]] TaskState state() const {
