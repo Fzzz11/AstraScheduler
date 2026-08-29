@@ -540,6 +540,23 @@ target_include_directories(astra_base_priority_test PRIVATE
 target_compile_features(astra_base_priority_test PRIVATE cxx_std_20)
 add_test(NAME astra_base_priority_test COMMAND astra_base_priority_test)
 
+add_executable(astra_priority_bands_test
+  test_priority_bands.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_priority_bands_test PRIVATE Threads::Threads)
+target_include_directories(astra_priority_bands_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_priority_bands_test PRIVATE cxx_std_20)
+add_test(NAME astra_priority_bands_test COMMAND astra_priority_bands_test)
+
 
 
 

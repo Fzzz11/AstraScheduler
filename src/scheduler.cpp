@@ -101,49 +101,130 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     std::atomic<std::uint64_t> work_epoch{0};
     std::vector<std::thread> worker_threads;
 
+    static constexpr std::size_t kPriorityCalendarLength = 15;
+    static constexpr std::array<Priority, kPriorityCalendarLength> kPriorityCalendar = {
+        Priority::Critical, // 0
+        Priority::High,     // 1
+        Priority::Critical, // 2
+        Priority::Normal,   // 3
+        Priority::Critical, // 4
+        Priority::High,     // 5
+        Priority::Critical, // 6
+        Priority::Low,      // 7
+        Priority::Critical, // 8
+        Priority::High,     // 9
+        Priority::Critical, // 10
+        Priority::Normal,   // 11
+        Priority::Critical, // 12
+        Priority::High,     // 13
+        Priority::Critical  // 14
+    };
+
+    static constexpr std::array<Priority, 4> kFallbackPriorityOrder = {
+        Priority::Critical, Priority::High, Priority::Normal, Priority::Low
+    };
+
     struct QueuedTask {
         std::unique_ptr<detail::TaskInvokerBase> invoker;
         bool is_external{false};
     };
-    std::deque<QueuedTask> global_injection_queue;
+    std::array<std::deque<QueuedTask>, 4> global_injection_queues;
+
+    bool pop_global_weighted(std::size_t& calendar_idx, QueuedTask& out) {
+        const Priority target_p = kPriorityCalendar[calendar_idx % kPriorityCalendarLength];
+        auto& target_q = global_injection_queues[static_cast<std::size_t>(target_p)];
+        if (!target_q.empty()) {
+            out = std::move(target_q.front());
+            target_q.pop_front();
+            calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
+            return true;
+        }
+
+        for (Priority p : kFallbackPriorityOrder) {
+            if (p == target_p) continue;
+            auto& q = global_injection_queues[static_cast<std::size_t>(p)];
+            if (!q.empty()) {
+                out = std::move(q.front());
+                q.pop_front();
+                calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool global_queues_empty() const noexcept {
+        return global_injection_queues[0].empty() &&
+               global_injection_queues[1].empty() &&
+               global_injection_queues[2].empty() &&
+               global_injection_queues[3].empty();
+    }
 
     struct LockedLocalDeque {
         mutable std::mutex mutex;
-        std::deque<QueuedTask> tasks;
+        std::array<std::deque<QueuedTask>, 4> bands;
 
-        void push_back(QueuedTask task) {
+        void push_back(QueuedTask task, Priority priority) {
             std::lock_guard<std::mutex> lock(mutex);
-            tasks.push_back(std::move(task));
+            bands[static_cast<std::size_t>(priority)].push_back(std::move(task));
         }
 
-        bool pop_back(QueuedTask& out) {
+        bool pop_back_weighted(std::size_t& calendar_idx, QueuedTask& out) {
             std::lock_guard<std::mutex> lock(mutex);
-            if (tasks.empty()) {
-                return false;
+            const Priority target_p = kPriorityCalendar[calendar_idx % kPriorityCalendarLength];
+            auto& target_q = bands[static_cast<std::size_t>(target_p)];
+            if (!target_q.empty()) {
+                out = std::move(target_q.back());
+                target_q.pop_back();
+                calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
+                return true;
             }
-            out = std::move(tasks.back());
-            tasks.pop_back();
-            return true;
+
+            for (Priority p : kFallbackPriorityOrder) {
+                if (p == target_p) continue;
+                auto& q = bands[static_cast<std::size_t>(p)];
+                if (!q.empty()) {
+                    out = std::move(q.back());
+                    q.pop_back();
+                    calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
+                    return true;
+                }
+            }
+            return false;
         }
 
-        bool steal_front(QueuedTask& out) {
+        bool steal_front_weighted(std::size_t& calendar_idx, QueuedTask& out) {
             std::lock_guard<std::mutex> lock(mutex);
-            if (tasks.empty()) {
-                return false;
+            const Priority target_p = kPriorityCalendar[calendar_idx % kPriorityCalendarLength];
+            auto& target_q = bands[static_cast<std::size_t>(target_p)];
+            if (!target_q.empty()) {
+                out = std::move(target_q.front());
+                target_q.pop_front();
+                calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
+                return true;
             }
-            out = std::move(tasks.front());
-            tasks.pop_front();
-            return true;
+
+            for (Priority p : kFallbackPriorityOrder) {
+                if (p == target_p) continue;
+                auto& q = bands[static_cast<std::size_t>(p)];
+                if (!q.empty()) {
+                    out = std::move(q.front());
+                    q.pop_front();
+                    calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
+                    return true;
+                }
+            }
+            return false;
         }
 
         bool empty() const {
             std::lock_guard<std::mutex> lock(mutex);
-            return tasks.empty();
+            return bands[0].empty() && bands[1].empty() && bands[2].empty() && bands[3].empty();
         }
 
         std::size_t size() const {
             std::lock_guard<std::mutex> lock(mutex);
-            return tasks.size();
+            return bands[0].size() + bands[1].size() + bands[2].size() + bands[3].size();
         }
     };
     std::vector<std::unique_ptr<LockedLocalDeque>> local_deques;
@@ -308,41 +389,45 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     void cancel_all_unstarted_tasks_locked() noexcept {
-        std::deque<QueuedTask> remaining_global;
-        while (!global_injection_queue.empty()) {
-            auto task = std::move(global_injection_queue.front());
-            global_injection_queue.pop_front();
-            if (task.invoker && task.invoker->is_resume_segment()) {
-                // R-075 / D-154: 保留已启动的 resume segment，允许其恢复执行合作取消或自然完成
-                remaining_global.push_back(std::move(task));
-            } else {
-                if (task.invoker) {
-                    task.invoker->cancel_pre_start();
-                }
-                if (task.is_external && external_pending_count > 0) {
-                    --external_pending_count;
-                    slot_cv.notify_one();
+        for (auto& q : global_injection_queues) {
+            std::deque<QueuedTask> remaining_global;
+            while (!q.empty()) {
+                auto task = std::move(q.front());
+                q.pop_front();
+                if (task.invoker && task.invoker->is_resume_segment()) {
+                    // R-075 / D-154: 保留已启动的 resume segment，允许其恢复执行合作取消或自然完成
+                    remaining_global.push_back(std::move(task));
+                } else {
+                    if (task.invoker) {
+                        task.invoker->cancel_pre_start();
+                    }
+                    if (task.is_external && external_pending_count > 0) {
+                        --external_pending_count;
+                        slot_cv.notify_one();
+                    }
                 }
             }
+            q = std::move(remaining_global);
         }
-        global_injection_queue = std::move(remaining_global);
 
         for (auto& d : local_deques) {
             if (d) {
                 std::lock_guard<std::mutex> lk(d->mutex);
-                std::deque<QueuedTask> remaining_local;
-                while (!d->tasks.empty()) {
-                    auto task = std::move(d->tasks.front());
-                    d->tasks.pop_front();
-                    if (task.invoker && task.invoker->is_resume_segment()) {
-                        remaining_local.push_back(std::move(task));
-                    } else {
-                        if (task.invoker) {
-                            task.invoker->cancel_pre_start();
+                for (auto& q : d->bands) {
+                    std::deque<QueuedTask> remaining_local;
+                    while (!q.empty()) {
+                        auto task = std::move(q.front());
+                        q.pop_front();
+                        if (task.invoker && task.invoker->is_resume_segment()) {
+                            remaining_local.push_back(std::move(task));
+                        } else {
+                            if (task.invoker) {
+                                task.invoker->cancel_pre_start();
+                            }
                         }
                     }
+                    q = std::move(remaining_local);
                 }
-                d->tasks = std::move(remaining_local);
             }
         }
     }
@@ -704,14 +789,16 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     void worker_main(std::size_t worker_index);
 
     void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task, bool is_external) {
+        if (!task) return;
+        const Priority p = task->priority();
         if (!is_external && detail::t_current_worker_impl == this &&
             detail::t_current_worker_runtime_id == runtime_id &&
             detail::t_current_worker_index < local_deques.size()) {
-            local_deques[detail::t_current_worker_index]->push_back({std::move(task), false});
+            local_deques[detail::t_current_worker_index]->push_back({std::move(task), false}, p);
         } else {
             {
                 std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                global_injection_queue.push_back({std::move(task), is_external});
+                global_injection_queues[static_cast<std::size_t>(p)].push_back({std::move(task), is_external});
             }
         }
         work_epoch.fetch_add(1, std::memory_order_release);
@@ -921,6 +1008,10 @@ void perform_caller_wait(
         ~DepthGuard() noexcept { --depth; }
     } guard(t_current_helping_depth);
 
+    thread_local std::size_t t_help_local_cal = 0;
+    thread_local std::size_t t_help_global_cal = 0;
+    thread_local std::size_t t_help_steal_cal = 0;
+
     while (!target.is_completed()) {
         if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
             break;
@@ -930,7 +1021,7 @@ void perform_caller_wait(
         bool found_task = false;
 
         if (t_current_worker_index < impl->local_deques.size()) {
-            if (impl->local_deques[t_current_worker_index]->pop_back(task)) {
+            if (impl->local_deques[t_current_worker_index]->pop_back_weighted(t_help_local_cal, task)) {
                 found_task = true;
                 std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
                 ++impl->active_task_count;
@@ -943,9 +1034,7 @@ void perform_caller_wait(
             // R-059 / D-080: Immediate 模式下不得 first-start 新 Task
             if (st.state != SchedulerState::Stopped &&
                 st.shutdown_mode != ShutdownMode::Immediate &&
-                !impl->global_injection_queue.empty()) {
-                task = std::move(impl->global_injection_queue.front());
-                impl->global_injection_queue.pop_front();
+                impl->pop_global_weighted(t_help_global_cal, task)) {
                 ++impl->active_task_count;
                 found_task = true;
                 if (task.is_external && impl->external_pending_count > 0) {
@@ -961,7 +1050,7 @@ void perform_caller_wait(
             static thread_local std::uint64_t s_help_rng = 0x854329415849ULL;
             generate_steal_victims(t_current_worker_index, impl->options.worker_count, impl->options.steal_probe_limit, s_help_rng, victims);
             for (std::size_t v : victims) {
-                if (v < impl->local_deques.size() && impl->local_deques[v]->steal_front(task)) {
+                if (v < impl->local_deques.size() && impl->local_deques[v]->steal_front_weighted(t_help_steal_cal, task)) {
                     found_task = true;
                     std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
                     ++impl->active_task_count;
@@ -1044,6 +1133,10 @@ void perform_graph_caller_wait(
         ~DepthGuard() noexcept { --depth; }
     } guard(t_current_helping_depth);
 
+    thread_local std::size_t t_graph_help_local_cal = 0;
+    thread_local std::size_t t_graph_help_global_cal = 0;
+    thread_local std::size_t t_graph_help_steal_cal = 0;
+
     while (target.run_state.load(std::memory_order_acquire) == GraphRunState::Running) {
         if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
             break;
@@ -1053,7 +1146,7 @@ void perform_graph_caller_wait(
         bool found_task = false;
 
         if (t_current_worker_index < impl->local_deques.size()) {
-            if (impl->local_deques[t_current_worker_index]->pop_back(task)) {
+            if (impl->local_deques[t_current_worker_index]->pop_back_weighted(t_graph_help_local_cal, task)) {
                 found_task = true;
                 std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
                 ++impl->active_task_count;
@@ -1065,9 +1158,7 @@ void perform_graph_caller_wait(
             const auto st = Scheduler::Impl::unpack(impl->packed_status.load(std::memory_order_acquire));
             if (st.state != SchedulerState::Stopped &&
                 st.shutdown_mode != ShutdownMode::Immediate &&
-                !impl->global_injection_queue.empty()) {
-                task = std::move(impl->global_injection_queue.front());
-                impl->global_injection_queue.pop_front();
+                impl->pop_global_weighted(t_graph_help_global_cal, task)) {
                 ++impl->active_task_count;
                 found_task = true;
                 if (task.is_external && impl->external_pending_count > 0) {
@@ -1082,7 +1173,7 @@ void perform_graph_caller_wait(
             static thread_local std::uint64_t s_help_rng = 0x854329415849ULL;
             generate_steal_victims(t_current_worker_index, impl->options.worker_count, impl->options.steal_probe_limit, s_help_rng, victims);
             for (std::size_t v : victims) {
-                if (v < impl->local_deques.size() && impl->local_deques[v]->steal_front(task)) {
+                if (v < impl->local_deques.size() && impl->local_deques[v]->steal_front_weighted(t_graph_help_steal_cal, task)) {
                     found_task = true;
                     std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
                     ++impl->active_task_count;
@@ -1144,7 +1235,11 @@ void run_test_task_on_worker(Scheduler& s, std::function<void()> task) {
 std::size_t global_injection_queue_size(const Scheduler& s) {
     if (s.impl_) {
         std::lock_guard<std::mutex> lock(s.impl_->lifecycle_mutex);
-        return s.impl_->global_injection_queue.size();
+        std::size_t total = 0;
+        for (const auto& q : s.impl_->global_injection_queues) {
+            total += q.size();
+        }
+        return total;
     }
     return 0;
 }
@@ -1200,6 +1295,9 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
     auto& my_local_deque = *local_deques[worker_index];
     std::size_t consecutive_local_count = 0;
+    std::size_t local_calendar_idx = 0;
+    std::size_t global_calendar_idx = 0;
+    std::size_t steal_calendar_idx = 0;
     std::uint64_t rng_state = (static_cast<std::uint64_t>(runtime_id.value()) << 32) ^
                               static_cast<std::uint64_t>(worker_index + 1) ^
                               0x9E3779B97F4A7C15ULL;
@@ -1214,7 +1312,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
         // 1. 优先尝试从本 Worker 的 Local Deque (LIFO) 获取任务（受 local_burst_limit 上限限制）
         if (consecutive_local_count < options.local_burst_limit) {
-            if (my_local_deque.pop_back(task)) {
+            if (my_local_deque.pop_back_weighted(local_calendar_idx, task)) {
                 found_task = true;
                 ++consecutive_local_count;
                 {
@@ -1227,9 +1325,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
         // 2. 若 Local 为空或防饥饿阈值触发，探测 Global Injection Queue (FIFO)
         if (!found_task) {
             std::unique_lock<std::mutex> lock(lifecycle_mutex);
-            if (!global_injection_queue.empty()) {
-                task = std::move(global_injection_queue.front());
-                global_injection_queue.pop_front();
+            if (pop_global_weighted(global_calendar_idx, task)) {
                 ++active_task_count;
                 found_task = true;
                 consecutive_local_count = 0;
@@ -1240,7 +1336,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
             } else if (consecutive_local_count >= options.local_burst_limit) {
                 consecutive_local_count = 0;
                 lock.unlock();
-                if (my_local_deque.pop_back(task)) {
+                if (my_local_deque.pop_back_weighted(local_calendar_idx, task)) {
                     found_task = true;
                     ++consecutive_local_count;
                     std::lock_guard<std::mutex> lk(lifecycle_mutex);
@@ -1253,7 +1349,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
         if (!found_task) {
             detail::generate_steal_victims(worker_index, options.worker_count, options.steal_probe_limit, rng_state, victims);
             for (std::size_t v : victims) {
-                if (v < local_deques.size() && local_deques[v]->steal_front(task)) {
+                if (v < local_deques.size() && local_deques[v]->steal_front_weighted(steal_calendar_idx, task)) {
                     found_task = true;
                     consecutive_local_count = 0;
                     std::lock_guard<std::mutex> lock(lifecycle_mutex);
@@ -1289,7 +1385,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                         if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
                             return true;
                         }
-                        if (!global_injection_queue.empty() || !my_local_deque.empty() || (active_task_count == 0 && !has_timers())) {
+                        if (!global_queues_empty() || !my_local_deque.empty() || (active_task_count == 0 && !has_timers())) {
                             return true;
                         }
                         for (const auto& d : local_deques) {
@@ -1299,7 +1395,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                         if (work_epoch.load(std::memory_order_acquire) != observed_epoch) {
                             return true;
                         }
-                        if (!global_injection_queue.empty() || !my_local_deque.empty()) {
+                        if (!global_queues_empty() || !my_local_deque.empty()) {
                             return true;
                         }
                         for (const auto& d : local_deques) {
@@ -1318,9 +1414,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
 
                 process_due_timers();
 
-                if (!global_injection_queue.empty()) {
-                    task = std::move(global_injection_queue.front());
-                    global_injection_queue.pop_front();
+                if (pop_global_weighted(global_calendar_idx, task)) {
                     ++active_task_count;
                     found_task = true;
                     consecutive_local_count = 0;
@@ -1328,7 +1422,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                         --external_pending_count;
                         slot_cv.notify_one();
                     }
-                } else if (my_local_deque.pop_back(task)) {
+                } else if (my_local_deque.pop_back_weighted(local_calendar_idx, task)) {
                     ++active_task_count;
                     found_task = true;
                     ++consecutive_local_count;
@@ -1337,7 +1431,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                     lock.unlock();
                     detail::generate_steal_victims(worker_index, options.worker_count, options.steal_probe_limit, rng_state, victims);
                     for (std::size_t v : victims) {
-                        if (v < local_deques.size() && local_deques[v]->steal_front(task)) {
+                        if (v < local_deques.size() && local_deques[v]->steal_front_weighted(steal_calendar_idx, task)) {
                             found_task = true;
                             consecutive_local_count = 0;
                             std::lock_guard<std::mutex> lk(lifecycle_mutex);
@@ -1355,11 +1449,14 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                     }
                     if (st.shutdown_mode == ShutdownMode::Immediate) {
                         bool any_resumes = false;
-                        for (const auto& entry : global_injection_queue) {
-                            if (entry.invoker && entry.invoker->is_resume_segment()) {
-                                any_resumes = true;
-                                break;
+                        for (const auto& q : global_injection_queues) {
+                            for (const auto& entry : q) {
+                                if (entry.invoker && entry.invoker->is_resume_segment()) {
+                                    any_resumes = true;
+                                    break;
+                                }
                             }
+                            if (any_resumes) break;
                         }
                         if (!any_resumes && !my_local_deque.empty()) {
                             any_resumes = true;
@@ -1377,7 +1474,7 @@ void Scheduler::Impl::worker_main(std::size_t worker_index) {
                             break;
                         }
                     } else {
-                        bool any_tasks = !global_injection_queue.empty() || !my_local_deque.empty();
+                        bool any_tasks = !global_queues_empty() || !my_local_deque.empty();
                         if (!any_tasks) {
                             for (const auto& d : local_deques) {
                                 if (d && !d->empty()) {

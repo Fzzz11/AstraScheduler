@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-081)
 Milestone: v0.6.0
 Blocked by: AST-027, AST-038
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: Agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Global/Local/steal 各 source 使用固定加权日历产生 service opportunity
 
 ## Acceptance criteria
 
-- [ ] `[R-081]` 饱和基准长期服务比例接近8:4:2:1且每band有进展。
+- [x] `[R-081]` 饱和基准长期服务比例接近8:4:2:1且每band有进展。
 
 ## Out of scope
 
@@ -40,5 +40,5 @@ Global/Local/steal 各 source 使用固定加权日历产生 service opportunity
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-081
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-130, D-131
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: Passed in WSL Linux x86_64 GCC 13.3.0 (`tests/test_priority_bands.cpp`, `ctest` in `build/wsl-gcc-debug` 37/37, `build/wsl-gcc-asan` 37/37, `check_release_gates.py` 15/15).
 
