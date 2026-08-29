@@ -4,7 +4,7 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-091)
 Milestone: v0.8.0
 Blocked by: AST-043, AST-047, AST-050
-Status: in-progress
+Status: done
 Claimed by: agent
 
 ## Rules and decisions
