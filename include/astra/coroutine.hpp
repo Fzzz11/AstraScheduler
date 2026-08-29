@@ -265,6 +265,10 @@ public:
             return;
         }
 
+        // AST-056: 记录 resume 前的 handoff 代际; resume 期间若发生所有权移交
+        // (yield/sleep/await 挂起并 requeue), 帧归 resume invoker 所有,
+        // 本 invoker 不得再读取 done() 或销毁帧。
+        const std::uint64_t handoff_seq_before = state->resume_handoff_seq();
         TaskExecutionContextGuard guard(state->id(), state->priority());
         const auto t_start = std::chrono::steady_clock::now();
         try {
@@ -283,7 +287,9 @@ public:
             state->set_exception(std::current_exception());
         }
 
-        if (coro && coro.done()) {
+        if (state->resume_handoff_seq() != handoff_seq_before) {
+            coro = nullptr;  // 所有权已移交: 绝不触碰帧
+        } else if (coro && coro.done()) {
             coro.destroy();
             coro = nullptr;
         }
@@ -324,6 +330,8 @@ public:
             record_metrics_ready_queue_wait(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(now - pub).count());
         }
         record_metrics_resume_segment(state->id());
+        // AST-056: 与 CoroutineTaskInvokerModel 相同的 handoff 代际裁决。
+        const std::uint64_t handoff_seq_before = state->resume_handoff_seq();
         TaskExecutionContextGuard guard(state->id(), state->priority());
         const auto t_start = std::chrono::steady_clock::now();
 
@@ -343,7 +351,9 @@ public:
             state->set_exception(std::current_exception());
         }
 
-        if (coro && coro.done()) {
+        if (state->resume_handoff_seq() != handoff_seq_before) {
+            coro = nullptr;  // 所有权已移交: 绝不触碰帧
+        } else if (coro && coro.done()) {
             coro.destroy();
             coro = nullptr;
         }
@@ -456,6 +466,8 @@ struct TaskHandleAwaiter {
         source_id = task_state->id();
         armed_at = std::chrono::steady_clock::now();
 
+        // AST-056: 完成回调可能在任意线程立即触发 requeue, 先移交帧所有权。
+        task_state->mark_resume_handoff();
         auto hs = handshake;
         handle.shared_state_internal()->add_completion_callback(
             [hs, post_action, src = source_id, tgt = handle.task_id()]() mutable {
@@ -544,6 +556,8 @@ struct GraphRunAwaiter {
             }
         };
 
+        // AST-056: 完成回调可能在任意线程立即触发 requeue, 先移交帧所有权。
+        task_state->mark_resume_handoff();
         auto hs = handshake;
         run.add_completion_callback_internal([hs, post_action]() mutable {
             hs->trigger(post_action);
@@ -644,6 +658,8 @@ struct YieldAwaiter {
 
         auto rescheduler = task_state->get_rescheduler();
         if (rescheduler) {
+            // AST-056: 帧所有权移交 resume invoker; 挂起方此后不得触碰帧。
+            task_state->mark_resume_handoff();
             task_state->set_ready_published_at(std::chrono::steady_clock::now());
             auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
                 coro, std::move(task_state));
@@ -741,6 +757,8 @@ struct SleepAwaiter {
             }
         };
 
+        // AST-056: 定时器 resume 路径移交帧所有权。
+        task_state->mark_resume_handoff();
         std::uint64_t tid = registrar(wake_time, handshake, on_expiry);
         ctx->timer_id.store(tid, std::memory_order_release);
         if (ctx->cancelled.load(std::memory_order_acquire) || task_state->stop_token().stop_requested()) {

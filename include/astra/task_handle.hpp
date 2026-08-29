@@ -124,6 +124,16 @@ public:
         }
     }
 
+    // AST-056：resume 所有权代际。awaiter 的 await_suspend 在 requeue resume
+    // invoker 前递增；发起 resume 的 invoker 在 resume() 返回后比对代际——
+    // 代际已变化则帧所有权已移交 resume invoker，不得再触碰/销毁帧。
+    void mark_resume_handoff() noexcept {
+        resume_handoff_seq_.fetch_add(1, std::memory_order_acq_rel);
+    }
+    [[nodiscard]] std::uint64_t resume_handoff_seq() const noexcept {
+        return resume_handoff_seq_.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] TaskId id() const noexcept {
         return id_;
     }
@@ -372,6 +382,7 @@ protected:
     std::atomic<TaskState> state_{TaskState::Ready};
     std::exception_ptr exception_{nullptr};
     mutable std::atomic<bool> observed_{false};
+    std::atomic<std::uint64_t> resume_handoff_seq_{0};
     std::vector<std::function<void()>> completion_callbacks_;
     ReschedulerFunc rescheduler_;
     TimerRegistrar timer_registrar_{nullptr};
