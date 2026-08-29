@@ -312,6 +312,7 @@ public:
 
     void execute() override {
         state->transition_to_running();
+        record_metrics_resume_segment(state->id());
         TaskExecutionContextGuard guard(state->id(), state->priority());
 
         try {
@@ -599,6 +600,7 @@ struct YieldAwaiter {
         }
 
         task_state->transition_to_suspended();
+        detail::record_metrics_explicit_yield();
 
         auto rescheduler = task_state->get_rescheduler();
         if (rescheduler) {

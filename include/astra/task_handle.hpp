@@ -78,6 +78,18 @@ struct ASTRA_EXPORT TaskExecutionContextGuard {
     ~TaskExecutionContextGuard() noexcept;
 };
 
+ASTRA_EXPORT void record_metrics_submission_attempt(RuntimeId id) noexcept;
+ASTRA_EXPORT void record_metrics_first_start(TaskId id, std::optional<DeadlineDisposition> dl_disp) noexcept;
+ASTRA_EXPORT void record_metrics_succeeded(TaskId id) noexcept;
+ASTRA_EXPORT void record_metrics_failed(TaskId id) noexcept;
+ASTRA_EXPORT void record_metrics_cancelled_cooperative(TaskId id) noexcept;
+ASTRA_EXPORT void record_metrics_cancelled_before_start(TaskId id, bool has_deadline) noexcept;
+ASTRA_EXPORT void record_metrics_unobserved_failure(TaskId id) noexcept;
+ASTRA_EXPORT void record_metrics_suspended(TaskId id) noexcept;
+ASTRA_EXPORT void record_metrics_resumed(TaskId id) noexcept;
+ASTRA_EXPORT void record_metrics_resume_segment(TaskId id) noexcept;
+ASTRA_EXPORT void record_metrics_explicit_yield() noexcept;
+
 class ASTRA_EXPORT TaskSharedStateBase {
 public:
     explicit TaskSharedStateBase(
@@ -85,7 +97,13 @@ public:
         Priority priority = Priority::Normal,
         std::optional<TaskDeadline> deadline = std::nullopt)
         : id_(id), priority_(priority), deadline_(deadline) {}
-    virtual ~TaskSharedStateBase() = default;
+
+    virtual ~TaskSharedStateBase() {
+        if (state_.load(std::memory_order_relaxed) == TaskState::Failed &&
+            !observed_.load(std::memory_order_relaxed)) {
+            record_metrics_unobserved_failure(id_);
+        }
+    }
 
     [[nodiscard]] TaskId id() const noexcept {
         return id_;
@@ -142,6 +160,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_.load(std::memory_order_relaxed) == TaskState::Running) {
             state_.store(TaskState::Suspended, std::memory_order_release);
+            record_metrics_suspended(id_);
         }
     }
 
@@ -170,13 +189,18 @@ public:
 
     void request_cancel() noexcept {
         std::vector<std::function<void()>> callbacks;
+        bool was_ready = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             stop_source_.request_stop();
             if (state_.load(std::memory_order_relaxed) == TaskState::Ready) {
                 state_.store(TaskState::Cancelled, std::memory_order_release);
                 callbacks = std::move(completion_callbacks_);
+                was_ready = true;
             }
+        }
+        if (was_ready) {
+            record_metrics_cancelled_before_start(id_, deadline_.has_value());
         }
         cv_.notify_all();
         for (auto& cb : callbacks) {
@@ -198,6 +222,7 @@ public:
                     deadline_disposition_ = DeadlineDisposition::Missed;
                 }
             }
+            record_metrics_first_start(id_, deadline_.has_value() ? std::optional{deadline_disposition_} : std::nullopt);
             return true;
         }
         return false;
@@ -224,6 +249,7 @@ public:
             callbacks = std::move(completion_callbacks_);
             rescheduler_ = nullptr;
         }
+        record_metrics_failed(id_);
         cv_.notify_all();
         for (auto& cb : callbacks) {
             if (cb) {
@@ -240,6 +266,7 @@ public:
             callbacks = std::move(completion_callbacks_);
             rescheduler_ = nullptr;
         }
+        record_metrics_cancelled_cooperative(id_);
         cv_.notify_all();
         for (auto& cb : callbacks) {
             if (cb) {
@@ -312,6 +339,7 @@ public:
             callbacks = std::move(completion_callbacks_);
             rescheduler_ = nullptr;
         }
+        record_metrics_succeeded(id_);
         cv_.notify_all();
         for (auto& cb : callbacks) {
             if (cb) {
@@ -354,6 +382,7 @@ public:
             callbacks = std::move(completion_callbacks_);
             rescheduler_ = nullptr;
         }
+        record_metrics_succeeded(id_);
         cv_.notify_all();
         for (auto& cb : callbacks) {
             if (cb) {

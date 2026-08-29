@@ -18,6 +18,9 @@ namespace astra::detail {
 
 extern thread_local GraphRunId t_current_executing_graph_run_id;
 
+ASTRA_EXPORT void record_metrics_graph_node_terminal(RuntimeId id) noexcept;
+ASTRA_EXPORT void record_metrics_graph_run_completed(RuntimeId id) noexcept;
+
 class GraphRunSharedState : public std::enable_shared_from_this<GraphRunSharedState> {
 public:
     struct NodeEntry {
@@ -69,6 +72,7 @@ public:
 
     void mark_node_terminal(std::size_t node_idx, TaskState outcome, std::exception_ptr ex = nullptr) {
         node_entries[node_idx].outcome.store(outcome, std::memory_order_release);
+        record_metrics_graph_node_terminal(id.runtime_id());
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (outcome == TaskState::Succeeded) {
@@ -84,6 +88,7 @@ public:
         }
 
         if (remaining_nodes.fetch_sub(1) == 1) {
+            record_metrics_graph_run_completed(id.runtime_id());
             // 所有 Node 已处于 Terminal 状态（D-112）
             std::vector<std::function<void()>> cbs;
             {

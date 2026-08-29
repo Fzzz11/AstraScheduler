@@ -11,6 +11,7 @@
 #include <astra/error.hpp>
 #include <astra/graph.hpp>
 #include <astra/id.hpp>
+#include <astra/metrics.hpp>
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
 #include <astra/task_handle.hpp>
@@ -74,6 +75,9 @@ public:
 
     // 获取当前 Runtime 冻结的能力快照；空 Handle 抛 std::logic_error（D-162）。
     [[nodiscard]] SchedulerCapabilities capabilities() const;
+
+    // 获取当前 Runtime 的只读指标快照（R-084 / R-085 / D-135 / D-136 / D-137）。
+    [[nodiscard]] RuntimeMetricsSnapshot metrics_snapshot() const;
 
     // 请求平滑停机并同步等待 Drain Work Closure 排空完成（R-006 / R-007 / R-012 / R-019）。
     void shutdown();
@@ -150,6 +154,8 @@ private:
             throw std::logic_error("operating on empty/moved-from Scheduler");
         }
 
+        detail::record_metrics_submission_attempt(runtime_id());
+
         const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
         const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
         const bool can_block = !is_worker; // R-061 / D-085: 仅普通非 Worker 线程可 Block
@@ -216,6 +222,8 @@ private:
             throw std::logic_error("operating on empty/moved-from Scheduler");
         }
 
+        detail::record_metrics_submission_attempt(runtime_id());
+
         const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
 
         Priority resolved_priority = Priority::Normal;
@@ -270,6 +278,8 @@ private:
         if (!task.valid()) {
             throw std::logic_error("cannot spawn empty/invalid Task");
         }
+
+        detail::record_metrics_submission_attempt(runtime_id());
 
         const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
         const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
@@ -339,6 +349,8 @@ private:
             throw std::logic_error("cannot spawn empty/invalid Task");
         }
 
+        detail::record_metrics_submission_attempt(runtime_id());
+
         const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
 
         Priority resolved_priority = Priority::Normal;
@@ -396,8 +408,10 @@ private:
         return SubmissionResult<T>(TaskHandle<T>(std::move(state)));
     }
 
-private:
+public:
     struct ASTRA_NO_EXPORT Impl;
+
+private:
     std::shared_ptr<Impl> impl_;
 
     detail::AdmissionDecision acquire_admission(bool block, bool is_internal) const;

@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-084)
 Milestone: v0.7.0
 Blocked by: AST-004, AST-010, AST-015
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-084]` Metrics启用不改变Task语义，长期counter不wrap倒退。
+- [x] `[R-084]` Metrics启用不改变Task语义，长期counter不wrap倒退。
 
 ## Out of scope
 
@@ -40,5 +40,6 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-084
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-135, D-136, D-151
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tests/test_runtime_metrics.cpp` (40/40 passed in debug and ASan builds), `tools/check_release_gates.py` (15/15 passed).
+
 
