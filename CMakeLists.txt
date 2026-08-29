@@ -124,3 +124,10 @@ if(PROJECT_IS_TOP_LEVEL AND ASTRA_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+# Benchmarks（AST-049 / R-089 / D-141）：与 core 隔离的开发组件，默认 OFF；
+# consumer build 不构建/下载 benchmark 依赖。
+option(ASTRA_BUILD_BENCHMARKS "Build the AstraScheduler benchmark harness and scenarios" OFF)
+if(PROJECT_IS_TOP_LEVEL AND ASTRA_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
+endif()
