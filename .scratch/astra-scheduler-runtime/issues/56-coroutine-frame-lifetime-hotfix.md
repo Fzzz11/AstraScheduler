@@ -1,8 +1,8 @@
 # AST-056 — 修复 Coroutine 帧生命周期竞争（yield/sleep/await handoff 后的二次销毁）
 
-Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
+Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)（blocking AST-050 benchmark corpus 的 hotfix）
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-073, R-074, R-076)
-Milestone: hotfix（blocking AST-050 benchmark corpus）
+Milestone: v0.8.0
 Blocked by: None
 Status: done
 Claimed by: agent

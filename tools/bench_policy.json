@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "metric": "median_ns",
+  "default_effect_pct": 5.0,
+  "cases": {
+    "micro_empty": {"effect_pct": 5.0},
+    "cpu_calibrated": {"effect_pct": 5.0},
+    "imbalanced": {"effect_pct": 5.0},
+    "fork_join": {"effect_pct": 5.0},
+    "dag_chain": {"effect_pct": 5.0},
+    "coroutine_storm": {"effect_pct": 5.0},
+    "timer_storm": {"effect_pct": 5.0},
+    "priority_fairness": {"effect_pct": 5.0},
+    "deadline_edf": {"effect_pct": 5.0}
+  }
+}

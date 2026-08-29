@@ -43,6 +43,11 @@ add_executable(astra_bench_corpus
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
 )
+target_compile_definitions(astra_bench_corpus PRIVATE
+  ASTRA_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+  ASTRA_BENCH_SANITIZER="$<IF:$<BOOL:${ASTRA_ENABLE_SANITIZERS}>,asan,none>"
+  ASTRA_BENCH_CXX_FLAGS="${CMAKE_CXX_FLAGS}"
+)
 target_link_libraries(astra_bench_corpus PRIVATE Threads::Threads)
 target_include_directories(astra_bench_corpus PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -68,6 +73,32 @@ target_include_directories(astra_bench_corpus_selftest PRIVATE
 )
 target_compile_features(astra_bench_corpus_selftest PRIVATE cxx_std_20)
 add_test(NAME astra_bench_corpus_selftest COMMAND astra_bench_corpus_selftest)
+
+add_executable(astra_bench_stats_selftest astra_bench_stats_selftest.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_bench_stats_selftest PRIVATE Threads::Threads)
+target_include_directories(astra_bench_stats_selftest PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+)
+target_compile_features(astra_bench_stats_selftest PRIVATE cxx_std_20)
+target_compile_definitions(astra_bench_stats_selftest PRIVATE
+  ASTRA_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+  ASTRA_BENCH_SANITIZER="$<IF:$<BOOL:${ASTRA_ENABLE_SANITIZERS}>,asan,none>"
+  ASTRA_BENCH_CXX_FLAGS="${CMAKE_CXX_FLAGS}"
+)
+add_test(NAME astra_bench_stats_selftest COMMAND astra_bench_stats_selftest)
+# gate CLI 以仓库相对路径调用 tools/，需以仓库根为工作目录。
+set_tests_properties(astra_bench_stats_selftest PROPERTIES
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 # --- pinned Google Benchmark micro cases（R-089 / D-141）---
 # 固定 v1.8.3：版本更新通过独立 review，不随网络最新版本漂移。
