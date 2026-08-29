@@ -4,8 +4,8 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-087)
 Milestone: v0.7.0
 Blocked by: AST-004, AST-045
-Status: ready-for-agent
-Claimed by: None
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -27,7 +27,7 @@ Claimed by: None
 
 ## Acceptance criteria
 
-- [ ] `[R-087]` 地址复用不造成identity冲突，相同snapshot可确定重放排序。
+- [x] `[R-087]` 地址复用不造成identity冲突，相同snapshot可确定重放排序。
 
 ## Out of scope
 
@@ -40,5 +40,5 @@ Claimed by: None
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-087
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-139, D-153
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification: Pending
+- Verification: `tests/test_trace_event_schema.cpp`（7 用例：layout/version golden、kind→category 映射与 Default Verbose 关闭、decode round-trip、跨 Runtime identity、Graph coroutine GraphRunId+NodeId+TaskId 三重身份、per-producer 单调/sequence 严格递增与确定性全序重放、StealAttempt category gate、无地址/字符串泄漏 static_assert）Debug 44/44 与 ASan 44/44 通过；`tools/check_release_gates.py` 15/15 通过；traceability 校验通过。
 

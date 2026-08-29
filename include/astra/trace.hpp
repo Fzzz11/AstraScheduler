@@ -69,19 +69,128 @@ enum class TraceProducerKind : std::uint8_t {
     Reaper,
 };
 
-// 固定大小 trivially-copyable 事件记录（R-087 的核心 identity 字段；
-// 完整枚举与 Graph/Segment 字段由 AST-046 版本化扩展）。缺失 identity 为零值 sentinel。
+// 固定大小 trivially-copyable 事件记录（R-087 / D-139 / D-153）。
+// 缺失 identity/枚举使用零值 invalid sentinel；不保存 raw pointer、
+// 用户字符串或异常文本。跨 producer 只按 (timestamp_ns, producer_id,
+// local_sequence) 形成导出确定全序，不声称存在全局线性化顺序。
 struct TraceEvent {
     std::uint32_t schema_version{1};
-    std::uint16_t category{0};        // TraceCategory raw bit
-    std::uint16_t kind{0};            // EventKind（R-087 版本化）
-    std::uint64_t timestamp_ns{0};    // capture-relative steady timestamp
+    std::uint16_t category{0};             // TraceCategory raw bit
+    std::uint16_t kind{0};                 // TraceEventKind（显式版本化值）
+    std::uint64_t timestamp_ns{0};         // capture-relative steady timestamp
     std::uint64_t producer_id{0};
-    std::uint64_t local_sequence{0};  // 每 producer 严格递增
-    std::uint64_t runtime_id{0};
-    std::uint64_t worker_id{0};
-    std::uint64_t task_id{0};
+    std::uint64_t local_sequence{0};       // 每 producer buffer 内严格递增
+    std::uint64_t runtime_id{0};           // RuntimeId value
+    std::uint64_t task_id{0};              // TaskId sequence（0 = 无 Task identity）
+    std::uint64_t graph_run_id{0};         // GraphRunId sequence（0 = 非 Graph）
+    std::uint32_t node_id{0};              // graph-local NodeId
+    std::uint32_t worker_id{0};            // 0 = 非 Worker producer
+    std::uint32_t segment_sequence{0};     // coroutine segment 序（0 = 首段前无）
+    std::uint16_t priority{0};             // Priority raw（0 = unspecified）
+    std::uint16_t source{0};               // claim/steal/wait source raw
+    std::uint16_t task_state{0};           // TaskState raw（0 = invalid sentinel）
+    std::uint16_t outcome{0};              // Task outcome raw
+    std::uint16_t reason{0};               // rejection/cancel/wait end reason raw
+    std::uint16_t deadline_disposition{0}; // 0 = none / 1 = met / 2 = missed
 };
+
+// Versioned EventKind 族（R-087 / D-139）：显式数值，新增向后兼容；
+// 重解释旧值必须升级 major schema。
+enum class TraceEventKind : std::uint16_t {
+    Admission = 1,
+    Rejected = 2,
+    TaskReady = 3,
+    TaskClaimed = 4,
+    TaskFirstStart = 5,
+    TaskSegmentEnd = 6,
+    TaskTerminal = 7,
+    CancelRequested = 8,
+    LocalClaim = 9,
+    GlobalClaim = 10,
+    StealSuccess = 11,
+    StealAttempt = 12,        // Verbose：默认关闭
+    WorkerPark = 13,
+    WorkerWake = 14,
+    CoroutineSuspend = 15,
+    CoroutineResume = 16,
+    CoroutineYield = 17,
+    TimerRegister = 18,
+    TimerFire = 19,
+    TimerCancel = 20,
+    GraphAccepted = 21,
+    GraphTerminal = 22,
+    NodeDependencyRelease = 23,
+    DeadlineMet = 24,
+    DeadlineMissed = 25,
+    WaitBegin = 26,
+    WaitEnd = 27,
+    AwaitArmed = 28,
+    AwaitTriggered = 29,
+    AwaitResumed = 30,
+    RuntimeHandoff = 31,
+    RuntimeJoinReady = 32,
+    RuntimeJoined = 33,
+    FinalizationBegin = 34,
+    FinalizationEscalate = 35,
+    CoordinatorExit = 36,
+    FinalizationComplete = 37,
+};
+
+// EventKind → TraceCategory 固定映射（D-158 category 集合）。
+[[nodiscard]] constexpr TraceCategory category_for_kind(TraceEventKind kind) noexcept {
+    switch (kind) {
+        case TraceEventKind::Admission:
+        case TraceEventKind::Rejected:
+        case TraceEventKind::TaskReady:
+        case TraceEventKind::TaskClaimed:
+        case TraceEventKind::TaskFirstStart:
+        case TraceEventKind::TaskSegmentEnd:
+        case TraceEventKind::TaskTerminal:
+        case TraceEventKind::CancelRequested:
+            return TraceCategory::TaskLifecycle;
+        case TraceEventKind::LocalClaim:
+        case TraceEventKind::GlobalClaim:
+        case TraceEventKind::StealSuccess:
+            return TraceCategory::QueueScheduling;
+        case TraceEventKind::StealAttempt:
+            return TraceCategory::StealAttempt;
+        case TraceEventKind::WorkerPark:
+        case TraceEventKind::WorkerWake:
+            return TraceCategory::QueueScheduling;
+        case TraceEventKind::CoroutineSuspend:
+        case TraceEventKind::CoroutineResume:
+        case TraceEventKind::CoroutineYield:
+            return TraceCategory::Coroutine;
+        case TraceEventKind::TimerRegister:
+        case TraceEventKind::TimerFire:
+        case TraceEventKind::TimerCancel:
+            return TraceCategory::Timer;
+        case TraceEventKind::GraphAccepted:
+        case TraceEventKind::GraphTerminal:
+        case TraceEventKind::NodeDependencyRelease:
+            return TraceCategory::Graph;
+        case TraceEventKind::DeadlineMet:
+        case TraceEventKind::DeadlineMissed:
+            return TraceCategory::Deadline;
+        case TraceEventKind::WaitBegin:
+        case TraceEventKind::WaitEnd:
+        case TraceEventKind::AwaitArmed:
+        case TraceEventKind::AwaitTriggered:
+        case TraceEventKind::AwaitResumed:
+            return TraceCategory::WaitAwait;
+        case TraceEventKind::RuntimeHandoff:
+        case TraceEventKind::RuntimeJoinReady:
+        case TraceEventKind::RuntimeJoined:
+            return TraceCategory::RuntimeLifecycle;
+        case TraceEventKind::FinalizationBegin:
+        case TraceEventKind::FinalizationEscalate:
+        case TraceEventKind::CoordinatorExit:
+        case TraceEventKind::FinalizationComplete:
+            return TraceCategory::RuntimeLifecycle;
+    }
+    return TraceCategory::None;
+}
+
 
 // 不可变、可复制的 capture 结果（D-163）：复制只共享同一只读 backing，
 // 可在 Collector 与 Runtime 销毁后继续离线导出。
@@ -115,6 +224,10 @@ private:
     friend class TraceCollector;
     friend class TraceCapture;
 };
+
+// 导出确定全序（D-139）：按 (timestamp_ns, producer_id, local_sequence) 排序。
+// (producer_id, local_sequence) 唯一 ⇒ 全序确定，相同 snapshot 重放结果一致。
+[[nodiscard]] ASTRA_EXPORT std::vector<TraceEvent> trace_ordered_events(const TraceSnapshot& snapshot);
 
 // move-only 活动 capture capability（D-138 / D-163）：显式 stop 提交 Snapshot；
 // 活动析构 noexcept abort 丢弃该代并使 Collector 回到 Stopped。

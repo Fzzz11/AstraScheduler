@@ -697,6 +697,24 @@ target_include_directories(astra_trace_collector_test PRIVATE
 target_compile_features(astra_trace_collector_test PRIVATE cxx_std_20)
 add_test(NAME astra_trace_collector_test COMMAND astra_trace_collector_test)
 
+add_executable(astra_trace_event_schema_test
+  test_trace_event_schema.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+)
+target_link_libraries(astra_trace_event_schema_test PRIVATE Threads::Threads)
+target_include_directories(astra_trace_event_schema_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_BINARY_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_compile_features(astra_trace_event_schema_test PRIVATE cxx_std_20)
+add_test(NAME astra_trace_event_schema_test COMMAND astra_trace_event_schema_test)
+
 
 
 

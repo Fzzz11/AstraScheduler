@@ -2,6 +2,7 @@
 
 #include <astra/trace.hpp>
 
+#include <algorithm>
 #include <deque>
 #include <mutex>
 #include <new>
@@ -397,16 +398,16 @@ TraceSlot* trace_open_reaper_producer(TraceCollector& collector) {
     return impl.open_slot_locked(TraceProducerKind::Reaper, RuntimeId{}, 0, /*singleton=*/true);
 }
 
-void trace_emit(TraceCollector& collector, TraceSlot* slot, TraceCategory category,
-                std::uint16_t kind, RuntimeId runtime_id, std::uint32_t worker_id,
-                std::uint64_t task_id) noexcept {
-    if (!slot) {
-        return;
-    }
+namespace {
+
+// emit 核心路径（R-086）：generation 握手 + category mask + ticket buffer。
+// 无分配、无 I/O、无阻塞；Stopped/disabled/无 buffer 为 no-op 不计 drop。
+void emit_event(TraceCollector& collector, TraceSlot* slot, TraceCategory category,
+                const TraceEvent& event) noexcept {
     auto& impl = CollectorAccess::impl(collector);
     const auto generation = impl.current.load(std::memory_order_acquire);
     if (!generation || !generation->active.load(std::memory_order_acquire)) {
-        return;  // no collector capture / Stopped：fast no-op，不算 drop
+        return;  // no capture / Stopped：fast no-op，不算 drop
     }
     generation->inflight.fetch_add(1, std::memory_order_acq_rel);
 
@@ -433,25 +434,72 @@ void trace_emit(TraceCollector& collector, TraceSlot* slot, TraceCategory catego
         return;
     }
 
-    TraceEvent event{};
-    event.schema_version = 1;
-    event.category = static_cast<std::uint16_t>(static_cast<TraceCategoryRaw>(category) & 0xFFFFu);
-    event.kind = kind;
+    TraceEvent stamped = event;
+    stamped.schema_version = 1;
+    stamped.category = static_cast<std::uint16_t>(static_cast<TraceCategoryRaw>(category) & 0xFFFFu);
     const auto now = std::chrono::steady_clock::now();
-    event.timestamp_ns = now >= generation->origin
-                             ? static_cast<std::uint64_t>(
-                                   std::chrono::duration_cast<std::chrono::nanoseconds>(now - generation->origin).count())
-                             : 0;
-    event.producer_id = slot->producer_id;
-    event.local_sequence = ticket;
-    event.runtime_id = runtime_id.value();
-    event.worker_id = worker_id;
-    event.task_id = task_id;
-    buffer->slots[static_cast<std::size_t>(ticket)] = event;
+    stamped.timestamp_ns = now >= generation->origin
+                               ? static_cast<std::uint64_t>(
+                                     std::chrono::duration_cast<std::chrono::nanoseconds>(now - generation->origin).count())
+                               : 0;
+    stamped.producer_id = slot->producer_id;
+    stamped.local_sequence = ticket;
+    buffer->slots[static_cast<std::size_t>(ticket)] = stamped;
 
     generation->inflight.fetch_sub(1, std::memory_order_acq_rel);
 }
 
+}  // namespace
+
+void trace_emit(TraceCollector& collector, TraceSlot* slot, TraceCategory category,
+                std::uint16_t kind, RuntimeId runtime_id, std::uint32_t worker_id,
+                std::uint64_t task_id) noexcept {
+    if (!slot) {
+        return;
+    }
+    TraceEvent event{};
+    event.kind = kind;
+    event.runtime_id = runtime_id.value();
+    event.worker_id = worker_id;
+    event.task_id = task_id;
+    emit_event(collector, slot, category, event);
+}
+
+void trace_emit_desc(TraceCollector& collector, TraceSlot* slot, const TraceEmitDesc& desc) noexcept {
+    if (!slot) {
+        return;
+    }
+    TraceEvent event{};
+    event.kind = static_cast<std::uint16_t>(desc.kind);
+    event.runtime_id = desc.runtime_id.value();
+    event.task_id = desc.task_sequence;
+    event.graph_run_id = desc.graph_run_sequence;
+    event.node_id = desc.node_id;
+    event.worker_id = desc.worker_id;
+    event.segment_sequence = desc.segment_sequence;
+    event.priority = desc.priority;
+    event.source = desc.source;
+    event.task_state = desc.task_state;
+    event.outcome = desc.outcome;
+    event.reason = desc.reason;
+    event.deadline_disposition = desc.deadline_disposition;
+    emit_event(collector, slot, category_for_kind(desc.kind), event);
+}
+
 }  // namespace detail
+
+std::vector<TraceEvent> trace_ordered_events(const TraceSnapshot& snapshot) {
+    std::vector<TraceEvent> ordered = snapshot.events();
+    std::stable_sort(ordered.begin(), ordered.end(), [](const TraceEvent& a, const TraceEvent& b) {
+        if (a.timestamp_ns != b.timestamp_ns) {
+            return a.timestamp_ns < b.timestamp_ns;
+        }
+        if (a.producer_id != b.producer_id) {
+            return a.producer_id < b.producer_id;
+        }
+        return a.local_sequence < b.local_sequence;
+    });
+    return ordered;
+}
 
 }  // namespace astra

@@ -75,6 +75,26 @@ void trace_emit(TraceCollector& collector, TraceSlot* slot, TraceCategory catego
                 std::uint16_t kind, RuntimeId runtime_id, std::uint32_t worker_id,
                 std::uint64_t task_id) noexcept;
 
+// 完整 identity/枚举 emit（R-087 / D-139）：category 由 kind→category 固定
+// 映射推导，与 TraceOptions mask 一致；缺失字段为零值 sentinel。
+struct ASTRA_NO_EXPORT TraceEmitDesc {
+    TraceEventKind kind{TraceEventKind::Admission};
+    RuntimeId runtime_id{};
+    std::uint64_t task_sequence{0};
+    std::uint64_t graph_run_sequence{0};
+    std::uint32_t node_id{0};
+    std::uint32_t worker_id{0};
+    std::uint32_t segment_sequence{0};
+    std::uint16_t priority{0};
+    std::uint16_t source{0};
+    std::uint16_t task_state{0};
+    std::uint16_t outcome{0};
+    std::uint16_t reason{0};
+    std::uint16_t deadline_disposition{0};
+};
+
+void trace_emit_desc(TraceCollector& collector, TraceSlot* slot, const TraceEmitDesc& desc) noexcept;
+
 }  // namespace detail
 
 }  // namespace astra
