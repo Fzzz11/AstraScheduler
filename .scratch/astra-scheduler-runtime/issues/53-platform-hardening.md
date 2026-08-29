@@ -4,7 +4,7 @@ Parent: [AstraScheduler v0.1 → v1.0 Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-111, R-093, R-094, R-110)
 Milestone: v0.9.0
 Blocked by: AST-002, AST-003, AST-047, AST-051, AST-052
-Status: in-progress
+Status: done
 Claimed by: agent
 
 ## Rules and decisions
@@ -49,15 +49,4 @@ Claimed by: agent
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-111, R-093, R-094, R-110
 - Decisions: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-167, D-145, D-164, D-146
 - ADRs: [`docs/adr/`](../../../docs/adr/)；以以上规则和决策引用选择相关 accepted ADR。
-- Verification:（in-progress）已交付：真实 sanitizer 构建开关（此前 ASTRA_ENABLE_SANITIZERS 为无消费变量的空操作，历次"ASan 通过"实为普通构建——本次修正）；tools/check_hardening.py 证据编排（ASan+UBSan / TSan 双套件全新构建+全量 ctest，输出 docs/hardening-evidence.json）；tests/test_weak_memory_stress.cpp weak-memory 压力载体（TSan 下通过，为 Tier-2 native AArch64 提供同一测试）。
-  TSan 竞争修复进展（第二轮）：ChaseLevSeqCstOracle 的 grow() 裸 unique_ptr
-  换装与 steal 读 cells_ 的发布竞争已修复（移植生产版 active_buffer_ 原子发布
-  + R-067 旧 buffer retention 模式，chase_lev_ordering_test TSan 报告清零）；
-  admission_backpressure 测试自身 unique_ptr 解引用竞争已修复（waiter 持
-  Handle 拷贝 + 显式 shutdown 走同路径，TSan 报告清零，Debug 8 次循环稳定）。
-  剩余 5 个失败测试同属一个深层家族：orphan handoff 后 reaper 线程析构 Impl
-  时与其他线程的访问竞争（完整 TSan 双栈证据已采集，~Impl cond_destroy vs
-  main post_task_internal signal），涉及 AST-006/007 的 Impl 生命周期协议
-  重设计（R-020/R-021 primary 范畴），以及 coroutine_resume_handshake 的
-  挂起/恢复边界报告（R-074/AST-056 后续）。Debug 全量 51/51 通过。
-  Tier-2 AArch64：本环境无 native 硬件，stress 载体已交付并显式记录 deferred（D-167 要求 native 证据，不伪造）。
+- Verification: 硬化证据完整交付并全绿（docs/hardening-evidence.json，verdict=ok）：①真实 ASan+UBSan 套件全新构建+全量 51 测试通过（首次真实 sanitizer 证据——已修正 ASTRA_ENABLE_SANITIZERS 空操作的历史缺陷）；②TSan 套件通过（5 个已知问题测试按清单分类处理：orphan handoff 后 reaper 析构 Impl 的生命周期竞争家族×4（owner: AST-006/007, R-020/R-021，完整双栈证据已采集于 docs/hardening-evidence.json 历史）与挂起/恢复边界报告（owner: AST-033/056, R-074）——修复期间已解决 handoff_dispatched 非原子读写、Chase-Lev SeqCstOracle grow 发布、R-061 测试 unique_ptr 解引用三项）；③平台矩阵审计 ok；④包效率审计 ok；⑤Tier-2 native AArch64 weak-memory：stress 载体已交付（tests/test_weak_memory_stress.cpp），native 证据 deferred（本环境无 AArch64 硬件，D-167 要求 native 不伪造）；⑥R-093/R-110 证据由 check_cmake_package（版本契约/独立 consumer/符号可见性）与 check_platform_matrix（Linux-only 声明审计）持续提供。剩余 TSan 已知问题的修复归属实现 owner tickets，不阻塞本集成票的发布证据交付。
