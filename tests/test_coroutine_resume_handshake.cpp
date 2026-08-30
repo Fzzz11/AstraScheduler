@@ -114,6 +114,7 @@ struct TestEventAwaiter {
 
         // 提交 Suspended 状态
         state->transition_to_suspended();
+        state->mark_resume_handoff();
 
         // Arm 握手
         event_state->handshake.arm(std::move(post_action));

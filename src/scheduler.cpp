@@ -135,6 +135,10 @@ extern thread_local void* t_current_worker_impl;
 extern thread_local std::size_t t_current_worker_index;
 extern thread_local TaskId t_current_executing_task_id;
 extern thread_local std::size_t t_current_helping_depth;
+extern thread_local std::unique_ptr<TaskInvokerBase> t_deferred_self_resume;
+extern thread_local void* t_deferred_self_resume_impl;
+extern thread_local TaskId t_deferred_self_resume_owner;
+void flush_deferred_self_resume();
 }  // namespace detail
 
 struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Scheduler::Impl> {
@@ -485,11 +489,20 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
     ~Impl() {
         unregister_runtime_impl(this);
-        // 非 Worker 正常析构（若尚未经过 Worker handoff 移交且未处于 Stopped 状态）
-        if (!handoff_dispatched.load(std::memory_order_acquire)) {
-            if (get_status().state != SchedulerState::Stopped) {
+        const bool on_own_worker = (detail::t_current_worker_impl == this);
+        if (get_status().state != SchedulerState::Stopped && !on_own_worker) {
+            try {
                 shutdown_sync(ShutdownMode::Graceful);
+            } catch (...) {
             }
+        }
+        if (!on_own_worker) {
+            for (auto& t : worker_threads) {
+                if (t.joinable()) {
+                    t.join();
+                }
+            }
+            worker_threads.clear();
         }
     }
 
@@ -785,6 +798,14 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
     void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task, bool is_external) {
         if (!task) return;
+        // R-074: await_suspend 内发布的 self-resume 必须等当前 segment 返回后再入队，
+        // 否则另一 Worker 可能在协程仍位于 await_suspend 时 resume 同一帧。
+        if (task->is_resume_segment() && detail::t_current_executing_task_id != TaskId{}) {
+            detail::t_deferred_self_resume = std::move(task);
+            detail::t_deferred_self_resume_impl = static_cast<void*>(this);
+            detail::t_deferred_self_resume_owner = detail::t_current_executing_task_id;
+            return;
+        }
         const Priority p = task->priority();
         const auto dl = task->deadline();
         const bool is_resume = task->is_resume_segment();
@@ -839,8 +860,11 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     static void worker_thread_entry(void* arg, std::size_t index) noexcept {
-        if (arg != nullptr) {
-            static_cast<Impl*>(arg)->worker_main(index);
+        try {
+            if (arg != nullptr) {
+                static_cast<Impl*>(arg)->worker_main(index);
+            }
+        } catch (...) {
         }
     }
 };
@@ -878,6 +902,23 @@ thread_local TaskId t_current_executing_task_id{};
 thread_local Priority t_current_executing_task_priority{Priority::Normal};
 thread_local GraphRunId t_current_executing_graph_run_id{};
 thread_local std::size_t t_current_helping_depth{0};
+
+thread_local std::unique_ptr<TaskInvokerBase> t_deferred_self_resume;
+thread_local void* t_deferred_self_resume_impl{nullptr};
+thread_local TaskId t_deferred_self_resume_owner{};
+
+void flush_deferred_self_resume() {
+    if (!t_deferred_self_resume || t_deferred_self_resume_owner == t_current_executing_task_id) {
+        return;
+    }
+    auto* impl = static_cast<Scheduler::Impl*>(t_deferred_self_resume_impl);
+    auto inv = std::move(t_deferred_self_resume);
+    t_deferred_self_resume_impl = nullptr;
+    t_deferred_self_resume_owner = {};
+    if (impl) {
+        impl->post_task_internal(std::move(inv), false);
+    }
+}
 
 void record_metrics_submission_attempt(RuntimeId id) noexcept {
     auto* impl = find_runtime_impl(id);
@@ -1209,6 +1250,7 @@ TaskExecutionContextGuard::TaskExecutionContextGuard(TaskId new_id, Priority new
 TaskExecutionContextGuard::~TaskExecutionContextGuard() noexcept {
     t_current_executing_task_id = prev_id;
     t_current_executing_task_priority = prev_priority;
+    flush_deferred_self_resume();
 }
 
 TaskId current_executing_task_id() noexcept {
@@ -2034,6 +2076,30 @@ void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invok
         throw std::logic_error("operating on empty/moved-from Scheduler");
     }
     impl_->post_task_internal(std::move(invoker), is_external);
+}
+
+void detail::post_task_on_impl(void* impl, std::unique_ptr<TaskInvokerBase> invoker, bool is_external) {
+    if (impl && invoker) {
+        static_cast<Scheduler::Impl*>(impl)->post_task_internal(std::move(invoker), is_external);
+    }
+}
+
+std::uint64_t detail::register_timer_on_impl(
+    void* impl,
+    std::chrono::steady_clock::time_point wake_time,
+    std::shared_ptr<AwaitHandshake> handshake,
+    std::function<void()> resume_action) {
+    if (!impl) {
+        return 0;
+    }
+    return static_cast<Scheduler::Impl*>(impl)->register_timer(
+        wake_time, std::move(handshake), std::move(resume_action));
+}
+
+void detail::cancel_timer_on_impl(void* impl, std::uint64_t timer_id) {
+    if (impl) {
+        static_cast<Scheduler::Impl*>(impl)->cancel_timer(timer_id);
+    }
 }
 
 std::uint64_t Scheduler::register_timer(std::chrono::steady_clock::time_point wake_time,

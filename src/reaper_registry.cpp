@@ -500,9 +500,38 @@ astra::ProcessMetricsSnapshot ReaperRegistry::process_snapshot() const noexcept 
 }
 
 void ReaperRegistry::reset_for_testing() noexcept {
+    std::vector<std::function<void()>> graceful;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& s : slots_) {
+            if (s && s->request_graceful_fn) {
+                graceful.push_back(s->request_graceful_fn);
+            }
+        }
+        coordinator_cv_.notify_all();
+    }
+    for (const auto& cb : graceful) {
+        try {
+            cb();
+        } catch (...) {
+        }
+    }
+
+    std::vector<std::function<void()>> cleanups;
+    std::vector<std::shared_ptr<void>> retained;
     std::unique_ptr<std::thread> thread_to_join;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& s : slots_) {
+            if (s) {
+                if (s->cleanup_fn) {
+                    cleanups.push_back(std::move(s->cleanup_fn));
+                }
+                if (s->retained_state) {
+                    retained.push_back(std::move(s->retained_state));
+                }
+            }
+        }
         state_ = RegistrationState::Open;
         registered_ids_.clear();
         inject_reservation_fail_ = false;
@@ -524,6 +553,13 @@ void ReaperRegistry::reset_for_testing() noexcept {
         finalization_cv_.notify_all();
         thread_to_join = std::move(coordinator_thread_);
     }
+    for (auto& cleanup : cleanups) {
+        try {
+            cleanup();
+        } catch (...) {
+        }
+    }
+    retained.clear();
     if (thread_to_join && thread_to_join->joinable()) {
         thread_to_join->join();
     }

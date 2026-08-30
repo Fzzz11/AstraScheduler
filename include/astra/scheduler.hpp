@@ -58,6 +58,7 @@
 #include <astra/status.hpp>
 #include <astra/task_handle.hpp>
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -84,6 +85,17 @@ enum class AdmissionDecision : std::uint8_t {
 };
 
 ASTRA_EXPORT RuntimeId current_worker_runtime_id() noexcept;
+
+ASTRA_EXPORT void post_task_on_impl(
+    void* impl,
+    std::unique_ptr<TaskInvokerBase> invoker,
+    bool is_external);
+ASTRA_EXPORT std::uint64_t register_timer_on_impl(
+    void* impl,
+    std::chrono::steady_clock::time_point wake_time,
+    std::shared_ptr<AwaitHandshake> handshake,
+    std::function<void()> resume_action);
+ASTRA_EXPORT void cancel_timer_on_impl(void* impl, std::uint64_t timer_id);
 }
 
 // 调度器共享 Handle：副本关联同一 Runtime；最后一份销毁时请求 Graceful 关停。
@@ -370,16 +382,17 @@ private:
         try {
             const TaskId tid = allocate_task_id();
             state = std::make_shared<typename TaskHandle<T>::ResultCell>(tid, resolved_priority, resolved_deadline);
-            auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
-                sched.post_task_invoker(std::move(inv), false /* is_external */);
+            void* const impl = impl_.get();
+            auto rescheduler = [impl](std::unique_ptr<detail::TaskInvokerBase> inv) {
+                detail::post_task_on_impl(impl, std::move(inv), false);
             };
             state->set_rescheduler(std::move(rescheduler));
             state->set_timer_functions(
-                [sched = *this](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
-                    return sched.register_timer(wt, std::move(hs), std::move(act));
+                [impl](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
+                    return detail::register_timer_on_impl(impl, wt, std::move(hs), std::move(act));
                 },
-                [sched = *this](std::uint64_t tid) {
-                    sched.cancel_timer(tid);
+                [impl](std::uint64_t tid) {
+                    detail::cancel_timer_on_impl(impl, tid);
                 }
             );
             task.handle().promise().shared_state = state;
@@ -440,16 +453,17 @@ private:
         try {
             const TaskId tid = allocate_task_id();
             state = std::make_shared<typename TaskHandle<T>::ResultCell>(tid, resolved_priority, resolved_deadline);
-            auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
-                sched.post_task_invoker(std::move(inv), false /* is_external */);
+            void* const impl = impl_.get();
+            auto rescheduler = [impl](std::unique_ptr<detail::TaskInvokerBase> inv) {
+                detail::post_task_on_impl(impl, std::move(inv), false);
             };
             state->set_rescheduler(std::move(rescheduler));
             state->set_timer_functions(
-                [sched = *this](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
-                    return sched.register_timer(wt, std::move(hs), std::move(act));
+                [impl](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
+                    return detail::register_timer_on_impl(impl, wt, std::move(hs), std::move(act));
                 },
-                [sched = *this](std::uint64_t tid) {
-                    sched.cancel_timer(tid);
+                [impl](std::uint64_t tid) {
+                    detail::cancel_timer_on_impl(impl, tid);
                 }
             );
             task.handle().promise().shared_state = state;
