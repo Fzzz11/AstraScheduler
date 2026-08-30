@@ -61,7 +61,7 @@ namespace astra {
 
 class Scheduler;
 
-// 检查并抛出取消异常辅助函数（R-054 / D-060）。
+// 若 token 已请求停止则抛 task_cancelled，否则立即返回。供任务体协作取消轮询（R-054）。
 inline void throw_if_stop_requested(std::stop_token token) {
     if (token.stop_requested()) {
         throw task_cancelled{};
@@ -488,7 +488,8 @@ std::unique_ptr<TaskInvokerBase> make_task_invoker(
 
 }  // namespace detail
 
-// TaskHandle<T> — 共享任务结果句柄（R-048 / R-049 / R-050 / R-051 / R-052 / R-053 / R-054 / R-055 / R-056 / R-057 / R-058 / D-041 / D-042 / D-076）。
+// 任务结果的共享句柄。可复制；最后一份销毁时，若失败从未被 get/await 观察，
+// 记一次 unobserved_failures（不崩溃、不吞异常）（R-048 / R-060）。
 template <typename T>
 class TaskHandle {
 public:
@@ -504,10 +505,12 @@ public:
     TaskHandle(TaskHandle&&) noexcept = default;
     TaskHandle& operator=(TaskHandle&&) noexcept = default;
 
+    // 是否关联共享状态。空/moved-from 返回 false，不抛。
     [[nodiscard]] bool valid() const noexcept {
         return static_cast<bool>(state_);
     }
 
+    // 任务逻辑 ID。空句柄抛 logic_error。
     [[nodiscard]] TaskId task_id() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -515,6 +518,7 @@ public:
         return state_->id();
     }
 
+    // 提交时确定的优先级。空句柄抛 logic_error。
     [[nodiscard]] Priority priority() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -522,6 +526,7 @@ public:
         return state_->priority();
     }
 
+    // 提交时的可选 deadline。空句柄抛 logic_error。
     [[nodiscard]] std::optional<TaskDeadline> deadline() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -529,6 +534,7 @@ public:
         return state_->deadline();
     }
 
+    // 首次 start 时记录：无 deadline / Met / Missed。空句柄抛 logic_error。
     [[nodiscard]] DeadlineDisposition deadline_disposition() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -536,6 +542,7 @@ public:
         return state_->deadline_disposition();
     }
 
+    // 当前生命周期状态。空句柄抛 logic_error。
     [[nodiscard]] TaskState state() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -543,8 +550,10 @@ public:
         return state_->state();
     }
 
-    // R-051 / D-076: 仅允许左值 Handle 显式调用（get() const &）返回 const T&
-    // 临时对象 / rvalue 在编译期被 delete 拒绝以防止悬垂引用
+    // 阻塞直到终态后返回 const T&。失败重抛任务异常；取消抛 task_cancelled。
+    // 空句柄抛 logic_error。仅左值可调用（rvalue 被 delete，避免悬垂引用）。
+    // Worker 等待同 Runtime 任务时会 helping；直接等待自己正在执行的任务抛 logic_error。
+    // helping 超过 max_helping_depth 抛 helping_depth_exceeded（R-051 / R-059）。
     const T& get() const & {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -554,7 +563,7 @@ public:
 
     void get() const && = delete;
 
-    // R-055 / D-061: 同步等待完成
+    // 阻塞直到终态，不取结果、不重抛。空句柄 / 自等待 / helping 规则同 get()（R-055）。
     void wait() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -562,7 +571,7 @@ public:
         state_->wait();
     }
 
-    // R-056 / D-063: 有界等待
+    // 有界等待。到期返回 TimedOut，任务继续跑，不取消。空句柄抛 logic_error（R-056）。
     template <typename Rep, typename Period>
     [[nodiscard]] WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
         if (!state_) {
@@ -571,14 +580,15 @@ public:
         return state_->wait_for(duration);
     }
 
-    // R-053 / R-057: 请求取消（空 Handle 为 no-op）
+    // 协作式取消：置 stop_token。空句柄 no-op。不强制杀死正在运行的任务（R-053）。
     void request_cancel() const noexcept {
         if (state_) {
             state_->request_cancel();
         }
     }
 
-    // R-076 / D-120: co_await 左值 TaskHandle（rvalue deleted）
+    // 在 Astra 协程内等待本任务。仅左值；空句柄抛 logic_error。
+    // 目标取消则 await 点抛 task_cancelled（R-076）。
     [[nodiscard]] detail::TaskHandleAwaiter<T> operator co_await() const &;
     void operator co_await() const && = delete;
     void operator co_await() && = delete;
@@ -597,7 +607,7 @@ private:
     std::shared_ptr<detail::TaskSharedState<T>> state_;
 };
 
-// TaskHandle<void> 特化（R-048 / R-049 / R-050 / R-051 / R-052 / R-053 / R-054 / R-055 / R-056 / R-057 / R-058 / D-075 / D-076）。
+// void 特化：方法契约与 TaskHandle<T> 相同。get() 不返回值；失败仍重抛，取消抛 task_cancelled。
 template <>
 class TaskHandle<void> {
 public:
@@ -610,10 +620,12 @@ public:
     TaskHandle(TaskHandle&&) noexcept = default;
     TaskHandle& operator=(TaskHandle&&) noexcept = default;
 
+    // 是否关联共享状态。空/moved-from 返回 false，不抛。
     [[nodiscard]] bool valid() const noexcept {
         return static_cast<bool>(state_);
     }
 
+    // 任务逻辑 ID。空句柄抛 logic_error。
     [[nodiscard]] TaskId task_id() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -621,6 +633,7 @@ public:
         return state_->id();
     }
 
+    // 提交时确定的优先级。空句柄抛 logic_error。
     [[nodiscard]] Priority priority() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -628,6 +641,7 @@ public:
         return state_->priority();
     }
 
+    // 提交时的可选 deadline。空句柄抛 logic_error。
     [[nodiscard]] std::optional<TaskDeadline> deadline() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -635,6 +649,7 @@ public:
         return state_->deadline();
     }
 
+    // 首次 start 时记录：无 deadline / Met / Missed。空句柄抛 logic_error。
     [[nodiscard]] DeadlineDisposition deadline_disposition() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -642,6 +657,7 @@ public:
         return state_->deadline_disposition();
     }
 
+    // 当前生命周期状态。空句柄抛 logic_error。
     [[nodiscard]] TaskState state() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -649,7 +665,8 @@ public:
         return state_->state();
     }
 
-    // R-051 / D-076: 仅允许左值 Handle 显式调用（get() const &）返回 void
+    // 阻塞直到终态。失败重抛任务异常；取消抛 task_cancelled。
+    // 空句柄抛 logic_error。仅左值可调用。helping / 自等待规则同 TaskHandle<T>::get()（R-051）。
     void get() const & {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -659,7 +676,7 @@ public:
 
     void get() const && = delete;
 
-    // R-055 / D-061: 同步等待完成
+    // 阻塞直到终态，不取结果、不重抛。空句柄 / 自等待 / helping 规则同 get()（R-055）。
     void wait() const {
         if (!state_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -667,7 +684,7 @@ public:
         state_->wait();
     }
 
-    // R-056 / D-063: 有界等待
+    // 有界等待。到期返回 TimedOut，任务继续跑，不取消。空句柄抛 logic_error（R-056）。
     template <typename Rep, typename Period>
     [[nodiscard]] WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
         if (!state_) {
@@ -676,14 +693,15 @@ public:
         return state_->wait_for(duration);
     }
 
-    // R-053 / R-057: 请求取消（空 Handle 为 no-op）
+    // 协作式取消：置 stop_token。空句柄 no-op。不强制杀死正在运行的任务（R-053）。
     void request_cancel() const noexcept {
         if (state_) {
             state_->request_cancel();
         }
     }
 
-    // R-076 / D-120: co_await 左值 TaskHandle<void>（rvalue deleted）
+    // 在 Astra 协程内等待本任务。仅左值；空句柄抛 logic_error。
+    // 目标取消则 await 点抛 task_cancelled（R-076）。
     [[nodiscard]] detail::TaskHandleAwaiter<void> operator co_await() const &;
     void operator co_await() const && = delete;
     void operator co_await() && = delete;
@@ -702,7 +720,8 @@ private:
     std::shared_ptr<detail::TaskSharedState<void>> state_;
 };
 
-// 任务提交结果类型（R-062 / D-088）。
+// try_submit / try_spawn 的返回：持有 TaskHandle 表示成功，否则为
+// SubmissionError（Stopping / Stopped / CapacityExhausted），不抛（R-062 / D-088）。
 template <typename T>
 using SubmissionResult = std::variant<TaskHandle<T>, SubmissionError>;
 

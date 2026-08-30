@@ -112,15 +112,15 @@ inline std::unique_ptr<TaskInvokerBase> make_graph_node_invoker(
 }
 }  // namespace detail
 
-// 边触发策略（R-071 / D-109）。
+// 前置节点到达终态后是否投放后继（R-071 / D-109）。
 enum class EdgePolicy : std::uint8_t {
-    // 仅在前置节点成功完成时触发后继节点
+    // 仅前置 Succeeded 时投放后继；失败/取消则后继被取消。
     RequireSuccess = 1,
-    // 无论前置节点成功、失败还是取消，均触发后继节点
+    // 前置到达任一终态都投放后继。
     AfterCompletion = 2,
 };
 
-// 任务图边定义
+// 一条有向依赖边。from/to 必须是同一 TaskGraph 内的 NodeId。
 struct GraphEdge {
     NodeId from{};
     NodeId to{};
@@ -134,6 +134,7 @@ struct GraphEdge {
 // FrozenTaskGraph (R-069 / D-104)
 // 不可变、单次执行的已校验任务图快照
 // -----------------------------------------------------------------------------
+// 已校验、不可变、仅可移动的任务图。由 TaskGraph::freeze() 产出，交给 Scheduler::run() 消耗。
 class ASTRA_EXPORT FrozenTaskGraph {
 private:
     struct NodeData {
@@ -152,6 +153,7 @@ public:
     FrozenTaskGraph(const FrozenTaskGraph&) = delete;
     FrozenTaskGraph& operator=(const FrozenTaskGraph&) = delete;
 
+    // 节点数。默认构造为空图。
     [[nodiscard]] std::size_t node_count() const noexcept {
         return nodes_.size();
     }
@@ -164,6 +166,7 @@ public:
         return nodes_.empty();
     }
 
+    // 已校验边列表。不包含节点可调用对象。
     [[nodiscard]] const std::vector<GraphEdge>& edges() const noexcept {
         return edges_;
     }
@@ -189,6 +192,7 @@ private:
 // TaskGraph (R-069 / D-104 / D-105 / D-108 / D-161)
 // 任务图构建器，支持移动语义的 Callable 与拓扑验证
 // -----------------------------------------------------------------------------
+// 可变构建器。仅可移动；freeze() 消耗 *this 并校验结构。
 class ASTRA_EXPORT TaskGraph {
 public:
     TaskGraph() = default;
@@ -200,8 +204,9 @@ public:
     TaskGraph(const TaskGraph&) = delete;
     TaskGraph& operator=(const TaskGraph&) = delete;
 
-    // 添加任务节点，返回 graph-local 强类型 NodeId（D-108 / D-161）
-    // 约束 Callable 返回类型必须恰好为 void（R-071 / D-108）
+    // 追加节点，返回 graph-local NodeId（从 1 起按插入顺序）。
+    // Callable 须为 f() 或 f(stop_token)，返回类型必须是 void。
+    // 非法 Priority 抛 invalid_argument（R-071 / D-108 / D-161）。
     template <typename F>
         requires (!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
     NodeId emplace(F&& f) {
@@ -240,11 +245,11 @@ public:
         return id;
     }
 
-    // R-077 / R-080 / D-123 / D-129: 显式添加 Task<void> 协程节点
+    // 追加 Task<void> 协程节点并消耗 Task。空/无效 Task 抛 logic_error（R-077）。
     NodeId emplace_coroutine(Task<void>&& task);
     NodeId emplace_coroutine(TaskOptions options, Task<void>&& task);
 
-    // 添加有向边 (from -> to)
+    // 记录有向边。结构错误（外节点/自环/重复/环）在 freeze() 时抛 graph_validation_error。
     void add_edge(NodeId from, NodeId to, EdgePolicy policy = EdgePolicy::RequireSuccess) {
         edges_.push_back(GraphEdge{from, to, policy});
     }
@@ -261,8 +266,8 @@ public:
         return nodes_.empty();
     }
 
-    // Consuming freeze (R-069 / D-104 / D-105):
-    // 校验节点有效性、自环、重复边与环路，产生不可变 FrozenTaskGraph
+    // 消耗构建器，校验外节点/自环/重复边/环后返回不可变图。
+    // 失败抛 graph_validation_error；环路时 cycle_witness() 给出一条环（R-069）。
     FrozenTaskGraph freeze() &&;
 
 private:
@@ -270,7 +275,7 @@ private:
     std::vector<GraphEdge> edges_;
 };
 
-// 任务图运行状态（D-112）。
+// 一次图执行的聚合终态。任一节点失败则为 Failed；全部取消则为 Cancelled（D-112）。
 enum class GraphRunState : std::uint8_t {
     Running = 1,
     Succeeded = 2,
@@ -278,12 +283,13 @@ enum class GraphRunState : std::uint8_t {
     Cancelled = 4,
 };
 
-// 任务图等待结果（D-113）。
+// GraphRun::wait_for 的返回。TimedOut 不取消图（D-113）。
 enum class GraphWaitResult : std::uint8_t {
     Completed = 1,
     TimedOut = 2,
 };
 
+// 一次 GraphRun 的终态报告。failed_node_exceptions 仅含失败节点，不含取消节点。
 class GraphReport {
 public:
     GraphRunId run_id{};
@@ -304,6 +310,7 @@ ASTRA_EXPORT GraphRunId current_executing_graph_run_id() noexcept;
 // GraphRun (R-070 / R-072 / D-104 / D-111 / D-112 / D-113 / D-152)
 // 任务图执行实例 Handle，支持多副本共享观察与状态等待
 // -----------------------------------------------------------------------------
+// 一次图执行的共享观察句柄。可复制；空/moved-from 的 valid() 为 false。
 class ASTRA_EXPORT GraphRun {
 public:
     GraphRun() noexcept = default;
@@ -314,6 +321,7 @@ public:
     GraphRun(GraphRun&&) noexcept = default;
     GraphRun& operator=(GraphRun&&) noexcept = default;
 
+    // 是否关联一次执行。空句柄返回 false，不抛。
     [[nodiscard]] bool valid() const noexcept {
         return state_ != nullptr;
     }
@@ -322,25 +330,31 @@ public:
         return valid();
     }
 
+    // 下列查询在空句柄上抛 logic_error。
     [[nodiscard]] GraphRunId id() const;
     [[nodiscard]] std::size_t node_count() const;
     [[nodiscard]] GraphRunState state() const;
     [[nodiscard]] bool is_completed() const;
 
+    // 阻塞直到图到达终态。空句柄抛 logic_error。
+    // 节点执行中等待本 GraphRun 抛 logic_error。Worker 可 helping（R-072）。
     void wait() const;
     [[nodiscard]] GraphWaitResult wait_for(std::chrono::nanoseconds timeout) const;
 
+    // 有界等待。到期返回 TimedOut，图继续跑。空句柄 / 自等待规则同 wait()。
     template <typename Rep, typename Period>
     [[nodiscard]] GraphWaitResult wait_for(const std::chrono::duration<Rep, Period>& timeout) const {
         return wait_for(std::chrono::duration_cast<std::chrono::nanoseconds>(timeout));
     }
 
+    // 先 wait() 再返回报告。仅左值；rvalue 被 delete。空句柄抛 logic_error。
     [[nodiscard]] const GraphReport& get_report() const &;
     const GraphReport& get_report() const && = delete;
 
+    // 请求取消未开始节点。空句柄 no-op。已运行节点靠自身响应取消。
     void request_cancel() const noexcept;
 
-    // R-076 / D-121: co_await 左值 GraphRun（rvalue deleted）
+    // 在 Astra 协程内等待本图。仅左值；空句柄抛 logic_error（R-076）。
     [[nodiscard]] detail::GraphRunAwaiter operator co_await() const &;
     void operator co_await() const && = delete;
     void operator co_await() && = delete;

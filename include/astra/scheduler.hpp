@@ -86,49 +86,60 @@ enum class AdmissionDecision : std::uint8_t {
 ASTRA_EXPORT RuntimeId current_worker_runtime_id() noexcept;
 }
 
-// 调度器共享 Handle（D-155）。
+// 调度器共享 Handle：副本关联同一 Runtime；最后一份销毁时请求 Graceful 关停。
 class ASTRA_EXPORT Scheduler {
 public:
-    // 同步验证配置并初始化 Runtime（D-155 / D-157）。
+    // 同步校验 options 并启动 Runtime。
+    // worker_count 等为 0 或未知枚举抛 invalid_argument。
+    // 进程已 begin_finalization 后抛 scheduler_creation_rejected（R-098 / D-155 / D-157）。
     explicit Scheduler(SchedulerOptions options = {});
 
+    // 非最后一份副本立即返回。最后一份：非 Worker 线程同步 Graceful 关停；
+    // 同 Runtime 的 Worker 走异步 Reaper handoff。析构不抛异常。
     ~Scheduler() noexcept;
 
-    // 共享 Handle 语义：复制关联同一 Runtime State（D-155）。
+    // 复制后共享同一 Runtime。
     Scheduler(const Scheduler&);
     Scheduler& operator=(const Scheduler&);
 
-    // 移动构造与移动赋值：使源 Handle 为空（D-155）。
+    // 移动后源 Handle 变为空（valid()==false）。
     Scheduler(Scheduler&&) noexcept;
     Scheduler& operator=(Scheduler&&) noexcept;
 
-    // 查询当前 Handle 是否关联有效 Runtime State（D-155）。
-    // [[nodiscard]] 告诉编译器这个函数的返回值不应该被忽略，帮助开发者避免潜在的错误。
+    // 是否关联 Runtime。空/moved-from 返回 false，不抛。
     [[nodiscard]] bool valid() const noexcept;
 
-    // 获取当前 Runtime 的强类型唯一标识；空 Handle 返回默认无效 ID（D-153 / D-155）。
+    // 本 Runtime 的逻辑 ID。空 Handle 返回无效 RuntimeId{0}，不抛。
     [[nodiscard]] RuntimeId runtime_id() const noexcept;
 
-    // 获取一次线性化、非阻塞、无副作用的状态快照；空 Handle 抛 std::logic_error（D-160）。
+    // 非阻塞生命周期快照（state + shutdown_mode）。空 Handle 抛 logic_error（D-160）。
     [[nodiscard]] SchedulerStatus status() const;
 
-    // 获取当前 Runtime 冻结的能力快照；空 Handle 抛 std::logic_error（D-162）。
+    // 启动时冻结的 Local Deque 能力。空 Handle 抛 logic_error（D-162）。
     [[nodiscard]] SchedulerCapabilities capabilities() const;
 
-    // 获取当前 Runtime 的只读指标快照（R-084 / R-085 / D-135 / D-136 / D-137）。
+    // 只读指标快照，不改变调度状态。空 Handle 抛 logic_error（R-084 / R-085）。
     [[nodiscard]] RuntimeMetricsSnapshot metrics_snapshot() const;
 
-    // 请求平滑停机并同步等待 Drain Work Closure 排空完成（R-006 / R-007 / R-012 / R-019）。
+    // Graceful 关停：拒绝新提交，等待已接纳工作排空后返回。
+    // 空 Handle 抛 logic_error；已 Stopped 立即成功且无副作用。
+    // 同 Runtime 的 Worker 调用抛 logic_error（禁止自关停）（R-012 / R-019 / R-108）。
     void shutdown();
 
-    // 请求立即停机（R-016 / R-019）。
+    // Immediate 关停：放弃未开始任务并尽快打断。空 Handle / 已 Stopped / 自关停规则同 shutdown()（R-016 / R-019）。
     void shutdown_now();
 
-    // 提交单次执行任务图（R-070 / R-080 / D-104 / D-106 / D-107 / D-129）。
+    // 提交已 freeze 的任务图并消耗 FrozenTaskGraph。
+    // 空 Handle 抛 logic_error；admission 失败抛 submission_rejected。
+    // Worker 线程不得按 Block 策略阻塞。可用 TaskOptions 覆盖图级 priority/deadline（R-070 / R-061）。
     GraphRun run(FrozenTaskGraph&& graph);
     GraphRun run(TaskOptions options, FrozenTaskGraph&& graph);
 
-    // 阻塞/按策略提交任务（R-048 / R-058 / R-061 / R-062 / R-080 / R-102 / D-129）。
+    // 提交可调用对象，成功则返回 TaskHandle。
+    // 签名须为 f(args...) 或 f(stop_token, args...)；不得返回裸引用；结果须可移动。
+    // 空 Handle 抛 logic_error。外部线程按 external_backpressure 阻塞或拒绝；
+    // 任意 Worker 线程不得阻塞。Stopping/Stopped/CapacityExhausted 抛 submission_rejected。
+    // 未给 TaskOptions 时：同 Runtime 内部提交继承当前任务优先级，否则 Normal（R-061 / R-062）。
     template <typename F, typename... Args>
         requires (!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
     auto submit(F&& f, Args&&... args) -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
@@ -140,7 +151,8 @@ public:
         return submit_impl(options, std::forward<F>(f), std::forward<Args>(args)...);
     }
 
-    // 非阻塞尝试提交任务（R-061 / R-062 / R-080 / D-088 / D-129）。
+    // 非阻塞尝试提交。admission 失败返回 SubmissionError，不抛 submission_rejected。
+    // 空 Handle 仍抛 logic_error。永不按 Block 等待容量（R-061 / D-088）。
     template <typename F, typename... Args>
         requires (!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
     auto try_submit(F&& f, Args&&... args) -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
@@ -152,7 +164,8 @@ public:
         return try_submit_impl(options, std::forward<F>(f), std::forward<Args>(args)...);
     }
 
-    // 异步提交 C++20 Coroutine Task（R-073 / R-080 / D-114 / D-115 / D-129）
+    // 提交 cold Task 协程（消耗 Task）。空 Scheduler 或无效 Task 抛 logic_error。
+    // admission 与线程约束同 submit()（R-073 / R-061）。
     template <typename T>
     TaskHandle<T> spawn(Task<T>&& task) {
         return spawn_impl(std::nullopt, std::move(task));
@@ -163,7 +176,7 @@ public:
         return spawn_impl(options, std::move(task));
     }
 
-    // 非阻塞尝试提交 C++20 Coroutine Task（R-073 / R-080 / D-114 / D-115 / D-129）
+    // 非阻塞尝试 spawn。admission 失败返回 SubmissionError；空 Scheduler/Task 仍抛 logic_error（R-073 / D-088）。
     template <typename T>
     SubmissionResult<T> try_spawn(Task<T>&& task) {
         return try_spawn_impl(std::nullopt, std::move(task));

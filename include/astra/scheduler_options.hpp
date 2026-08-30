@@ -13,16 +13,17 @@
 
 namespace astra {
 
-// 推荐 Worker 数量：取 hardware_concurrency 提示，为 0 时 fallback 为 1（D-157）。
+// 推荐 Worker 数量：hardware_concurrency，为 0 时回退 1。不启动 Runtime（D-157）。
 [[nodiscard]] ASTRA_EXPORT std::size_t recommended_worker_count() noexcept;
 
-// External Pending 队列满时的背压策略（D-084 / D-157）。
+// 外部提交队列满时：Reject 让 try_submit 返回 / submit 抛 CapacityExhausted；
+// Block 仅允许非 Worker 的 submit 等待出槽（D-084）。
 enum class ExternalBackpressure : std::uint8_t {
     Reject,
     Block
 };
 
-// 运行时指标收集级别（D-135 / D-157）。
+// Off：热路径零开销。Basic：计数。Detailed：另记延迟直方图（D-135）。
 enum class MetricsLevel : std::uint8_t {
     Off,
     Basic,
@@ -32,9 +33,9 @@ enum class MetricsLevel : std::uint8_t {
 // 前向声明追踪收集器（D-138 / D-157）。
 class TraceCollector;
 
-// Scheduler 构造配置（D-157）。仅公开稳定语义 policy，并在 startup 时冻结。
+// 构造时传入并在 startup 冻结。0 或未知枚举会使 Scheduler 构造抛 invalid_argument（D-157）。
 struct SchedulerOptions {
-    // Worker 线程数量；默认取 hardware_concurrency 提示（为 0 时 fallback 为 1）（D-157 / D-078）。
+    // Worker 线程数；必须 > 0。默认 recommended_worker_count()。
     std::size_t worker_count = recommended_worker_count();
     // External Pending 队列的容量上限，达到上限时触发 external_backpressure 策略（D-157 / D-084）。
     std::size_t external_pending_capacity = 65536;

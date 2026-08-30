@@ -134,10 +134,8 @@ struct RuntimeMetricsGauges {
     std::uint64_t active_graph_runs{0};
 };
 
-// -----------------------------------------------------------------------------
-// Runtime Metrics Snapshot (R-084 / R-085 / D-135 / D-136 / D-137)
-// 包含不可变逐字段快照、元数据与饱和标记
-// -----------------------------------------------------------------------------
+// Scheduler::metrics_snapshot() 返回的不可变拷贝。不含 TaskId/字符串标签。
+// Off 时 counters/histograms 为零且 enabled=false。saturated 表示计数触顶（R-084）。
 struct RuntimeMetricsSnapshot {
     std::uint32_t schema_version{1};
     RuntimeId runtime_id{};

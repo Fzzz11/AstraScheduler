@@ -18,21 +18,21 @@
 
 namespace astra {
 
-// Scheduler 生命周期状态（D-155 / D-160：不公开 Created/Starting）。
+// 对外可见的 Runtime 生命周期。不暴露 Created/Starting（D-155 / D-160）。
 enum class SchedulerState : std::uint8_t {
     Running,
     Stopping,
     Stopped
 };
 
-// Scheduler 关停策略模式（D-012 / D-160）。
+// None 仅与 Running 配对；Stopping/Stopped 为 Graceful 或 Immediate（D-160）。
 enum class ShutdownMode : std::uint8_t {
     None,
     Graceful,
     Immediate
 };
 
-// 一次线性化返回的成对生命周期快照（D-160）。
+// status() 的非阻塞快照。合法组合见文件头。
 struct SchedulerStatus {
     SchedulerState state{SchedulerState::Running};
     ShutdownMode shutdown_mode{ShutdownMode::None};
@@ -41,7 +41,8 @@ struct SchedulerStatus {
                                      const SchedulerStatus&) = default;
 };
 
-// Task 稳定生命周期状态（R-057 / D-069 / D-070）。
+// 任务生命周期。Succeeded/Failed/Cancelled 为终态，不可逆。
+// Running 与 Suspended 可往返（R-057）。
 enum class TaskState : std::uint8_t {
     Waiting,
     Ready,
@@ -52,7 +53,7 @@ enum class TaskState : std::uint8_t {
     Cancelled
 };
 
-// 有界等待结果枚举（R-056 / D-063）。
+// wait_for 的返回。TimedOut 只表示调用方没等到，任务未被取消（R-056）。
 enum class WaitResult : std::uint8_t {
     Completed,
     TimedOut,

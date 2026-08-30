@@ -20,31 +20,31 @@ enum class FinalizationWaitResult : std::uint8_t {
 
 class FinalizationControl;
 
-// 进程级 Finalization 唯一合法创建入口（R-035 / R-045 / D-030 / D-039）。
+// 进程级收尾入口：永久关闭新 Scheduler 注册，并开始等待已有 Runtime 退出。
+// 可重复调用，返回共享同一收尾的 capability。不抛（R-035 / R-045）。
 [[nodiscard]] ASTRA_EXPORT FinalizationControl begin_finalization() noexcept;
 
-// Finalization 控制 capability 对象（R-035 / R-036 / R-045 / D-030 / D-031 / D-039）。
+// 进程级收尾句柄。可复制；析构无副作用，不会取消正在进行的 Finalization（R-036）。
 class ASTRA_EXPORT FinalizationControl {
 public:
     ~FinalizationControl() noexcept = default;
 
-    // 共享 capability 语义：可复制、可移动，析构无副作用（R-036 / R-045）。
     FinalizationControl(const FinalizationControl&) noexcept = default;
     FinalizationControl& operator=(const FinalizationControl&) noexcept = default;
     FinalizationControl(FinalizationControl&&) noexcept = default;
     FinalizationControl& operator=(FinalizationControl&&) noexcept = default;
 
-    // 同步无界等待所有已注册 Runtime 完成 shutdown 与 Reaper 线程退出（R-045 / D-039）。
+    // 阻塞直到全部已注册 Runtime 关停且 Reaper 退出（R-045）。
     void wait() const;
 
-    // 限时等待 Finalization 完成（R-045 / D-039）。
+    // 有界等待。到期返回 TimedOut，收尾继续进行，不取消（R-044 / R-045）。
     template <typename Rep, typename Period>
     [[nodiscard]] FinalizationWaitResult wait_for(const std::chrono::duration<Rep, Period>& timeout) const {
         const auto timeout_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(timeout);
         return wait_for_impl(timeout_ns);
     }
 
-    // 升级为 Immediate 停机模式（R-045 / D-039）。
+    // 将尚未停机的 Runtime 升级为 Immediate。可重复调用，不抛（R-045）。
     void request_immediate() const noexcept;
 
 private:

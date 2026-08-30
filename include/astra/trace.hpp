@@ -215,13 +215,16 @@ public:
 
     TraceSnapshot() noexcept = default;
 
+    // 空/默认构造为 false。复制只共享只读 backing。
     [[nodiscard]] explicit operator bool() const noexcept { return impl_ != nullptr; }
     [[nodiscard]] std::uint32_t schema_version() const noexcept;
     [[nodiscard]] std::chrono::steady_clock::time_point origin() const noexcept;
     [[nodiscard]] std::size_t event_record_size() const noexcept;
     [[nodiscard]] TraceCategory categories() const noexcept;
     [[nodiscard]] std::size_t producer_count() const noexcept;
+    // 须 index < producer_count()；越界抛 out_of_range。
     [[nodiscard]] const ProducerReport& producer(std::size_t index) const;
+    // capture 内原始事件；跨 producer 未排序。导出请用 trace_ordered_events()。
     [[nodiscard]] const std::vector<TraceEvent>& events() const noexcept;
     [[nodiscard]] std::uint64_t total_dropped_events() const noexcept;
 
@@ -250,8 +253,8 @@ public:
     TraceCapture(const TraceCapture&) = delete;
     TraceCapture& operator=(const TraceCapture&) = delete;
 
-    // 首次调用线性化关闭该 capture 并返回 immutable Snapshot；同一 Capture
-    // 重复/并发 stop 共享同一 backing。empty/moved-from 抛 std::logic_error。
+    // 关闭本次 capture 并返回不可变 Snapshot。重复/并发 stop 共享同一 backing。
+    // 空/moved-from 抛 logic_error。析构未 stop 则 abort 丢弃该代（D-163）。
     [[nodiscard]] TraceSnapshot stop();
 
     [[nodiscard]] bool valid() const noexcept;
@@ -270,6 +273,8 @@ private:
 
 // 线程安全共享 TraceCollector（D-138）：用户显式创建并以 shared_ptr 附加到
 // 一个或多个 Runtime；初始 Stopped，可重复执行单一活动 capture generation。
+// 线程安全共享收集器。以 shared_ptr 挂到 SchedulerOptions::trace_collector。
+// 初始 Stopped，同时只允许一代活动 capture。
 class ASTRA_EXPORT TraceCollector : public std::enable_shared_from_this<TraceCollector> {
 public:
     TraceCollector();

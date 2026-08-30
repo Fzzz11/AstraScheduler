@@ -117,10 +117,8 @@ public:
     }
 };
 
-// -----------------------------------------------------------------------------
-// Task<T> (R-073 / D-114 / D-115)
-// Cold C++20 Coroutine Task handle
-// -----------------------------------------------------------------------------
+// Cold 协程句柄：函数写 co_return 即得到 Task<T>，须再 spawn/emplace_coroutine 才会执行。
+// 仅可移动；未提交就销毁会销毁协程帧。复制被 delete（R-073 / D-114）。
 template <typename T>
 class Task {
 public:
@@ -131,6 +129,7 @@ public:
 
     explicit Task(handle_type h) noexcept : coro_(h) {}
 
+    // 未 spawn 的有效 Task 在析构时销毁协程帧。
     ~Task() {
         if (coro_) {
             coro_.destroy();
@@ -153,6 +152,7 @@ public:
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
 
+    // 是否持有协程帧。空/moved-from 返回 false，不抛。
     [[nodiscard]] bool valid() const noexcept {
         return static_cast<bool>(coro_);
     }
@@ -682,6 +682,8 @@ struct CancellationPointAwaiter {
     constexpr void await_resume() const noexcept {}
 };
 
+// 在 Astra 协程内检查取消：已请求停止则抛 task_cancelled，否则立即继续。
+// 只能 co_await；普通函数请用 throw_if_stop_requested（R-076 / D-122）。
 [[nodiscard]] inline CancellationPointAwaiter cancellation_point() noexcept {
     return CancellationPointAwaiter{};
 }
@@ -727,6 +729,8 @@ struct YieldAwaiter {
     constexpr void await_resume() const noexcept {}
 };
 
+// 主动让出当前 Worker，稍后再入队。只能在 astra::Task 协程内 co_await。
+// 挂起点若已取消则抛 task_cancelled。协程体外使用无法通过编译（R-076 / D-122）。
 [[nodiscard]] inline YieldAwaiter yield() noexcept {
     return YieldAwaiter{};
 }
@@ -832,10 +836,13 @@ struct SleepAwaiter {
     }
 };
 
+// 挂起到绝对时刻。只能在已 spawn 的 astra::Task 协程内 co_await。
+// 到期前取消则 await 点抛 task_cancelled。未绑定 Runtime 抛 logic_error（R-079）。
 [[nodiscard]] inline SleepAwaiter sleep_until(std::chrono::steady_clock::time_point wake_time) noexcept {
     return SleepAwaiter(wake_time);
 }
 
+// 相对 now 挂起；非正时长视为立即到期。取消 / 线程约束同 sleep_until()（R-079）。
 template <typename Rep, typename Period>
 [[nodiscard]] inline SleepAwaiter sleep_for(const std::chrono::duration<Rep, Period>& d) {
     if (d <= std::chrono::duration<Rep, Period>::zero()) {

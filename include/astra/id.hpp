@@ -21,12 +21,13 @@
 
 namespace astra {
 
-// 进程内单次 Runtime 实例的唯一强标识（D-153）。
+// 进程内一次 Runtime 的逻辑 ID。默认 0 为无效；无隐式整数转换（D-153）。
 class RuntimeId {
 public:
     constexpr RuntimeId() noexcept = default;
     constexpr explicit RuntimeId(std::uint64_t value) noexcept : value_(value) {}
 
+    // 0 为无效。
     [[nodiscard]] constexpr bool valid() const noexcept { return value_ != 0; }
     [[nodiscard]] explicit constexpr operator bool() const noexcept { return valid(); }
     [[nodiscard]] constexpr std::uint64_t value() const noexcept { return value_; }
@@ -38,13 +39,14 @@ private:
     std::uint64_t value_{0};
 };
 
-// 单个 Task 的强类型全局逻辑标识（D-153：RuntimeId + 64-bit sequence）。
+// 任务逻辑 ID：所属 Runtime + 该 Runtime 内单调递增且不复用的 sequence（D-153）。
 class TaskId {
 public:
     constexpr TaskId() noexcept = default;
     constexpr explicit TaskId(RuntimeId runtime_id, std::uint64_t sequence) noexcept
         : runtime_id_(runtime_id), sequence_(sequence) {}
 
+    // Runtime 无效或 sequence==0 则为无效。
     [[nodiscard]] constexpr bool valid() const noexcept {
         return runtime_id_.valid() && sequence_ != 0;
     }
@@ -60,13 +62,14 @@ private:
     std::uint64_t sequence_{0};
 };
 
-// 单次 Graph（任务图：一组有依赖关系的 Task） 运行的强类型全局逻辑标识（D-153：RuntimeId + 64-bit sequence）。
+// 一次 GraphRun 的逻辑 ID：所属 Runtime + 不复用 sequence（D-153）。
 class GraphRunId {
 public:
     constexpr GraphRunId() noexcept = default;
     constexpr explicit GraphRunId(RuntimeId runtime_id, std::uint64_t sequence) noexcept
         : runtime_id_(runtime_id), sequence_(sequence) {}
 
+    // Runtime 无效或 sequence==0 则为无效。
     [[nodiscard]] constexpr bool valid() const noexcept {
         return runtime_id_.valid() && sequence_ != 0;
     }
@@ -82,12 +85,13 @@ private:
     std::uint64_t sequence_{0};
 };
 
-// Graph 定义内按插入顺序分配的 graph-local 强类型标识（D-161）。
+// 一张 TaskGraph 内按插入顺序从 1 起分配的节点 ID，跨图不可比较身份（D-161）。
 class NodeId {
 public:
     constexpr NodeId() noexcept = default;
     constexpr explicit NodeId(std::uint64_t value) noexcept : value_(value) {}
 
+    // 0 为无效。
     [[nodiscard]] constexpr bool valid() const noexcept { return value_ != 0; }
     [[nodiscard]] explicit constexpr operator bool() const noexcept { return valid(); }
     [[nodiscard]] constexpr std::uint64_t value() const noexcept { return value_; }

@@ -33,6 +33,7 @@ public:
     explicit scheduler_creation_rejected(SchedulerCreationError reason)
         : std::runtime_error(format_message(reason)), reason_(reason) {}
 
+    // 机器可读拒绝原因，勿解析 what()。
     [[nodiscard]] SchedulerCreationError reason() const noexcept {
         return reason_;
     }
@@ -52,9 +53,9 @@ private:
 
 // 任务提交拒绝原因（R-062 / D-087 / D-155）。
 enum class SubmissionError : std::uint8_t {
-    Stopping = 1,
-    Stopped = 2,
-    CapacityExhausted = 3,
+    Stopping = 1,           // 已请求关停，不再接纳
+    Stopped = 2,            // Runtime 已停止
+    CapacityExhausted = 3,  // 外部队列满且未阻塞等待
 };
 
 // 任务提交拒绝异常（R-062 / D-087）。
@@ -63,6 +64,7 @@ public:
     explicit submission_rejected(SubmissionError reason)
         : std::runtime_error(format_message(reason)), reason_(reason) {}
 
+    // Stopping / Stopped / CapacityExhausted。
     [[nodiscard]] SubmissionError reason() const noexcept {
         return reason_;
     }
@@ -121,6 +123,7 @@ public:
         return reason_;
     }
 
+    // 仅 Cycle 时非空：一条闭合环路上的 NodeId。
     [[nodiscard]] const std::vector<NodeId>& cycle_witness() const noexcept {
         return cycle_witness_;
     }
