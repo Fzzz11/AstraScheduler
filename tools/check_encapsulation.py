@@ -118,6 +118,43 @@ def audit_installed_headers() -> list[str]:
     return problems
 
 
+R124_MODULE_FILES = (
+    "src/admission_controller.hpp",
+    "src/admission_controller.cpp",
+    "src/timer_queue.hpp",
+    "src/timer_queue.cpp",
+    "src/runtime_metrics.hpp",
+    "src/runtime_metrics.cpp",
+)
+R124_OWNED_STATE = {
+    "src/admission_controller.hpp": ("pending_", "slot_cv_", "capacity_"),
+    "src/timer_queue.hpp": ("heap_", "map_"),
+    "src/runtime_metrics.hpp": ("worker_shards", "control_shard"),
+}
+IMPL_PTR_RE = re.compile(r"Scheduler\s*::\s*Impl\s*\*")
+
+
+def audit_impl_deep_modules() -> list[str]:
+    problems: list[str] = []
+    for rel in R124_MODULE_FILES:
+        path = ROOT / rel
+        if not path.is_file():
+            problems.append(f"R-124 module missing: {rel}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if IMPL_PTR_RE.search(text):
+            problems.append(f"{rel} holds Scheduler::Impl* (R-124 forbids shallow wrappers)")
+    for rel, names in R124_OWNED_STATE.items():
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for name in names:
+            if name not in text:
+                problems.append(f"{rel} missing owned state {name} (R-124 deletion test)")
+    return problems
+
+
 def audit_public_tests() -> list[str]:
     cmake = (ROOT / "tests" / "CMakeLists.txt").read_text(encoding="utf-8")
     problems: list[str] = []
@@ -151,13 +188,21 @@ def run_negative_probes() -> list[str]:
 
 
 def main() -> int:
-    problems = audit_public_tests() + audit_installed_headers() + run_negative_probes()
+    problems = (
+        audit_public_tests()
+        + audit_installed_headers()
+        + run_negative_probes()
+        + audit_impl_deep_modules()
+    )
     if problems:
         print("FAIL: encapsulation boundary drift:")
         for problem in problems:
             print(f"  - {problem}")
         return 1
-    print(f"Encapsulation gate OK: public tests isolated; {len(NEGATIVE_PROBES)} internal probes rejected.")
+    print(
+        f"Encapsulation gate OK: public tests isolated; {len(NEGATIVE_PROBES)} internal probes rejected; "
+        "R-124 modules own state and hold no Impl*."
+    )
     return 0
 
 

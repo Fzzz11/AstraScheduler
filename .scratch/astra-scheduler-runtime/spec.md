@@ -228,6 +228,7 @@ AstraScheduler 面向 Linux-only 的现代 C++20 任务调度场景，最终范�
 | D-173 | R-119 |
 | D-174 | R-121 |
 | D-175 | R-123 |
+| D-176 | R-124 |
 
 ## Normative Rules
 
@@ -1830,6 +1831,19 @@ Code evidence: None
 Disposition: implementation
 Observable result: `nm -D --defined-only`不含协议detail符号；独立consumer仍能链接documented符号；残留header引用会导致链接失败。
 
+### R-124 — Scheduler::Impl 按完整不变量拆出 AdmissionController、TimerQueue、RuntimeMetrics
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: 内部实现必须把外部admission slot/backpressure、Worker timer队列、Runtime metrics分片与快照分别封装为拥有自身状态的深模块；这些模块不得以`Scheduler::Impl*`为唯一状态做方法转发；不得在本规则中抽出ReadyQueues、steal round或park handshake。documented admission、timer、metrics可观察语义不变。
+Applies to: v1.2.0之后的内部Runtime分解。
+Exceptions: GraphExecution深化不在本规则范围。submit/spawn header仍可调用Scheduler上的admission/timer窄桥。
+Source decisions: D-176
+Source support: D-176 => 抽出AdmissionController、TimerQueue、RuntimeMetrics；禁止浅wrapper；延期ReadyQueues/steal/park。
+Code evidence: `src/admission_controller.{hpp,cpp}`、`src/timer_queue.{hpp,cpp}`、`src/runtime_metrics.{hpp,cpp}`；`tools/check_encapsulation.py` 拒绝 `Scheduler::Impl*`。
+Disposition: implementation
+Observable result: 三个模块拥有独立状态；现有admission/timer/metrics测试通过；对`Impl*`浅转发的静态审计失败。
+
 ## State and Lifecycle
 
 | Scope | Transition / stage | Governing rules |
@@ -2048,7 +2062,8 @@ Observable result: `nm -D --defined-only`不含协议detail符号；独立consum
 | R-120 | D-172, D-170 | yield/sleep/await behavior tests plus handshake completeness probes | Pending |
 | R-121 | D-174, D-170 | submit/spawn/emplace and move-only callable tests | Pending |
 | R-122 | D-171 | R-093 version contract and immutable v1.0.0/v1.1.0 manifests | Pending |
-| R-123 | D-175, D-170 | shared-library documented export allowlist | Pending |
+| R-123 | D-175, D-170 | shared-library documented export allowlist | AST-063 |
+| R-124 | D-176 | admission/timer/metrics module tests plus no-Impl* audit | AST-064, AST-065, AST-066 |
 
 ## Open Questions
 
@@ -2062,4 +2077,5 @@ None。已确认范围内没有未决语义；明确排除项保留在 Non-goals
 - 本次Linux-only修订以R-111取代R-092，并新增R-112固定WSL开发入口；R-101与R-110仅替换为当前accepted来源D-167，行为边界保持。
 - 本次Linux-only/WSL修订已由项目owner于2026-08-27批准；通过非draft校验后同步修订已发布Tickets。
 - 本次v1.1封装性修订由项目owner于2026-08-30批准；只收回未文档化的实现表面，不改变既有observable semantics。
-- 本次v1.2.0 compiled TaskControlBlock修订（D-170至D-175，R-118至R-123，ADR-0048）已由项目owner于2026-08-30批准；不深化GraphExecution或拆Scheduler::Impl（R-116仍active）。
+- 本次v1.2.0 compiled TaskControlBlock修订（D-170至D-175，R-118至R-123，ADR-0048）已由项目owner于2026-08-30批准。
+- 本次按完整不变量拆Scheduler::Impl（D-176，R-124，架构审查第4点A）已由项目owner于2026-08-30确认；不深化GraphExecution，不抽ReadyQueues/steal/park。

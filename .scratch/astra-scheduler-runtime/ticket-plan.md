@@ -476,7 +476,7 @@ Approved at: 2026-08-30
 Source: D-170 through D-175, ADR-0048, R-118 through R-123  
 Blocked by: AST-057
 
-本增量不实施 R-116 的进一步 GraphExecution 深化，也不拆 Scheduler::Impl。
+本增量的 compiled TCB 部分不实施 R-116 的进一步 GraphExecution 深化。Impl 按完整不变量拆分为独立增量（R-124 / AST-064..066）。
 
 #### AST-058 — 将项目 VERSION 升至 1.2.0 并固定不可改写的旧 manifest
 
@@ -525,6 +525,30 @@ Blocked by: AST-057
 - Blockers: AST-062
 - What to build: shared 库 hidden-by-default / version script，只导出 v1.2.0 documented 符号；package 封闭集等于该 allowlist，不再要求 detail 协议符号；残留 header 引用隐藏符号必须链接失败。
 - Test-first seam: nm 仍见到协议 detail 导出时 package gate 失败；独立 consumer 仍能链接 documented 符号。
+
+#### AST-064 — 抽出拥有 slot 不变量的 AdmissionController
+
+- Primary Rules: R-124
+- Supporting Rules: R-061, R-062
+- Blockers: AST-063
+- What to build: 内部 AdmissionController 拥有 pending/capacity/backpressure/slot 等待；Impl 通过 acquire/release 组合该模块，不得以 Impl* 浅转发。
+- Test-first seam: 模块含 Scheduler::Impl* 作为唯一状态时 encapsulation 审计失败；现有 admission/backpressure 测试保持绿。
+
+#### AST-065 — 抽出拥有 timer 不变量的 TimerQueue
+
+- Primary Rules: R-124
+- Supporting Rules: R-079
+- Blockers: AST-064
+- What to build: 内部 TimerQueue 拥有 heap/map 与 register/cancel/due/shutdown cancel；Impl 仅在最早到期变化时唤醒 worker。
+- Test-first seam: TimerQueue 以 Impl* 为唯一状态时审计失败；worker timer 测试保持绿。
+
+#### AST-066 — 抽出拥有分片与快照的 RuntimeMetrics
+
+- Primary Rules: R-124
+- Supporting Rules: R-084
+- Blockers: AST-065
+- What to build: 内部 RuntimeMetrics 拥有 worker/control shard、饱和计数与直方图累加；snapshot 从该模块读取计数。
+- Test-first seam: RuntimeMetrics 以 Impl* 为唯一状态时审计失败；runtime metrics 测试保持绿。
 
 ## Dependency DAG
 
@@ -593,6 +617,9 @@ AST-060 <- AST-059
 AST-061 <- AST-059
 AST-062 <- AST-059, AST-060, AST-061
 AST-063 <- AST-062
+AST-064 <- AST-063
+AST-065 <- AST-064
+AST-066 <- AST-065
 ```
 
 ## Rule Coverage
@@ -715,10 +742,11 @@ AST-063 <- AST-062
 | R-121 | AST-061 | None | `[R-121]` submit/emplace安装头只留F信封，不用std::function，move-only F仍可提交。 | Covered (1 primary) |
 | R-122 | AST-058 | None | `[R-122]` VERSION为1.2.0；v1.0.0与v1.1.0 manifest不可改写；exact-version钉住1.2.0。 | Covered (1 primary) |
 | R-123 | AST-063 | None | `[R-123]` shared默认隐藏，只导出documented allowlist；nm不见协议detail符号。 | Covered (1 primary) |
+| R-124 | AST-064 | AST-065, AST-066 | `[R-124]` AdmissionController/TimerQueue/RuntimeMetrics拥有自身状态，不含Impl*浅转发。 | Covered (1 primary + 2 supporting) |
 
 ## Semantic Audit
 
-- Coverage target: 110/110 active rules have one Primary Ticket.
+- Coverage target: 111/111 active rules have one Primary Ticket.
 - Superseded rules R-008, R-017, R-018, R-027, R-029, R-030, R-092 are intentionally absent; their replacements are covered by R-106, R-103, R-105, R-107, R-097, R-104, R-111.
 - No Ticket introduces Dynamic Worker Scaling、affinity/NUMA、lock-free Global Queue、Timer Wheel、I/O Runtime、Distributed/GPU Runtime or binary ABI stability.
 - Lifecycle rules are delivered in v0.1 before later subsystems depend on them; later milestones add routing/backends/features without weakening Task outcome or shutdown semantics.
@@ -726,18 +754,19 @@ AST-063 <- AST-062
 - Human semantic audit: passed。Ticket 仅切分 approved rules，不扩张变体；早期 supporting criteria 已缩小为各自里程碑的协作证据，最终主实现责任保持唯一。
 - Linux-only/WSL revision audit: R-111只替换平台支持范围，R-112只约束本机开发证据；Ticket编号、里程碑与blocker边保持不变。
 - Encapsulation revision audit: R-113至R-117只重划实现边界和兼容证据，不改变既有Runtime observable semantics。
-- v1.2.0 compiled TCB increment (approved 2026-08-30): R-118至R-123 各有唯一 primary；不扩张 GraphExecution（R-116 仍由 AST-057 拥有）或拆 Scheduler::Impl。
+- v1.2.0 compiled TCB increment (approved 2026-08-30): R-118至R-123 各有唯一 primary；不扩张 GraphExecution（R-116 仍由 AST-057 拥有）。
+- v1.2.0 Impl 深模块拆分（approved 2026-08-30）：R-124 由 AST-064 作 primary，AST-065/066 为 supporting；禁止浅 wrapper；不抽 ReadyQueues/steal/park。
 - 发布注意：AST-059+ 使用 Milestone v1.2.0，必须先落地 AST-058 的 ALLOWED_MILESTONES / 里程碑矩阵，否则 R-094 门禁会红。
 
 ## Publication Results
 
 - Tracker: local Markdown (`.scratch/astra-scheduler-runtime/issues/`).
 - Published at: 2026-08-30.
-- Published Tickets: 63 (`AST-001` through `AST-063`；无 AST-056 文件编号空洞若存在则保持历史)。
-- Status: `AST-001` through `AST-063`为`done`。
-- Frontier: v1.2.0 increment 已实现（AST-058..063）。
+- Published Tickets: 66 (`AST-001` through `AST-066`；无 AST-056 文件编号空洞若存在则保持历史)。
+- Status: `AST-001` through `AST-066`为`done`。
+- Frontier: v1.2.0 Impl 深模块拆分已实现（AST-064..066）。
 - Unpublished or failed items: None.
-- Traceability inventory: 以校验器输出为准（R-118至R-123由AST-058至AST-063覆盖）。
+- Traceability inventory: 以校验器输出为准（R-118至R-123由AST-058至AST-063覆盖；R-124由AST-064至AST-066覆盖）。
 
 | ID | Milestone | Published file | Status | Blocked by |
 |---|---|---|---|---|
@@ -804,6 +833,9 @@ AST-063 <- AST-062
 | AST-061 | v1.2.0 | [61-callable-envelope.md](issues/61-callable-envelope.md) | done | AST-059 |
 | AST-062 | v1.2.0 | [62-protocol-completeness-probes.md](issues/62-protocol-completeness-probes.md) | done | AST-059, AST-060, AST-061 |
 | AST-063 | v1.2.0 | [63-documented-export-allowlist.md](issues/63-documented-export-allowlist.md) | done | AST-062 |
+| AST-064 | v1.2.0 | [64-admission-controller.md](issues/64-admission-controller.md) | done | AST-063 |
+| AST-065 | v1.2.0 | [65-timer-queue.md](issues/65-timer-queue.md) | done | AST-064 |
+| AST-066 | v1.2.0 | [66-runtime-metrics.md](issues/66-runtime-metrics.md) | done | AST-065 |
 
 ## Approval
 
@@ -813,4 +845,4 @@ Approved at: 2026-08-27
 Revision approved by: project owner（user）
 Revision approved at: 2026-08-30（v1.1 encapsulation revision；v1.2.0 compiled TCB increment）
 
-本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-063 承载。
+本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-066 承载。

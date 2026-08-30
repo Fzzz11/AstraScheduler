@@ -56,6 +56,9 @@ set(ASTRA_SCHEDULER_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/task_control_block.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/await_protocol.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime_metrics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/timer_queue.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/admission_controller.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/finalization.cpp

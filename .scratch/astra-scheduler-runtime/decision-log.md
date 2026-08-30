@@ -12903,6 +12903,79 @@ D-170 把运行协议编进库后，`TaskSharedStateBase` 与 metrics hook 不�
 - Tickets: Pending
 - Tests: `check_cmake_package.py` 导出 allowlist；encapsulation 与独立 consumer 链接
 
+## D-176 — 按完整不变量抽出 AdmissionController、TimerQueue、RuntimeMetrics
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+`Scheduler::Impl` 仍在单一翻译单元中同时拥有 admission、ready 队列、park handshake、timer、metrics、graph run 与 helping wait。架构审查第 4 点给出三种拆法。D-170 曾把拆 Impl 列为 v1.2.0 非目标。owner 现要求实施第 4 点 A 方案。
+
+### Decision
+
+从 `Scheduler::Impl` 抽出三个内部深模块，每个拥有一组完整不变量：
+
+- `AdmissionController`：外部 pending slot、backpressure、阻塞等待与 rollback。
+- `TimerQueue`：register/cancel、到期收集、最早唤醒、关停时全部取消。
+- `RuntimeMetrics`：分片所有权、record hooks、snapshot 累加。
+
+禁止只持有 `Scheduler::Impl*` 并转发方法的浅 wrapper。本轮不抽出 ReadyQueues、steal round 或 park handshake。
+
+### Invariants
+
+- documented public admission、timer、metrics 可观察语义不变。
+- 新模块必须拥有自己的状态（slot 计数/堆/分片），不得把 Impl 当唯一成员。
+- ReadyQueues/steal/park 仍由 Impl 拥有。
+- GraphExecution 深化不在本决策范围。
+
+### Scope and variants
+
+| Variant | Applies | Different behaviour |
+|---|---|---|
+| AdmissionController | 外部 slot 与 backpressure | 内部提交仍豁免容量 |
+| TimerQueue | Worker timer | 最早到期通过回调唤醒 runtime，不拥有 park |
+| RuntimeMetrics | Off/Basic/Detailed | Off 仍为零开销投影 |
+
+### Rationale
+
+按不变量拆才能通过 deletion test。只拆 TU 或同时抽 park/steal 会把弱内存证据面和浅转发一起带进来。
+
+### Rejected alternatives
+
+- 只拆翻译单元不新增 interface（4B）：知识仍在 Impl。
+- 同时抽 ReadyQueues+steal+park（4C）：弱内存/TSan 面过大，放后面。
+- Impl* 转发包装：deletion test 失败。
+
+### Consequences
+
+- Impl 变为组合这三个模块并继续拥有 lifecycle 与 ready 队列。
+- 现有 admission/timer/metrics 测试必须保持绿。
+
+### Non-goals and deferred risks
+
+- 不深化 GraphExecution（架构审查第 2 点）。
+- 不抽 ReadyQueues/steal/park。
+- 不把 submit/spawn 收成单一 compiled admit lease（第 3 点）。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 要求实现架构审查第 4 点 A 方案：先 AdmissionController / TimerQueue / RuntimeMetrics，禁止浅 wrapper。
+- Code or data evidence: `src/admission_controller.{hpp,cpp}`、`src/timer_queue.{hpp,cpp}`、`src/runtime_metrics.{hpp,cpp}`；`Scheduler::Impl` 组合这三个模块并继续拥有 ready 队列与 park。
+
+### Traceability
+
+- ADR: None
+- Spec destinations: R-124
+- Tickets: AST-064, AST-065, AST-066
+- Tests: admission/timer/metrics 现有行为测试；encapsulation 禁止新模块持有 Impl*
+
 ## Open Questions
 
 - 无（本轮 1A grilling 已关闭：D-170..D-175）。
