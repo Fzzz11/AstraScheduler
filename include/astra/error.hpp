@@ -4,6 +4,19 @@
 #include <astra/export.hpp>
 #include <astra/id.hpp>
 
+// AstraScheduler 的异常契约集中地。
+//
+// 【异常家族】
+//   - submission_rejected：提交被拒（Stopping/Stopped/CapacityExhausted 等），
+//     带机器可读的 reason()，调用方按枚举分支而非解析字符串。
+//   - scheduler_creation_rejected：Scheduler 创建被拒（如进程级 Finalization
+//     已启动后不再允许新建运行时）。
+//   - task_cancelled：任务被取消时在任务体内/挂起点抛出的协作取消信号，
+//     用 catch(...) 之外的 try/catch(task_cancelled&) 做清理。
+//   - helping_depth_exceeded：worker 帮忙等待嵌套过深（防递归爆炸）。
+//   - std::logic_error 系列：调用方用法错误（空句柄、自等待等），属编程
+//     缺陷而非运行时状态。
+// 所有异常类型都继承 std 标准异常，保证与既有 catch 结构兼容。
 #include <cstdint>
 #include <stdexcept>
 #include <string>

@@ -21,6 +21,42 @@
 #include <utility>
 #include <variant>
 
+// ============================================================================
+// TaskHandle / TaskSharedState —— 任务结果的生命周期与线程间交接。
+//
+// 【这是什么】
+//   submit()/spawn() 返回 TaskHandle<T>：它是"任务结果"的共享句柄，
+//   内部指向一块堆上的共享状态（TaskSharedState<T>）。任务函数在 worker
+//   线程执行完毕后把返回值（或异常）写进共享状态；你可以：
+//     - get()      阻塞取值（异常会在调用方重新抛出）
+//     - wait()/wait_for()   只等完成不取值
+//     - request_cancel()    请求协作式取消
+//     - co_await handle     在另一个 Astra 协程里等待它
+//
+// 【为什么是"共享状态"而不是直接存结果】
+//   提交任务与取结果是两个不同线程的两个独立动作，中间可能隔着
+//   排队、执行、被偷取、挂起恢复。共享状态就是一个带锁与条件变量的
+//   小信箱：生产者（worker）写入终态，消费者（你）等待并读取；
+//   两端各自持有 shared_ptr，谁后结束谁负责释放，不存在悬垂。
+//
+// 【TaskHandle 的副本语义】
+//   TaskHandle 可复制：多个副本指向同一共享状态，最后一个销毁时
+//   触发"未被观察的失败"诊断——异常任务若从未被 get/await 过，
+//   会在 Metrics 里计一次 unobserved_failures（不崩溃、不吞异常，
+//   只让你知道有失败被忽略了）。
+//
+// 【取消模型（协作式）】
+//   request_cancel() 只是发出停止信号（stop_token）；任务体通过
+//   stop_token 轮询，或在挂起点（sleep/await）被动收到 task_cancelled
+//   异常。绝不强制杀死正在运行的任务。
+//
+// 【本文件里的实现细节】
+//   TaskSharedStateBase 的方法体在 src/task_shared_state.cpp（封装性：
+//   实现不放在公共头文件）；文件中的 record_* 声明是"指标埋点 seam"——
+//   worker/等待路径的内联代码通过它们上报计数，实现在 src/scheduler.cpp，
+//   MetricsLevel::Off 时全部为空操作。
+// ============================================================================
+
 namespace astra {
 
 class Scheduler;

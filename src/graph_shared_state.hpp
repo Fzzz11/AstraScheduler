@@ -4,6 +4,11 @@
 #include <astra/graph.hpp>
 #include <astra/id.hpp>
 
+// 一次 Graph 运行的共享状态：所有节点线程共同读写的"运行期黑板"。
+// 包含剩余依赖计数、节点终态、失败收集与整体状态机（Running -> Succeeded /
+// Failed / Cancelled）。完成计数用原子操作维护，终态迁移与唤醒在锁内完成。
+// 生命周期由 GraphRun 与图节点任务共同持有（shared_ptr），最后一个引用
+// 释放即回收。
 #include <algorithm>
 #include <atomic>
 #include <chrono>

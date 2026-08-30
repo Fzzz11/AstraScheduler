@@ -1,6 +1,10 @@
 #ifndef ASTRA_STATUS_HPP
 #define ASTRA_STATUS_HPP
 
+// 【通俗说明】TaskState 描述一个任务的一生：Ready（已提交）-> Running ->
+// 终态（Succeeded / Failed / Cancelled）；Running 与 Suspended（挂起中）
+// 之间可往返。WaitResult 是 wait_for 的返回：TimedOut 只是你没等到，
+// 任务本身还在继续跑，并没有被取消。
 // AstraScheduler 生命周期状态与关停模式成对快照（AST-004 / R-099 / D-160）。
 // SchedulerStatus 为可平凡复制的成对快照，合法组合仅有：
 // - Running + None

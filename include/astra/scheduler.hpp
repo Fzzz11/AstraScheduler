@@ -1,9 +1,51 @@
 #ifndef ASTRA_SCHEDULER_HPP
 #define ASTRA_SCHEDULER_HPP
 
-// AstraScheduler 调度器公共 Handle 与契约（AST-004 / R-098 / R-099 / R-100 / R-101 / D-155）。
-// Scheduler 为可复制/移动的共享 Handle，析构或操作遵循生命周期契约。
-// Supported Configuration 仅 64-bit Linux（R-111，经 export.hpp 检查）。
+// ============================================================================
+// Scheduler —— AstraScheduler 的使用入口。
+//
+// 【这是什么】
+//   Scheduler 是一个可复制/可移动的"句柄"（Handle），多个副本共享同一个
+//   后台运行时（Impl，实现在 src/scheduler.cpp）。你通过它 submit() 普通函数、
+//   spawn() 协程、run() 任务图；每个任务返回 TaskHandle 用来取结果。
+//
+// 【整体架构（为什么有 Worker / Reaper 两类线程）】
+//   - Worker 线程（数量由 options.worker_count 决定）：
+//         负责执行你提交的任务。任务被偷取（work-stealing）或从全局队列
+//         取出；等待某个任务结果时，worker 会顺手执行其他就绪任务（helping），
+//         而不是空转阻塞。
+//   - Reaper（回收者）线程（全进程恰好一个，不属于任何 Scheduler）：
+//         当最后一个 Scheduler 句柄被销毁、而它的 worker 还没退完时，
+//         运行时的"善后"（join worker、清理状态）被移交（handoff）给 Reaper。
+//         这样句柄的析构永远是立即返回的，不会卡住调用者。
+//
+// 【关键生命周期规则】
+//   1. 最后一个句柄销毁 = 请求优雅关停：不再接受新任务，等已有任务跑完，
+//      然后所有 worker 退出。析构本身不会阻塞超过任务收尾所需时间。
+//   2. shutdown() 可以提前显式关停；shutdown_now()/Immediate 模式则放弃
+//      未开始的任务并尽快中断。
+//   3. begin_finalization()（见 finalization.hpp）控制整个进程的最终收尾：
+//      永久关闭所有 Scheduler 的注册，等全部 Runtime 退出。
+//   4. 一个进程只应加载一份 AstraScheduler 实现（静态库或唯一共享库）；
+//      多份拷贝各自为政，进程级保证失效。
+//
+// 【使用速览】
+//   astra::SchedulerOptions opts;            // worker_count 等默认值即可用
+//   astra::Scheduler sched(opts);
+//   auto handle = sched.submit([] { return 42; });
+//   int result = handle.get();               // 阻塞取结果
+//
+// 【可观测性】
+//   sched.metrics_snapshot()      // 任务计数/延迟直方图（可选开关）
+//   astra::process_metrics_snapshot()  // 进程级 Reaper/Finalization 诊断
+//   TraceCollector（trace.hpp）   // 高频事件时间线（离线导出）
+//
+// 本文件只声明公共 API；实现位于 src/scheduler.cpp（class Impl 为内部细节，
+// 对使用者不可见）。
+//
+// （可追溯性：AST-004 / R-098 / R-099 / R-100 / R-101 / D-155；平台仅 64-bit
+//   Linux，经 export.hpp 编译期检查。）
+// ============================================================================
 
 #include <astra/export.hpp>
 #include <astra/capabilities.hpp>

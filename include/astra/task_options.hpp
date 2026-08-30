@@ -4,6 +4,13 @@
 #include <astra/export.hpp>
 
 #include <chrono>
+
+// 提交任务时的可选参数（submit/spawn 的第一个参数）。
+//
+// 【Priority】0..3 四个优先级带，数字越小越优先（Critical=0）。公平性
+// 由调度器的日历轮转保证：高优先级先服务，但低优先级不会被饿死。
+// 【Deadline】期望的开始时间点：在点前开始记 met，晚于记 missed——
+// 截止时间描述的是"开始晚了没有"，不是"执行超时没有"。
 #include <cstdint>
 #include <optional>
 #include <stdexcept>

@@ -1,5 +1,25 @@
-// TaskSharedStateBase 的非模板方法实现（封装性改进：实现移出 public header）。
-// 声明见 <astra/task_handle.hpp>；本翻译单元属于库内部实现。
+// TaskSharedState —— 任务结果的"共享信箱"实现。
+//
+// 【这个对象的生命周期】
+//   Ready（已提交待执行）-> Running -> 终态（Succeeded / Failed /
+//   Cancelled），终态不可逆。挂起恢复会在 Running/Suspended 之间往返。
+//
+// 【并发模型】
+//   一把 mutex 保护"会变的字段"（状态机、回调列表、deadline 结论、
+//   rescheduler）；两个原子变量（admitted/ready 时间戳）无锁读写，
+//   供 Metrics 采样。终态写入在锁内完成，随后在锁外逐个执行完成回调——
+//   回调里若再调用本对象的方法也不会死锁。
+//
+// 【为什么 notify 与回调在锁外】
+//   持锁 notify 会把被唤醒者直接"顶"到锁上，白白多一次上下文切换；
+//   回调在锁内执行则可能以任意顺序重入加锁，死锁风险不可控。
+//   先收集、后锁外执行是本文件所有状态迁移方法的统一模式。
+//
+// 【AST-056】resume 所有权代际：协程挂起把帧移交给恢复者时递增代际；
+//   发起恢复的 invoker 返回后比对代际，不一致就绝不触碰协程帧
+//   （防止恢复者已销毁帧的 use-after-free）。
+//
+// 声明见 <astra/task_handle.hpp>。
 
 #include <astra/task_handle.hpp>
 

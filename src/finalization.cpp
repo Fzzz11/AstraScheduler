@@ -1,6 +1,10 @@
 #include <astra/finalization.hpp>
 #include "reaper_registry.hpp"
 
+// 进程级 Finalization 的实现：begin_finalization() 把注册表永久关闭并向
+// 所有运行时广播优雅停机；wait/wait_for 等全部运行时回收完毕（或超时）；
+// request_immediate 把还在跑的运行时升级为立即停机。控制对象可复制，
+// 多个副本共享同一个收尾过程。
 #include <chrono>
 #include <memory>
 

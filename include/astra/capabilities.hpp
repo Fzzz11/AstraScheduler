@@ -5,6 +5,10 @@
 // 报告实际 Local Deque backend，不可由用户 aggregate-initialize。
 // Supported Configuration 仅 64-bit Linux（R-111，经 export.hpp 检查）。
 
+// 【通俗说明】同一份代码在不同机器上可能走不同实现路径（例如本地队列的
+// 无锁版本，或它的加锁回退版）。capabilities() 把"这个运行时实际用的
+// 是哪一种"如实报告，供性能问题归因——绝不为了好听而虚报 lock-free。
+
 #include <astra/export.hpp>
 
 #include <compare>

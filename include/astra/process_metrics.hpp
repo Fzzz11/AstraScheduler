@@ -5,6 +5,11 @@
 // 只观察进程级 Reaper/Finalization 协调器生命周期：查询无副作用、不初始化服务、
 // Finalized 后保留终值，不聚合每 Runtime task metrics（后者由 R-084/R-085 提供）。
 // 低频控制面统计始终开启，不受任一 Scheduler 的 MetricsLevel 影响。
+// 【通俗说明】上面的指标都是"某个 Scheduler 内部"的；这一份是"整个进程"
+// 的诊断：运行时注册了几个、交出了几个、Reaper 是否还活着、进程级 Finalization
+// 进行到哪一步。适合回答"我的调度器对象都销毁了，后台线程还没退，现在到底
+// 什么状态"。查询永远无副作用——没有任何 Scheduler 时查询返回 NotStarted
+// 全零，绝不会顺手把后台服务启动起来。
 
 #include <astra/export.hpp>
 

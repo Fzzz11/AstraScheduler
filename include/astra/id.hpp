@@ -2,6 +2,11 @@
 #define ASTRA_ID_HPP
 
 // AstraScheduler 强类型逻辑 ID（AST-004 / R-100 / D-153 / D-161）。
+
+// 【通俗说明】这三个 ID 是"逻辑身份证"：TaskHandle、Trace 事件、Metrics
+// 里出现的都是它们，而不是内存地址——地址会被复用，拿来当身份会撞车。
+// RuntimeId 区分同一进程里的多个调度器实例；TaskId/GraphRunId 在其内单调
+// 递增且永不复用。0 永远表示"无效/缺失"。
 // RuntimeId、TaskId、GraphRunId 与 NodeId 均为 default-zero-invalid、
 // trivially-copyable 强值类型，支持 valid/equality/order/hash，
 // 且无隐式整数或指针转换。

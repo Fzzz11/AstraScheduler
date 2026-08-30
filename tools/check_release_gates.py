@@ -41,6 +41,7 @@ ALLOWED_MILESTONES = (
     "v0.8.0",
     "v0.9.0",
     "v1.0.0",
+    "v1.1.0",
 )
 
 RULE_HEADER_RE = re.compile(r"^### (R-\d{3}) — .*$", re.MULTILINE)
@@ -211,7 +212,7 @@ class R094MilestoneGateTests(unittest.TestCase):
             tags_in_document_order,
             list(ALLOWED_MILESTONES),
             "milestone matrix must list every tag exactly once (Phase 0 through "
-            "v1.0.0), in delivery order",
+            "v1.1.0), in delivery order",
         )
 
     def test_R094_every_milestone_row_carries_scope_and_release_evidence(self):

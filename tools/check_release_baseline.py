@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""AstraScheduler v1.0.0 release baseline checklist（AST-055 / R-003 / R-091 / R-111 / R-094）。
+"""AstraScheduler release baseline checklist（AST-055 / R-003 / R-091 / R-111 / R-094）。
 
-RED 语义：checklist 默认失败——只有全部可追踪证据具备、版本一致且 artifact
-可重算时才通过。逐项校验（全部以文件/命令的真实结果为证据，不信任声明）：
+期望版本从 CMakeLists.txt 的 project VERSION 动态读取（R-093 单一版本源），
+不硬编码。RED 语义：checklist 默认失败——只有全部可追踪证据具备、版本一致
+且 artifact 可重算时才通过。逐项校验（全部以文件/命令的真实结果为证据，
+不信任声明）：
 
   1. release gates      tools/check_release_gates.py 全绿（approved-rule 审计）
   2. traceability       decision ledger/spec/issues 追踪校验通过
@@ -10,17 +12,20 @@ RED 语义：checklist 默认失败——只有全部可追踪证据具备、版
   4. hardening          docs/hardening-evidence.json verdict=ok（ASan+UBSan/TSan）
   5. package consumer   tools/check_cmake_package.py 通过（独立 find_package/link/run）
   6. platform matrix    tools/check_platform_matrix.py ok（Linux-only 声明审计）
-  7. api freeze         tools/check_api_freeze.py 表面与 golden v1 manifest 一致
-  8. version            project VERSION == installed 宏 == package version == 1.0.0
-  9. benchmark corpus   corpus baseline 与 artifact 存在且 astra_version 一致
+  7. api freeze         tools/check_api_freeze.py 表面与当前版本 golden manifest 一致
+  8. version            project VERSION == installed 宏 == package version
+  9. benchmark corpus   corpus baseline 存在且 seed/cases 完整；astra_version
+                        为已记录的发布版本且不超过当前 project VERSION
  10. tier-2             native AArch64 证据状态显式记录（executed 或 documented-deferred）
 
-输出 docs/release/<version>/release-evidence.json，verdict=ok 才构成 v1 发布基线。
+输出 docs/release/<version>/release-evidence.json，verdict=ok 才构成当前版本
+发布基线。历史 tag 证据（例如 docs/release/1.0.0/）保持原位，不覆盖。
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -31,7 +36,23 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 from check_api_freeze import build_and_install, compute_fingerprint  # noqa: E402
 
-EXPECTED_VERSION = "1.0.0"
+def _project_version() -> str:
+    """从 CMakeLists 读取 project VERSION（单一版本源，不硬编码）。"""
+    text = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    m = re.search(r"project\(AstraScheduler\s+VERSION\s+(\d+\.\d+\.\d+)", text)
+    if not m:
+        raise SystemExit(
+            "FAIL: CMakeLists.txt missing project(AstraScheduler VERSION x.y.z)"
+        )
+    return m.group(1)
+
+
+def _parse_semver(value: str):
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value or "")
+    return tuple(int(part) for part in m.groups()) if m else None
+
+
+EXPECTED_VERSION = _project_version()
 
 
 def run(command: list, timeout: int = 3600) -> dict:
@@ -118,11 +139,27 @@ def main() -> int:
     if baseline_path.is_file():
         try:
             baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            corpus_version = str(baseline.get("astra_version") or "")
+            corpus_semver = _parse_semver(corpus_version)
+            project_semver = _parse_semver(EXPECTED_VERSION)
+            cases = baseline.get("cases", [])
+            manifest = (
+                REPO_ROOT / "tools" / "api_manifest" / f"v{corpus_version}.json"
+            )
             corpus_ok = {
-                "exit_code": 0 if baseline.get("astra_version") == EXPECTED_VERSION else 1,
+                "exit_code": 0 if (
+                    corpus_semver is not None
+                    and project_semver is not None
+                    and corpus_semver <= project_semver
+                    and manifest.is_file()
+                    and "seed" in baseline
+                    and isinstance(cases, list)
+                    and len(cases) > 0
+                ) else 1,
                 "astra_version": baseline.get("astra_version"),
-                "cases": len(baseline.get("cases", [])),
+                "cases": len(cases) if isinstance(cases, list) else 0,
                 "seed_recorded": "seed" in baseline,
+                "manifest_recorded": manifest.is_file(),
             }
         except (json.JSONDecodeError, OSError) as exc:
             corpus_ok = {"exit_code": 1, "error": str(exc)}

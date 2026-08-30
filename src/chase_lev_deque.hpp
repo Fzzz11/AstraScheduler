@@ -7,6 +7,32 @@
 #include <memory>
 #include <vector>
 
+// ============================================================================
+// Chase-Lev work-stealing deque —— 本调度器的"本地任务队列"。
+//
+// 【它是什么】
+//   1980 年 Chase & Lev 提出的无锁双端队列：队尾只有一个线程（owner
+//   worker）推/弹，队首可以被任意数量的"小偷"（其他 worker）并发偷取。
+//   这是 work-stealing 调度器的标准构件。
+//
+// 【为什么几乎不用锁】
+//   owner 的 push/pop 只碰 bottom（自己的游标），小偷只碰 top（CAS 抢）；
+//   两边只在"队列可能空了/只剩一个元素"时用一次 CAS 决胜。最坏情况
+//   小偷失败重试，绝不会损坏队列。
+//
+// 【两种实现并存的原因】
+//   ChaseLevDeque 是生产实现（按 Lê et al. 2013 的弱内存序规范，在
+//   x86/ARM 上都正确）；ChaseLevSeqCstOracle 是全 seq_cst 的参考实现，
+//   用来做差分验证——同一个操作序列喂给两个实现，行为必须一致。
+//   生产版扩容失败会返回 false（调用方回退到全局队列），参考版则
+//   无界增长（测试规模可控）。
+//
+// 【内存序为什么这样配】
+//   push 的"写 cell -> release 写 bottom"保证小偷看到新 bottom 时一定
+//   看得到数据；steal 的"acquire 读 top/bottom -> 读 cell"与之配对；
+//   最后一元素的决胜用 seq_cst CAS 保证 owner/thief 恰好一人成功。
+//   修改任何一处内存序前，请先读 Lê et al. 2013 的证明。
+// ============================================================================
 namespace astra::detail {
 
 enum class DequeResultStatus : std::uint8_t {

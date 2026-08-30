@@ -3,6 +3,11 @@
 
 // AstraScheduler 运行时指标模型与快照定义（AST-042 / R-084 / D-135 / D-136 / D-151）。
 // 仅公开低基数固定 schema，不包含 TaskId、NodeId 或任意字符串 label。
+// 【通俗说明】这是"运行时指标"的定义文件：submit/task/队列/协程/定时器/
+// 图/优先级/截止时间等每类事件各有一个计数器，Detailed 模式额外记录延迟
+// 直方图（64 个 2 的幂分桶，省内存且足够看分布）。Scheduler::metrics_snapshot()
+// 把所有分片原子计数累加成一份不可变快照。设计取舍：计数器是低基数固定
+// 字段（不是任意标签），Off 模式零开销，Basic 只累计数，Detailed 才记分布。
 
 #include <astra/export.hpp>
 #include <astra/id.hpp>

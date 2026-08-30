@@ -5,6 +5,12 @@
 // 线程安全共享 TraceCollector：显式 start_capture/stop、固定容量、重复代际、
 // drop-newest 计 loss；emit 无分配/文件 I/O/callback/阻塞，Runtime 热路径安全。
 // 完整 versioned TraceEvent EventKind 族由 R-087（AST-046）扩展。
+// 【通俗说明】这是"飞行记录仪"：submit/claim/挂起/恢复/抢锁等关键事件带
+// 时间戳写入内存里的定长缓冲区，事后离线导出成 Chrome Trace JSON（用
+// Chrome 的 tracing 查看器打开就是时间线）。设计取舍：事件写入绝不阻塞
+// 业务线程——缓冲区满了就丢弃新事件并计数（trace_complete=false 明确告诉
+// 你丢了多少），绝不为了完整性阻塞调度。用一个小容量的 buffer 就能验证
+// 丢失语义，用大容量才谈性能结论。
 
 #include <astra/export.hpp>
 #include <astra/id.hpp>
