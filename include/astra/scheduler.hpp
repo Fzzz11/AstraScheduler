@@ -237,14 +237,16 @@ private:
         }
 
         // 强异常安全事务：构造过程抛出异常则回滚 slot
-        std::shared_ptr<detail::TaskSharedState<ResultType>> state;
+        std::shared_ptr<typename TaskHandle<ResultType>::ResultCell> state;
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
             const TaskId tid = allocate_task_id();
-            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority, resolved_deadline);
-            invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
-                state, std::forward<F>(f), std::forward<Args>(args)...);
+            state = std::make_shared<typename TaskHandle<ResultType>::ResultCell>(tid, resolved_priority, resolved_deadline);
+            invoker = detail::wrap_submitted_invoker(
+                TaskHandle<ResultType>::template make_invoker<Traits::is_ordinary_invocable>(
+                    state, std::forward<F>(f), std::forward<Args>(args)...),
+                state->protocol_token());
         } catch (...) {
             if (!is_internal) {
                 rollback_external_slot();
@@ -303,14 +305,16 @@ private:
         }
 
         // 强异常安全事务：构造过程抛出异常则回滚 slot
-        std::shared_ptr<detail::TaskSharedState<ResultType>> state;
+        std::shared_ptr<typename TaskHandle<ResultType>::ResultCell> state;
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
             const TaskId tid = allocate_task_id();
-            state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority, resolved_deadline);
-            invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
-                state, std::forward<F>(f), std::forward<Args>(args)...);
+            state = std::make_shared<typename TaskHandle<ResultType>::ResultCell>(tid, resolved_priority, resolved_deadline);
+            invoker = detail::wrap_submitted_invoker(
+                TaskHandle<ResultType>::template make_invoker<Traits::is_ordinary_invocable>(
+                    state, std::forward<F>(f), std::forward<Args>(args)...),
+                state->protocol_token());
         } catch (...) {
             if (!is_internal) {
                 rollback_external_slot();
@@ -360,12 +364,12 @@ private:
             throw submission_rejected(SubmissionError::CapacityExhausted);
         }
 
-        std::shared_ptr<detail::TaskSharedState<T>> state;
+        std::shared_ptr<typename TaskHandle<T>::ResultCell> state;
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
             const TaskId tid = allocate_task_id();
-            state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority, resolved_deadline);
+            state = std::make_shared<typename TaskHandle<T>::ResultCell>(tid, resolved_priority, resolved_deadline);
             auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
@@ -380,7 +384,9 @@ private:
             );
             task.handle().promise().shared_state = state;
             auto coro_h = task.release_handle();
-            invoker = std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state);
+            invoker = detail::wrap_submitted_invoker(
+                std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state),
+                state->protocol_token());
         } catch (...) {
             if (!is_internal) {
                 rollback_external_slot();
@@ -428,12 +434,12 @@ private:
             return SubmissionResult<T>(SubmissionError::CapacityExhausted);
         }
 
-        std::shared_ptr<detail::TaskSharedState<T>> state;
+        std::shared_ptr<typename TaskHandle<T>::ResultCell> state;
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
             const TaskId tid = allocate_task_id();
-            state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority, resolved_deadline);
+            state = std::make_shared<typename TaskHandle<T>::ResultCell>(tid, resolved_priority, resolved_deadline);
             auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
@@ -448,7 +454,9 @@ private:
             );
             task.handle().promise().shared_state = state;
             auto coro_h = task.release_handle();
-            invoker = std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state);
+            invoker = detail::wrap_submitted_invoker(
+                std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state),
+                state->protocol_token());
         } catch (...) {
             if (!is_internal) {
                 rollback_external_slot();
@@ -470,7 +478,7 @@ private:
     TaskId allocate_task_id() const;
     void rollback_external_slot() const;
     void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const;
-    GraphRun run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph);
+    ASTRA_NO_EXPORT GraphRun run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph);
     std::uint64_t register_timer(std::chrono::steady_clock::time_point wake_time,
                                  std::shared_ptr<detail::AwaitHandshake> handshake,
                                  std::function<void()> resume_action) const;
@@ -478,7 +486,7 @@ private:
 
     friend struct detail::SchedulerTestAccess;
     friend class detail::GraphExecution;
-    friend void detail::perform_caller_wait(const detail::TaskSharedStateBase&,
+    friend void detail::perform_caller_wait(const detail::TaskControlBlock&,
                                             std::optional<std::chrono::steady_clock::time_point>);
     friend void detail::perform_graph_caller_wait(const detail::GraphRunSharedState&,
                                                   std::optional<std::chrono::steady_clock::time_point>);

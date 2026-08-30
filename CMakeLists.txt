@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.21)
 #（AST-002 / R-110；AST-003 / R-093）。
 # Supported Configuration 仅 64-bit Linux（R-111 / D-167）。
 
-project(AstraScheduler VERSION 1.1.0 LANGUAGES CXX)
+project(AstraScheduler VERSION 1.2.0 LANGUAGES CXX)
 
 # R-111：Supported Configuration 仅 64-bit Linux；非 Linux / 32-bit 在 configure
 # 边界即被拒绝，不得进入 release gate 或 package 支持声明。
@@ -54,7 +54,8 @@ endif()
 
 set(ASTRA_SCHEDULER_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/task_shared_state.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/task_control_block.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/await_protocol.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/finalization.cpp
@@ -86,6 +87,12 @@ target_compile_options(AstraScheduler PRIVATE
   -fvisibility=hidden
   -fvisibility-inlines-hidden
 )
+if(BUILD_SHARED_LIBS)
+  target_link_options(AstraScheduler PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/AstraScheduler.version"
+    "LINKER:--exclude-libs,ALL"
+  )
+endif()
 
 set_target_properties(AstraScheduler PROPERTIES
   VERSION ${PROJECT_VERSION}

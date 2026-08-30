@@ -6,7 +6,7 @@ Approved at: 2026-08-27
 Target tracker: local Markdown (`.scratch/astra-scheduler-runtime/issues/`)
 Source spec: `.scratch/astra-scheduler-runtime/spec.md` (`approved`, Linux-only/WSL revision approved 2026-08-27)
 Generated at: 2026-08-26
-Revised at: 2026-08-30 (D-169, R-113 through R-117)
+Revised at: 2026-08-30 (D-169, R-113 through R-117; D-170 through D-175 draft increment below)
 
 ## Input Audit
 
@@ -40,6 +40,7 @@ Revised at: 2026-08-30 (D-169, R-113 through R-117)
 | v0.9.0 | Linux-only Tier matrix、Linux sanitizer/native AArch64 weak-memory、package consumer、单实现实例部署约束全部 harden。 |
 | v1.0.0 | Public source/semantic compatibility 冻结，全部 approved-rule、文档、package、schema、benchmark gates 通过。 |
 | v1.1.0 | Semantic API freeze、public/internal test isolation、Runtime-owned Task identity 与 GraphExecution 深模块边界。 |
+| v1.2.0 | compiled TaskControlBlock：协议类型离开 installed headers；薄 awaiter、F 信封、private nested 结果格；shared 只导出 documented allowlist。 |
 
 ## Planned Tickets
 
@@ -467,6 +468,64 @@ Revised at: 2026-08-30 (D-169, R-113 through R-117)
 - What to build: 使用semantic public contract替代整头文件冻结，私有化实现逃逸入口，把Task identity归还Runtime，把Graph运行协议收拢到内部GraphExecution，并物理隔离public/internal tests。
 - Test-first seam: public consumer contract、negative compile probes、TaskId/admission tests、GraphRun并发/取消测试与独立package consumer。
 
+### v1.2.0 — Compiled TaskControlBlock
+
+Increment status: approved  
+Approved by: project owner（user）  
+Approved at: 2026-08-30  
+Source: D-170 through D-175, ADR-0048, R-118 through R-123  
+Blocked by: AST-057
+
+本增量不实施 R-116 的进一步 GraphExecution 深化，也不拆 Scheduler::Impl。
+
+#### AST-058 — 将项目 VERSION 升至 1.2.0 并固定不可改写的旧 manifest
+
+- Primary Rules: R-122
+- Supporting Rules: R-093, R-094, R-113
+- Blockers: AST-057
+- What to build: project VERSION、consumer exact-version 钉住值与 version.hpp 宏均为 1.2.0；里程碑矩阵与 ALLOWED_MILESTONES 列入 v1.2.0；新增 v1.2.0 semantic manifest（不得改写 v1.0.0.json / v1.1.0.json）。
+- Test-first seam: R-093 一致性在仍为 1.1.0 时失败；钉住 1.1.0 的 find_package 对 1.2.0 安装 configure 失败；改写旧 manifest 使 API freeze/release gate 失败。
+
+#### AST-059 — TaskHandle 结果格与 compiled TaskControlBlock
+
+- Primary Rules: R-119
+- Supporting Rules: R-118, R-048, R-051, R-057
+- Blockers: AST-058
+- What to build: 安装头用 TaskHandle 的 private nested 结果格承载值/异常/终态；运行协议编进 compiled TaskControlBlock；consumer 不能完成 TaskSharedState / TaskSharedStateBase。get/wait/cancel 可观察语义不变。
+- Test-first seam: 对 TaskSharedState* 的完成型 compile probe 在类型仍在安装头时失败（RED=仍能完成类型）；现有 TaskHandle get/wait 测试保持绿。
+
+#### AST-060 — 公开 awaitable 改为薄包装并移出 handshake
+
+- Primary Rules: R-120
+- Supporting Rules: R-118, R-073, R-076, R-079
+- Blockers: AST-059
+- What to build: co_await TaskHandle/GraphRun、yield、sleep、cancellation_point 保持既有挂起/恢复/取消语义；awaiter 为不含 handshake/TCB/mutex 的薄包装；AwaitHandshake 不得在安装头被完成。
+- Test-first seam: handshake 完成型 probe 先红后绿；现有 spawn/yield/sleep/await 行为测试不改语义。
+
+#### AST-061 — submit/emplace 安装头只保留 F 信封
+
+- Primary Rules: R-121
+- Supporting Rules: R-118, R-058, R-102
+- Blockers: AST-059
+- What to build: submit/try_submit/spawn/try_spawn 与 Graph emplace/emplace_coroutine 的安装头 invoker 只存 F 并调用 F，把返回值交给结果格或 TCB；不含 admission/metrics/handshake；不使用 std::function；move-only F 仍可提交。
+- Test-first seam: 安装头 invoker 仍内联协议时负向审计失败；现有 submit/spawn/emplace 与 move-only 测试保持绿。
+
+#### AST-062 — 锁定协议类型完成型边界
+
+- Primary Rules: R-118
+- Supporting Rules: R-114, R-117
+- Blockers: AST-059, AST-060, AST-061
+- What to build: 独立 consumer 对 TaskSharedStateBase、AwaitHandshake 及等价协议类型的完成型 compile probe 全部失败；documented public_contract 继续编译运行；internal tests 改走非安装头。
+- Test-first seam: encapsulation/package probes 在任一协议类型仍可完成时失败。
+
+#### AST-063 — shared 库只导出 documented allowlist
+
+- Primary Rules: R-123
+- Supporting Rules: R-110, R-113
+- Blockers: AST-062
+- What to build: shared 库 hidden-by-default / version script，只导出 v1.2.0 documented 符号；package 封闭集等于该 allowlist，不再要求 detail 协议符号；残留 header 引用隐藏符号必须链接失败。
+- Test-first seam: nm 仍见到协议 detail 导出时 package gate 失败；独立 consumer 仍能链接 documented 符号。
+
 ## Dependency DAG
 
 以下使用 `Ticket <- direct blockers` 表示精确直接依赖；它与每个 Ticket 的 `Blockers` 字段必须逐项一致。
@@ -528,6 +587,12 @@ AST-053 <- AST-002, AST-003, AST-047, AST-051, AST-052
 AST-054 <- AST-031, AST-037, AST-041, AST-048, AST-053
 AST-055 <- AST-051, AST-053, AST-054
 AST-057 <- AST-056
+AST-058 <- AST-057
+AST-059 <- AST-058
+AST-060 <- AST-059
+AST-061 <- AST-059
+AST-062 <- AST-059, AST-060, AST-061
+AST-063 <- AST-062
 ```
 
 ## Rule Coverage
@@ -637,13 +702,19 @@ AST-057 <- AST-056
 | R-107 | AST-007 | AST-052 | `[R-107]` 支持配置中Scheduler数量不增加coordinator数，unsupported duplicate instance被部署文档/测试明确拒绝。 | Covered (1 primary + 1 supporting) |
 | R-108 | AST-015 | None | `[R-108]` same-runtime Worker得到logic_error且状态不变，other-runtime Worker仍等待目标真实Stopped。 | Covered (1 primary) |
 | R-109 | AST-047 | None | `[R-109]` Task hot path不获取logger I/O锁，Trace overflow/export不递归进入日志系统。 | Covered (1 primary) |
-| R-110 | AST-002 | AST-053 | `[R-110]` 安装目录可被独立最小工程消费，consumer compile line不包含项目内部依赖或强制诊断选项。 | Covered (1 primary + 1 supporting) |
+| R-110 | AST-002 | AST-053, AST-063 | `[R-110]` 安装目录可被独立最小工程消费，consumer compile line不包含项目内部依赖或强制诊断选项。 | Covered (1 primary + 2 supporting) |
 | R-112 | AST-001 | None | `[R-112]` 仓库指令、开发文档与Ticket verification只给出WSL/Linux命令，WSL build目录与Windows native cache隔离，任何通过声明均可追溯到WSL或native Linux输出。 | Covered (1 primary) |
-| R-113 | AST-057 | None | `[R-113]` 旧release manifest不可变，documented contract变化才触发semantic gate。 | Covered (1 primary) |
-| R-114 | AST-057 | None | `[R-114]` public consumer无法访问raw frame、shared state、Graph storage、completion list或test seam。 | Covered (1 primary) |
+| R-113 | AST-057 | AST-058, AST-063 | `[R-113]` 旧release manifest不可变，documented contract变化才触发semantic gate。 | Covered (1 primary + 2 supporting) |
+| R-114 | AST-057 | AST-062 | `[R-114]` public consumer无法访问raw frame、shared state、Graph storage、completion list或test seam。 | Covered (1 primary + 1 supporting) |
 | R-115 | AST-057 | None | `[R-115]` TaskId由Runtime分配且admission失败保持计数和identity平衡。 | Covered (1 primary) |
 | R-116 | AST-057 | None | `[R-116]` Scheduler graph入口委托内部GraphExecution且既有Graph语义不变。 | Covered (1 primary) |
-| R-117 | AST-057 | None | `[R-117]` public tests无src include path，internal tests显式选择白盒seam。 | Covered (1 primary) |
+| R-117 | AST-057 | AST-062 | `[R-117]` public tests无src include path，internal tests显式选择白盒seam。 | Covered (1 primary + 1 supporting) |
+| R-118 | AST-062 | AST-059, AST-060, AST-061 | `[R-118]` 独立consumer不能完成TaskSharedStateBase、AwaitHandshake或等价协议类型。 | Covered (1 primary + 3 supporting) |
+| R-119 | AST-059 | None | `[R-119]` 结果格为TaskHandle private nested；安装头不能完成TaskSharedState名；get语义不变。 | Covered (1 primary) |
+| R-120 | AST-060 | None | `[R-120]` 公开awaitable为薄包装且不暴露handshake/TCB；yield/sleep/await语义不变。 | Covered (1 primary) |
+| R-121 | AST-061 | None | `[R-121]` submit/emplace安装头只留F信封，不用std::function，move-only F仍可提交。 | Covered (1 primary) |
+| R-122 | AST-058 | None | `[R-122]` VERSION为1.2.0；v1.0.0与v1.1.0 manifest不可改写；exact-version钉住1.2.0。 | Covered (1 primary) |
+| R-123 | AST-063 | None | `[R-123]` shared默认隐藏，只导出documented allowlist；nm不见协议detail符号。 | Covered (1 primary) |
 
 ## Semantic Audit
 
@@ -655,16 +726,18 @@ AST-057 <- AST-056
 - Human semantic audit: passed。Ticket 仅切分 approved rules，不扩张变体；早期 supporting criteria 已缩小为各自里程碑的协作证据，最终主实现责任保持唯一。
 - Linux-only/WSL revision audit: R-111只替换平台支持范围，R-112只约束本机开发证据；Ticket编号、里程碑与blocker边保持不变。
 - Encapsulation revision audit: R-113至R-117只重划实现边界和兼容证据，不改变既有Runtime observable semantics。
+- v1.2.0 compiled TCB increment (approved 2026-08-30): R-118至R-123 各有唯一 primary；不扩张 GraphExecution（R-116 仍由 AST-057 拥有）或拆 Scheduler::Impl。
+- 发布注意：AST-059+ 使用 Milestone v1.2.0，必须先落地 AST-058 的 ALLOWED_MILESTONES / 里程碑矩阵，否则 R-094 门禁会红。
 
 ## Publication Results
 
 - Tracker: local Markdown (`.scratch/astra-scheduler-runtime/issues/`).
 - Published at: 2026-08-30.
-- Published Tickets: 57 (`AST-001` through `AST-057`)。
-- Status: `AST-001` through `AST-057`为`done`。
-- Frontier: None。
+- Published Tickets: 63 (`AST-001` through `AST-063`；无 AST-056 文件编号空洞若存在则保持历史)。
+- Status: `AST-001` through `AST-063`为`done`。
+- Frontier: v1.2.0 increment 已实现（AST-058..063）。
 - Unpublished or failed items: None.
-- Traceability inventory: `decisions=169, active_rules=110, tickets=57`（WSL；R-113至R-117均由AST-057 primary覆盖）。
+- Traceability inventory: 以校验器输出为准（R-118至R-123由AST-058至AST-063覆盖）。
 
 | ID | Milestone | Published file | Status | Blocked by |
 |---|---|---|---|---|
@@ -725,6 +798,12 @@ AST-057 <- AST-056
 | AST-055 | v1.0.0 | [55-v1-release-gate.md](issues/55-v1-release-gate.md) | ready-for-agent | AST-051, AST-053, AST-054 |
 | AST-056 | v0.8.0 | [56-coroutine-frame-lifetime-hotfix.md](issues/56-coroutine-frame-lifetime-hotfix.md) | done | None |
 | AST-057 | v1.1.0 | [57-encapsulation-boundaries.md](issues/57-encapsulation-boundaries.md) | done | AST-056 |
+| AST-058 | v1.2.0 | [58-version-1.2.0.md](issues/58-version-1.2.0.md) | done | AST-057 |
+| AST-059 | v1.2.0 | [59-taskhandle-result-cell.md](issues/59-taskhandle-result-cell.md) | done | AST-058 |
+| AST-060 | v1.2.0 | [60-thin-awaiters.md](issues/60-thin-awaiters.md) | done | AST-059 |
+| AST-061 | v1.2.0 | [61-callable-envelope.md](issues/61-callable-envelope.md) | done | AST-059 |
+| AST-062 | v1.2.0 | [62-protocol-completeness-probes.md](issues/62-protocol-completeness-probes.md) | done | AST-059, AST-060, AST-061 |
+| AST-063 | v1.2.0 | [63-documented-export-allowlist.md](issues/63-documented-export-allowlist.md) | done | AST-062 |
 
 ## Approval
 
@@ -732,6 +811,6 @@ Status: approved
 Approved by: project owner（user）
 Approved at: 2026-08-27
 Revision approved by: project owner（user）
-Revision approved at: 2026-08-30（v1.1 encapsulation revision）
+Revision approved at: 2026-08-30（v1.1 encapsulation revision；v1.2.0 compiled TCB increment）
 
-本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；AST-057承载本次v1.1封装性修订。
+本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-063 承载。

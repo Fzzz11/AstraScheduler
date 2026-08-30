@@ -1,3 +1,6 @@
+#include "await_handshake.hpp"
+#include "coroutine_resume.hpp"
+
 #include "astra/coroutine.hpp"
 #include "astra/scheduler.hpp"
 #include "astra/task_handle.hpp"

@@ -41,11 +41,13 @@
 #include <astra/coroutine.hpp>
 #include <astra/scheduler.hpp>
 #include <astra/trace.hpp>
+#include "await_handshake.hpp"
 #include "chase_lev_deque.hpp"
 #include "graph_execution.hpp"
 #include "graph_shared_state.hpp"
 #include "reaper_registry.hpp"
 #include "runtime_identity.hpp"
+#include "task_control_block.hpp"
 #include "test_seam.hpp"
 #include "trace_collector.hpp"
 
@@ -1392,7 +1394,7 @@ struct WaitDiagnosticsGuard {
     GraphRunId graph_target;
     std::chrono::steady_clock::time_point begin;
     const std::optional<std::chrono::steady_clock::time_point>& deadline;
-    const TaskSharedStateBase* task_state;
+    const TaskControlBlock* task_state;
     const GraphRunSharedState* graph_state;
     bool helping;
 
@@ -1639,14 +1641,14 @@ struct GraphNodeExecutionContextGuard {
 struct GraphCoroutineResumeWrapper final : TaskInvokerBase {
     std::unique_ptr<TaskInvokerBase> inner;
     std::shared_ptr<GraphRunSharedState> graph_state;
-    std::shared_ptr<TaskSharedState<void>> task_state;
+    std::shared_ptr<TaskHandle<void>::ResultCell> task_state;
     NodeId node_id;
     std::function<void(NodeId)> trigger_fn;
 
     GraphCoroutineResumeWrapper(
         std::unique_ptr<TaskInvokerBase> in,
         std::shared_ptr<GraphRunSharedState> gs,
-        std::shared_ptr<TaskSharedState<void>> ts,
+        std::shared_ptr<TaskHandle<void>::ResultCell> ts,
         NodeId nid,
         std::function<void(NodeId)> tfn)
         : inner(std::move(in)), graph_state(std::move(gs)), task_state(std::move(ts)),
@@ -1733,7 +1735,7 @@ void generate_steal_victims(
 //   必须立即报错（且要在任何计数/状态副作用之前）。
 // ---------------------------------------------------------------------------
 void perform_caller_wait(
-    const TaskSharedStateBase& target,
+    const TaskControlBlock& target,
     std::optional<std::chrono::steady_clock::time_point> deadline) {
     // 1. Direct Self-Wait 必须在副作用前抛 std::logic_error（R-052 / D-049 / D-065）
     if (t_current_worker_impl != nullptr &&
@@ -2648,7 +2650,7 @@ GraphRun detail::GraphExecution::run(
         if (state->node_entries[idx].invoker && state->node_entries[idx].invoker->is_coroutine_node()) {
             auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(state->node_entries[idx].invoker.get());
             const TaskId task_id = impl_->allocate_task_id();
-            auto task_state = std::make_shared<detail::TaskSharedState<void>>(task_id, node_priority, node_deadline);
+            auto task_state = std::make_shared<TaskHandle<void>::ResultCell>(task_id, node_priority, node_deadline);
             task_state->set_timer_functions(
                 [impl_ptr = impl_.get()](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
                     return impl_ptr->register_timer(wt, std::move(hs), std::move(act));

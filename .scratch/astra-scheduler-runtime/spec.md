@@ -2,7 +2,7 @@
 
 Status: approved
 Approved by: project owner（user）
-Approved at: 2026-08-27
+Approved at: 2026-08-30
 
 ## Problem Statement
 
@@ -222,6 +222,12 @@ AstraScheduler 面向 Linux-only 的现代 C++20 任务调度场景，最终范�
 | D-167 | R-092 (historical), R-101, R-110, R-111, Non-goals, Compatibility |
 | D-168 | R-112, `AGENTS.md`, `docs/development.md` |
 | D-169 | R-113, R-114, R-115, R-116, R-117 |
+| D-170 | R-118 |
+| D-171 | R-122 |
+| D-172 | R-120 |
+| D-173 | R-119 |
+| D-174 | R-121 |
+| D-175 | R-123 |
 
 ## Normative Rules
 
@@ -1687,9 +1693,9 @@ Supersedes: None
 Superseded by: None
 Statement: v1.1起API freeze必须使用明确维护的documented public header/type/function/symbol allowlist与独立consumer compile contract，不得以整头文件哈希或全部`astra`动态符号替代语义分类；每个已发布版本manifest必须不可变，新版本只能新增独立manifest并与project/header/package版本一致。
 Applies to: v1.1及后续source compatibility、release manifest与package gate。
-Exceptions: 不承诺跨toolchain ABI；模板实现所需detail声明可出现在安装头，但不属于documented compatibility allowlist。
-Source decisions: D-169
-Source support: D-169 => 区分documented contract与accidental implementation surface，并禁止改写旧发布证据。
+Exceptions: 不承诺跨toolchain ABI。安装头中允许的非 documented 模板形状仅限 R-118 至 R-121 列出的结果格、F信封与薄awaiter，不得以“模板需要”为由保留完整运行协议类型。
+Source decisions: D-169, D-170
+Source support: D-169 => 区分documented contract与accidental implementation surface，并禁止改写旧发布证据; D-170 => 收紧模板可保留detail声明的例外，完整协议类型不得留在安装头。
 Code evidence: None
 Disposition: implementation
 Observable result: 私有实现可在不改变public contract时演进，删除或改变documented API会使gate失败，v1.0 manifest保持字节不变。
@@ -1700,9 +1706,9 @@ Supersedes: None
 Superseded by: None
 Statement: `astra::detail`、`*_internal`、原始coroutine handle、Task shared-state mutator、FrozenGraph node storage、GraphRun completion storage与Scheduler fault-injection入口必须私有化或仅存在于非安装internal header；public headers不得授予普通consumer修改运行时不变量的能力。
 Applies to: Scheduler、TaskHandle、Coroutine Task、FrozenTaskGraph、GraphRun和测试seam。
-Exceptions: public template实现可通过最小friend或不可直接调用的internal bridge完成编译。
-Source decisions: D-169
-Source support: D-169 => 收回审查确认的 accidental control surface。
+Exceptions: 编译失败型boundary probe可有意引用被禁止名称。最小friend仅得连接 R-118 至 R-121 允许的结果格/F信封/薄awaiter与库内协议实现，不得把协议类型完整定义留在安装头。
+Source decisions: D-169, D-170
+Source support: D-169 => 收回审查确认的 accidental control surface; D-170 => 禁止以friend/bridge为由在安装头保留完整协议类型。
 Code evidence: None
 Disposition: implementation
 Observable result: public consumer对上述入口的编译探测失败，而已文档化用例继续编译运行。
@@ -1746,6 +1752,84 @@ Code evidence: None
 Disposition: implementation
 Observable result: public tests在移除源码include后通过，误用internal入口的静态audit或compile probe失败。
 
+### R-118 — 安装头不得提供可完成的运行协议类型
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: package consumer翻译单元不得完成`TaskSharedStateBase`、`AwaitHandshake`或等价的TaskControlBlock/handshake协议类型；mutex、完成回调、rescheduler、timer注册、handshake状态机与invoker执行协议必须编入库实现，不得以完整类型出现在installed headers中。
+Applies to: v1.2.0及后续installed public headers与独立consumer。
+Exceptions: TaskHandle private nested结果格、F信封与公开awaitable薄包装由R-119至R-121约束，不属于本规则禁止的协议类型。
+Source decisions: D-170
+Source support: D-170 => compiled TaskControlBlock；consumer不能完成协议类型；协议编进库。
+Code evidence: None
+Disposition: implementation
+Observable result: 独立consumer对上述协议类型的完成型compile probe失败，documented public用例继续编译运行。
+
+### R-119 — TaskHandle 结果格为 private nested 且安装头不出现 TaskSharedState 名
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: 安装头中的结果存储必须是`TaskHandle<T>`与`TaskHandle<void>`的private nested模板，只承载值`T`（void特化无值）、异常与终态观察所需状态；consumer不得将该nested类型作为独立入口命名或构造；安装头不得提供可被consumer完成的`TaskSharedState`或`TaskSharedStateBase`类型名。
+Applies to: v1.2.0及后续TaskHandle安装头。
+Exceptions: `get()`/`wait()`/`request_cancel`的可观察语义仍由R-048至R-058约束，本规则不改变那些结果。结果格不得包含mutex、回调列表、rescheduler、timer hook或handshake。
+Source decisions: D-173, D-170
+Source support: D-173 => private nested结果格且去掉TaskSharedState名称; D-170 => 任意T的get()仍可在consumer侧实例化且协议不回安装头。
+Code evidence: None
+Disposition: implementation
+Observable result: public `get()`行为测试继续通过；对`TaskSharedState`/`TaskSharedStateBase`的完成型probe失败。
+
+### R-120 — 公开 awaitable 以薄包装留在安装头且不暴露协议
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: `co_await` TaskHandle（仅左值）、GraphRun（仅左值）、`yield()`、`sleep_for`/`sleep_until`与`cancellation_point`必须保持既有可观察挂起/恢复/取消语义；其awaiter可以完整类型出现在installed headers，但必须是薄包装：`await_suspend`只调用compiled协议实现，且类型及其成员不得暴露`AwaitHandshake`、TaskControlBlock/`TaskSharedState`、mutex/cv、rescheduler或timer registrar。documented compatibility surface是这些`co_await`操作，不承诺awaiter的名字、嵌套类型或布局。
+Applies to: v1.2.0及后续Coroutine/TaskHandle/GraphRun公开awaitable。
+Exceptions: 不把第三方自定义awaiter列为documented扩展面。
+Source decisions: D-172, D-170
+Source support: D-172 => 薄包装留在安装头、不暴露协议、不承诺类型名; D-170 => 挂起路径不得把handshake状态机展开在安装头。
+Code evidence: None
+Disposition: implementation
+Observable result: 现有spawn/yield/sleep/await行为测试通过；对handshake/TCB完成型probe失败。
+
+### R-121 — submit/emplace 安装头只保留 F 信封
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: `submit`/`try_submit`/`spawn`/`try_spawn`与`TaskGraph::emplace`/`emplace_coroutine`在安装头中只得保留F信封：模板存储可调用对象`F`及是否接受`stop_token`的调用形态，`execute()`只调用`F`并把返回值交给结果格或compiled TaskControlBlock；admission、try_start、metrics、helping、timer与handshake不得出现在该信封的安装头实现中；不得在header缝上把`F`擦成`std::function`。
+Applies to: v1.2.0及后续submit与Graph builder安装头。
+Exceptions: 可调用对象约束仍由R-058与R-102约束（`f(args...)`或`f(stop_token, args...)`、不得返回裸引用、结果可移动、move-only F可提交）；Graph节点返回void仍由R-071约束。
+Source decisions: D-174, D-170
+Source support: D-174 => F信封、禁止std::function、禁止大invoker模板; D-170 => 协议不得留在安装头invoker实现中。
+Code evidence: None
+Disposition: implementation
+Observable result: 现有submit/spawn/emplace与move-only callable测试通过；安装头invoker实现不含协议调用。
+
+### R-122 — 协议内收后项目 VERSION 为 1.2.0 且既有 manifest 不可改写
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: 实施R-118至R-121时`project(AstraScheduler VERSION …)`必须为1.2.0；consumer exact-version钉住值、installed `version.hpp`宏与package version必须同为1.2.0；`tools/api_manifest/v1.0.0.json`与`v1.2.0`之前的`v1.1.0.json`均不得改写；1.2.0必须使用新的semantic manifest。documented public observable semantics不因该版本上调而改变。
+Applies to: v1.2.0 release、CMake package与API freeze gate。
+Exceptions: 钉住1.1.0的find_package对1.2.0安装必须configure失败。不构成documented public的major break。
+Source decisions: D-171
+Source support: D-171 => VERSION升到1.2.0、不保持1.1.0、不升2.0.0、旧manifest不可改写、exact-version随单一版本源。
+Code evidence: None
+Disposition: implementation
+Observable result: R-093一致性检查对1.2.0通过；改写v1.0.0/v1.1.0 manifest会使release/API gate失败。
+
+### R-123 — 共享库默认隐藏并只导出 documented allowlist
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: Linux shared `libAstraScheduler.so`必须hidden-by-default（version script或等价可见性控制），只导出与v1.2.0 semantic manifest/`public_contract.cpp`对齐的documented public符号；`astra::detail`协议类型、`record_metrics_*`、handshake与TaskControlBlock mutator不得出现在默认dynsym导出；package gate的封闭集必须等于该allowlist，不得再要求detail协议符号存在。header模板若仍引用被隐藏的协议符号，必须链接失败，不得把符号加回导出表。
+Applies to: v1.2.0及后续shared install与R-110 package consumer。
+Exceptions: 不承诺跨toolchain ABI（R-093）。static install无dynsym面，但仍受R-118至R-121的安装头约束。internal tests不得依赖已隐藏的public dynsym去测协议。
+Source decisions: D-175, D-170
+Source support: D-175 => version script只导出documented allowlist、封闭集不再要求detail; D-170 => 协议内收后不得靠导出绕过封装。
+Code evidence: None
+Disposition: implementation
+Observable result: `nm -D --defined-only`不含协议detail符号；独立consumer仍能链接documented符号；残留header引用会导致链接失败。
+
 ## State and Lifecycle
 
 | Scope | Transition / stage | Governing rules |
@@ -1788,12 +1872,14 @@ Observable result: public tests在移除源码include后通过，误用internal�
 | Metrics/Trace | bounded opt-in observability and offline export | R-084 through R-088, R-095, R-096 |
 | Logging | low-frequency control-plane diagnostics separated from Trace | R-109 |
 | Benchmark/Release | verified corpus, artifacts, platform and SemVer policy | R-089 through R-094 |
-| Package | isolated public headers and independent CMake consumer | R-110 |
+| Package | isolated public headers and independent CMake consumer | R-110, R-123 |
+| v1.2.0 installed surface | compiled TaskControlBlock; result cell, F envelope, thin awaiters only | R-118 through R-123 |
 
 ## Compatibility
 
 - v0.1.0 的 Global Queue基线及后续纵向版本由 R-001 至 R-005、R-094 汇总。
 - v1 documented source/observable semantic兼容、Linux-only支持范围和非ABI承诺由 R-093、R-110、R-111 汇总；本机开发入口由R-112约束。
+- v1.2.0 安装面收紧与版本/导出由 R-118 至 R-123 汇总；v1.0.0 与 v1.1.0 manifest 仍不可变（R-113、R-122）。
 - Finalization公共surface由 R-035、R-044至R-046汇总；startup竞态以R-097取代历史R-029/R-030。
 - D-015/ADR-0006与D-025是历史方案；R-020至R-024和R-031至R-033分别表达替代设计。
 - R-027由R-107取代，把process-wide单Reaper保证限定在R-111的Linux-only Supported Configuration及D-159的one-instance部署前提。
@@ -1834,6 +1920,7 @@ Observable result: public tests在移除源码include后通过，误用internal�
 - Benchmark validity, artifact and dedicated-runner fixtures cover R-089 through R-094.
 - Linux-only build/package/CI matrix覆盖R-111；所有本机验证命令与build-cache隔离检查覆盖R-112并必须从WSL执行。
 - Semantic API manifest与consumer boundary probes覆盖R-113、R-114和R-117；admission fault injection覆盖R-115；Graph状态机/取消/报告测试覆盖R-116。
+- v1.2.0协议类型完成型negative compile probes覆盖R-118至R-121；VERSION/manifest一致性覆盖R-122；shared dynsym allowlist覆盖R-123。
 
 ## Traceability
 
@@ -1956,6 +2043,12 @@ Observable result: public tests在移除源码include后通过，误用internal�
 | R-115 | D-169 | TaskId ownership and admission rollback tests | AST-057 |
 | R-116 | D-169 | Graph execution state/cancel/report tests | AST-057 |
 | R-117 | D-169 | public/internal test topology audit | AST-057 |
+| R-118 | D-170 | protocol-type completeness negative compile probes | Pending |
+| R-119 | D-173, D-170 | TaskHandle get/wait tests plus TaskSharedState completeness probes | Pending |
+| R-120 | D-172, D-170 | yield/sleep/await behavior tests plus handshake completeness probes | Pending |
+| R-121 | D-174, D-170 | submit/spawn/emplace and move-only callable tests | Pending |
+| R-122 | D-171 | R-093 version contract and immutable v1.0.0/v1.1.0 manifests | Pending |
+| R-123 | D-175, D-170 | shared-library documented export allowlist | Pending |
 
 ## Open Questions
 
@@ -1963,9 +2056,10 @@ None。已确认范围内没有未决语义；明确排除项保留在 Non-goals
 
 ## Further Notes
 
-- Authoritative rationale、拒绝方案与后果保留在 `decision-log.md` 和 ADR-0001 至 ADR-0047。
+- Authoritative rationale、拒绝方案与后果保留在 `decision-log.md` 和 ADR-0001 至 ADR-0048。
 - 总设计是架构参考；冲突处以accepted decision和对应R-rule为准。
 - R-008由R-106取代，R-017由R-103取代、R-018由R-105取代，R-027由R-107取代、R-029由R-097取代、R-030由R-104取代；其余早期R-ID语义保持。
 - 本次Linux-only修订以R-111取代R-092，并新增R-112固定WSL开发入口；R-101与R-110仅替换为当前accepted来源D-167，行为边界保持。
 - 本次Linux-only/WSL修订已由项目owner于2026-08-27批准；通过非draft校验后同步修订已发布Tickets。
 - 本次v1.1封装性修订由项目owner于2026-08-30批准；只收回未文档化的实现表面，不改变既有observable semantics。
+- 本次v1.2.0 compiled TaskControlBlock修订（D-170至D-175，R-118至R-123，ADR-0048）已由项目owner于2026-08-30批准；不深化GraphExecution或拆Scheduler::Impl（R-116仍active）。

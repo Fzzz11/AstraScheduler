@@ -12493,6 +12493,423 @@ API freeze 改为冻结明确维护的 documented public interface 与 consumer 
 - Tickets: AST-057
 - Tests: semantic API manifest、public consumer boundary audit、TaskId/admission tests、GraphRun state/cancellation tests 与全量 WSL build/test
 
+## D-170 — 运行时协议类型以 compiled TaskControlBlock 离开 installed headers
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+D-169 / AST-057 已将误暴露入口改为 private，并允许 public header 因模板实例化仍保留 detail 声明。审查表明该例外使 `TaskSharedStateBase`、`AwaitHandshake`、invoker 模型与 metrics hook 仍作为 installed interface 的一部分：consumer 只要 include 即可命名并构造它们。`TaskHandle<T>::get()` 与 `co_await` 在 consumer 翻译单元实例化，因此只要协议类型的完整定义留在安装头中，1B（仅搬非模板到 src/）无法真正把协议移出 installed headers。
+
+### Decision
+
+本轮采用 compiled TaskControlBlock（方案 1A）：installed headers 只保留结果格（值 `T` / 异常 / 终态）以及公开 awaitable 的薄包装。mutex、完成回调、rescheduler、timer 注册、handshake 状态机与 invoker 执行协议编入库实现，不得再以完整类型出现在安装头中。
+
+拒绝仅搬非模板协议到不安装 src 头作为本轮完成定义（1B），也拒绝只加 negative compile probes（1C）。1B 至多作为 1A 的中间提交，不构成完成标准。
+
+第三方 Astra-aware awaiter 与 `astra::detail` 协议类型不属于 documented public surface；从安装头移除它们是收回 unsupported 入口，不是扩张 documented semantics。
+
+本决策收紧 D-169 中「模板实现可保留 detail 声明」的例外，不整体取代 D-169。
+
+### Invariants
+
+- documented public 的 Scheduler / TaskHandle / Task / GraphRun / yield / sleep 可观察语义不变。
+- package consumer 翻译单元不能完成类型 `astra::detail::TaskSharedStateBase`、`AwaitHandshake` 或等价协议类型。
+- 任意 `T` 的 `TaskHandle<T>::get()` 仍可在 consumer 侧实例化，结果格留在安装头或通过类型擦除桥接，不得把整份运行协议放回安装头。
+- `tools/api_manifest/v1.0.0.json` 仍不可改写。
+- public tests 不得依赖被移出的协议类型；internal tests 可通过非安装头继续验证 handshake / TCB。
+
+### Scope and variants
+
+| Variant | Applies | Different behaviour |
+|---|---|---|
+| documented consumer | installed public headers | 只见结果格与公开 awaitable |
+| internal tests / library TU | 非安装 src 头与编译单元 | 可见 TaskControlBlock 与 handshake 协议 |
+| 误用 astra::detail 的外部代码 | unsupported | 可能无法继续编译 |
+
+### Rationale
+
+结果格必须对任意 `T` 可见，运行协议不必。把协议编进库，才能让 installed interface 显著小于 implementation，并通过 deletion test。
+
+### Rejected alternatives
+
+- 1B 只搬非模板到 src/：`TaskSharedState<T>` 与 await_suspend 仍会把协议留在安装头。
+- 1C 只加 probes：不增加 depth，删除探针后泄漏仍在。
+- 把 `get()` 改为库内显式实例化白名单：无法支持 consumer 的任意 `T`。
+
+### Consequences
+
+- 共享库导出符号与 R-110 封闭集必须随协议内收而更新。
+- AST-033/034 等 handshake 测试必须保持 internal，并改 include 非安装头。
+- 版本号是否上调、公开 `operator co_await` 的 awaiter 类型名是否保留，由后续决策单独确定。
+
+### Non-goals and deferred risks
+
+- 不在本决策中深化 GraphExecution 或拆 Scheduler::Impl。
+- 不在本决策中引入正式的第三方 awaiter 扩展 interface。
+- 协程帧所有权与 resume 代际语义保持现有规则，只改变这些规则的存放位置。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 在架构审查候选 1 的 1A/1B/1C 中明确选择 1A（compiled TaskControlBlock）。
+- Code or data evidence: `include/astra/task_handle.hpp`、`include/astra/coroutine.hpp` 仍完整定义协议类型；`tools/api_manifest/public_contract.cpp` 不使用这些类型。
+
+### Traceability
+
+- ADR: [ADR-0048](../../docs/adr/0048-compiled-task-control-block-leaves-installed-headers.md)
+- Spec destinations: R-118, R-113, R-114
+- Tickets: Pending
+- Tests: Pending（encapsulation negative probes + 现有 TaskHandle/coroutine 行为测试）
+
+## D-171 — 协议类型内收后项目 VERSION 升至 1.2.0
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+D-170 将改变 installed headers 中出现的类型以及 shared 库的 detail 导出集，但 documented public 可观察语义不变。CMake package 使用 exact-version：若 VERSION 仍为 1.1.0，会出现同一版本号对应两套安装面。D-169 已声明误用 `astra::detail` 的 consumer 不在兼容承诺内，因此这不是 documented source 的 major break。
+
+### Decision
+
+实施 D-170 时将 `project(AstraScheduler VERSION …)` 升到 **1.2.0**。consumer 模板的 `find_package` 钉住值随单一版本源更新。
+
+不保持 1.1.0，也不升到 2.0.0。`tools/api_manifest/v1.0.0.json` 与 `v1.1.0.json` 均不可改写；1.2.0 使用新的 semantic manifest。
+
+### Invariants
+
+- documented public observable semantics 不因本次版本上调而改变。
+- 1.2.0 的 exact-version 钉住值必须与 CMake project VERSION、installed `version.hpp` 宏一致（R-093）。
+- 已发布的 v1.0.0 与 v1.1.0 API manifest 不得被改写。
+
+### Scope and variants
+
+| Variant | Applies | Different behaviour |
+|---|---|---|
+| documented public surface | 1.2.0 | 与 1.1.0 语义兼容，安装面不再完整暴露协议类型 |
+| exact-version consumer | 钉住 1.1.0 的 find_package | 对 1.2.0 安装 configure 失败，必须更新钉住值 |
+| unsupported detail 使用者 | 任何版本 | 不构成兼容承诺 |
+
+### Rationale
+
+minor 上调区分安装面，避免重演「同一版本两套 header」；不是 major，因为收回的是 D-169 已排除的 unsupported 入口。
+
+### Rejected alternatives
+
+- 保持 1.1.0：exact-version 无法区分两套安装面。
+- 升到 2.0.0：把 unsupported `astra::detail` 误当成已承诺 public source。
+
+### Consequences
+
+- `tests/consumer/CMakeLists.txt`、corpus/package 检查中的版本钉住值随门禁更新到 1.2.0。
+- release evidence 写入 `docs/release/1.2.0/`，不覆盖 1.0.0 / 1.1.0 历史证据。
+- benchmark corpus 的 `astra_version` 按现有 baseline 规则处理（允许已记录且不新于当前 VERSION）。
+
+### Non-goals and deferred risks
+
+- 不在本决策中冻结 1.2.0 的完整 symbol allowlist 内容，那随 D-170 实现产生。
+- 不重新定义 SemVer 对 0.x 的历史规则。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 在 1.1.0 / 1.2.0 / 2.0.0 中明确选择升到 1.2.0。
+- Code or data evidence: 当前 `CMakeLists.txt` 为 `VERSION 1.1.0`；`check_cmake_package.py` 要求 consumer exact-version 与 project VERSION 一致。
+
+### Traceability
+
+- ADR: [ADR-0048](../../docs/adr/0048-compiled-task-control-block-leaves-installed-headers.md)
+- Spec destinations: R-122
+- Tickets: Pending
+- Tests: `R093VersionContractGates`、`check_api_freeze` 新 v1.2.0 manifest
+
+## D-172 — 公开 awaitable 以薄包装留在 installed headers
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+C++20 `co_await` 要求 consumer 翻译单元能看见 awaiter 的 `await_ready` / `await_suspend` / `await_resume`。D-170 禁止协议类型进入安装头，但不自动禁止编译器看见一个不含协议字段的 awaiter。documented 操作是 `co_await` TaskHandle/GraphRun、`yield()`、`sleep_for`/`sleep_until`、`cancellation_point`，不是 awaiter 类型名。
+
+### Decision
+
+公开 awaitable 的 awaiter **以薄包装完整类型保留在 installed headers**。`await_suspend` 只调用 compiled TaskControlBlock / handshake，不得在安装头中展开协议状态机。
+
+薄包装类型及其成员不得暴露 `AwaitHandshake`、`TaskSharedState` / TaskControlBlock、mutex/cv、rescheduler、timer registrar 等协议入口。documented compatibility surface 是上述 `co_await` 操作，不承诺 awaiter 的名字、嵌套类型或布局。
+
+### Invariants
+
+- `co_await` TaskHandle（仅左值）、GraphRun（仅左值）、`yield()`、`sleep_for`/`sleep_until`、`cancellation_point` 的可观察挂起/恢复/取消语义不变。
+- 安装头中的 awaiter 不得让 consumer 完成类型或调用 `AwaitHandshake` 与 TaskControlBlock 协议。
+- 不把第三方自定义 awaiter 列为 documented 扩展面。
+
+### Scope and variants
+
+| Variant | Applies | Different behaviour |
+|---|---|---|
+| documented 操作 | public_contract 与 public tests | 继续 `co_await yield()` 等写法 |
+| awaiter 类型名 | installed headers | 允许存在薄包装；不进入 documented allowlist |
+| handshake / TCB | 库实现与 internal tests | 完整协议，不安装 |
+
+### Rationale
+
+薄包装满足语言对 awaiter 完整性的要求，同时把协议留在 compiled module。改命名空间 alone 不够；整条 await 类型擦除本轮回归面过大。
+
+### Rejected alternatives
+
+- 仅把 awaiter 改到 `astra::detail` 但仍带协议字段：泄漏仍在。
+- 本轮整条 await 路径类型擦除、安装头无 awaiter 体：`coroutine_handle` 与帧移交回归面大，非完成 1A 所必需。
+
+### Consequences
+
+- `YieldAwaiter` / `SleepAwaiter` / TaskHandle 与 GraphRun 的 co_await awaiter 需要改成不持有协议类型的公开成员。
+- internal handshake 测试继续走非安装头，不通过薄包装去探协议字段。
+
+### Non-goals and deferred risks
+
+- 不在本决策中规定薄包装是 `astra::` 还是 `astra::detail` 名字。
+- 不规定 TaskHandle 结果格的具体类型名。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 在薄包装 / 只改命名空间 / 整条类型擦除中明确选择薄包装。
+- Code or data evidence: `include/astra/coroutine.hpp` 中 `SleepAwaiter` 现持有 `shared_ptr<AwaitHandshake>`；`TaskHandleAwaiter` 调用 `shared_state_internal()`。
+
+### Traceability
+
+- ADR: [ADR-0048](../../docs/adr/0048-compiled-task-control-block-leaves-installed-headers.md)
+- Spec destinations: R-120
+- Tickets: Pending
+- Tests: public coroutine/spawn/await 行为测试；encapsulation probes 禁止完成 handshake 类型
+
+## D-173 — TaskHandle 结果格为 private nested 模板，安装头不再出现 TaskSharedState 名
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+D-170 要求任意 `T` 的 `TaskHandle<T>::get()` 仍能在 consumer 侧实例化，因此值/异常/终态不能全部编进库；同时禁止把运行协议放回安装头。继续使用安装头中的 `astra::detail::TaskSharedState<T>` 名字会保留旧泄漏标识。把结果也类型擦除进 TCB 则无法自然保持 `get()` 的 `const T&` 与任意 `T`。
+
+### Decision
+
+安装头中的结果存储是 `TaskHandle<T>`（及 `TaskHandle<void>`）的 **private nested 模板**，只承载值 `T`（或 void）、异常与终态观察所需状态。consumer 不能命名或构造该 nested 类型作为独立入口。
+
+安装头不再提供可被 consumer 完成的 `TaskSharedState` / `TaskSharedStateBase` 类型名。运行协议留在 compiled TaskControlBlock。
+
+### Invariants
+
+- `TaskHandle<T>::get()` 仍返回 `const T&`（void 特化不返回值）；失败重抛、取消抛 `task_cancelled`；仅左值可调用。
+- 空/moved-from 句柄行为不变。
+- package consumer 不能完成类型 `astra::detail::TaskSharedStateBase` 或 `astra::detail::TaskSharedState<T>`。
+- 结果格不得包含 mutex、回调列表、rescheduler、timer hook 或 handshake。
+
+### Scope and variants
+
+| Variant | Applies | Different behaviour |
+|---|---|---|
+| TaskHandle&lt;T&gt; | 有值结果 | private nested 存 `T` |
+| TaskHandle&lt;void&gt; | 无值结果 | private nested 无 `T` 存储，get() 只同步终态 |
+| TaskControlBlock | 库实现 | 协议与同步，不出现在安装头完整定义中 |
+
+### Rationale
+
+结果格必须对任意 `T` 可见且随 TaskHandle 封装；保留 `TaskSharedState` 名称等于把泄漏名字半正式化。
+
+### Rejected alternatives
+
+- 继续叫 `detail::TaskSharedState<T>` 但砍成只有结果：旧名字仍在安装面。
+- 结果也类型擦除进 compiled TCB：任意 `T` 的 `const T&` 与寿命模型回归面过大。
+
+### Consequences
+
+- `submit`/`spawn` 模板在 consumer TU 构造结果格，并把类型擦除或编译期桥接到 TCB。
+- internal tests 若直接命名 `TaskSharedState` 必须改为非安装头或改走 TaskHandle 公共面。
+
+### Non-goals and deferred risks
+
+- 不在本决策中规定 nested 类型的标识符拼写。
+- 不规定 callable invoker 模板是否仍留在安装头（另决策）。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 在 private nested 结果格 / 保留 TaskSharedState 名 / 结果类型擦除中明确选择 private nested。
+- Code or data evidence: 当前 `TaskSharedState<T>` 定义于 `include/astra/task_handle.hpp` 并被 public `TaskHandle` 持有。
+
+### Traceability
+
+- ADR: [ADR-0048](../../docs/adr/0048-compiled-task-control-block-leaves-installed-headers.md)
+- Spec destinations: R-119
+- Tickets: Pending
+- Tests: TaskHandle get/wait/cancel 现有测试；encapsulation 禁止完成 `TaskSharedState*` 类型
+
+## D-174 — submit/emplace 安装头只保留 F 信封，协议不进 invoker 模板
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+`submit(F)` 与 `TaskGraph::emplace(F)` 必须在 consumer TU 接住任意可调用类型 `F`。当前安装头中的 `TaskInvokerModel` / `GraphTaskInvokerModel` 在 `execute()` 内联 try_start、metrics、set_value 与 execution context，把运行协议嵌进了 installed interface。D-170 要求协议进 compiled TaskControlBlock；D-173 已把结果格留在 TaskHandle。
+
+### Decision
+
+安装头只保留 **F 信封**：模板存储 `F`（及是否接受 `stop_token` 的调用形态），`execute()` 只调用 `F` 并把返回值交给结果格或 compiled TCB。admission、try_start、metrics、helping、timer、handshake 不得出现在该信封的安装头实现中。
+
+不在 header 缝上把 `F` 擦成 `std::function`。不保留当前大 invoker 模板作为完成形态。
+
+### Invariants
+
+- 可调用对象约束不变：`f(args...)` 或 `f(stop_token, args...)`；不得返回裸引用；结果可移动。
+- Graph 节点可调用对象仍必须返回 void。
+- 只移动、不可拷贝的 `F` 仍可提交，不因改用 `std::function` 而被拒绝。
+- F 信封不得让 consumer 触达 TaskControlBlock 协议或 `AwaitHandshake`。
+
+### Scope and variants
+
+| Variant | Applies | Different behaviour |
+|---|---|---|
+| submit / try_submit / spawn | 任意结果 T | 信封调用 F 后写入 TaskHandle 结果格 |
+| TaskGraph::emplace / emplace_coroutine | 节点返回 void | 信封只执行节点体；依赖传播仍在 GraphExecution |
+
+### Rationale
+
+与结果格同一原则：类型相关留下，协议编进库。`std::function` 会改变 callable 约束并多一次分配。
+
+### Rejected alternatives
+
+- header 缝 `std::function` 擦除：排斥 move-only F，并改变提交成本。
+- 保持现有大 invoker 模板：违反 D-170。
+
+### Consequences
+
+- `include/astra/scheduler.hpp`、`graph.hpp`、`task_handle.hpp`、`coroutine.hpp` 中 invoker `execute()` 必须去掉协议内联。
+- R-110 导出集将随 invoker 从 inline 弱符号变为更少的协议导出而变化（细节由后续门禁决策约束）。
+
+### Non-goals and deferred risks
+
+- 不在本决策中规定信封类型的标识符。
+- 不在本决策中完成 GraphExecution 深化（D-170 Non-goals）。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 在 F 信封 / std::function 擦除 / 保持大 invoker 中明确选择 F 信封。
+- Code or data evidence: `include/astra/task_handle.hpp` 的 `TaskInvokerModel::invoke_impl` 与 `include/astra/graph.hpp` 的 `GraphTaskInvokerModel::execute` 当前内联协议。
+
+### Traceability
+
+- ADR: [ADR-0048](../../docs/adr/0048-compiled-task-control-block-leaves-installed-headers.md)
+- Spec destinations: R-121
+- Tickets: Pending
+- Tests: submit/spawn/graph emplace 现有行为测试；move-only callable 覆盖必须保留或补上
+
+## D-175 — 1.2.0 共享库用 version script 只导出 documented allowlist
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+D-170 把运行协议编进库后，`TaskSharedStateBase` 与 metrics hook 不再需要出现在 consumer 可链接的 dynsym 上。当前 `check_cmake_package.py` 把全部 `astra` 动态符号做成封闭集，约 56 个 `astra::detail` 被当成必须导出。若 1A 完成后仍导出这些符号，consumer 仍可能按符号调用内部协议。R-110 要求隐藏内部符号。
+
+### Decision
+
+实施 D-170 的同一验收包含 Linux 共享库 **version script / hidden-by-default**：默认不导出，只导出 documented public allowlist（与 v1.2.0 semantic manifest / `public_contract.cpp` 对齐的符号）。
+
+`check_cmake_package.py` 的封闭集改为该 allowlist，不再要求 `astra::detail` 协议符号存在。header 模板若仍引用被隐藏的协议符号，视为 D-170 未完成，应链接失败而不是把符号加回导出表。
+
+不把「只改封闭集两栏、detail 仍导出」当作本轮完成定义。
+
+### Invariants
+
+- shared `libAstraScheduler.so` 的 `nm -D --defined-only` 中，`astra::detail` 协议类型与 `record_metrics_*` / handshake / TCB mutator 不得出现在默认导出。
+- documented 符号（Scheduler、TaskHandle 非模板入口、Finalization、Trace、version 查询等）必须可被独立 consumer 链接。
+- v1.0.0 / v1.1.0 manifest 仍不可改写。
+
+### Scope and variants
+
+| Variant | Applies | Different behaviour |
+|---|---|---|
+| shared install | R-110 consumer | 只能链接 documented 符号 |
+| static install | 同一套源 | 无 dynsym 面；仍不得在安装头暴露协议类型 |
+| internal tests | 可链库内可见性或 test runtime | 不依赖已隐藏的 public dynsym 去测协议 |
+
+### Rationale
+
+协议离开安装头却仍导出，封装是假的。version script 与 1A 是同一条验收，不是后续可选项。
+
+### Rejected alternatives
+
+- 本轮只把封闭集改成 documented ∪ bridge：detail 仍可 `nm` 到，consumer 仍能打内部符号。
+- 封闭集原样保留现有 detail 清单：与 D-170 冲突。
+
+### Consequences
+
+- GCC/Clang 需要显式 version script 或 `-fvisibility=hidden` 加 documented `ASTRA_EXPORT`。
+- `check_api_freeze.py` 已过滤 detail，应与新导出集一致。
+- 残留 header 对隐藏符号的引用会变成 1A 的红灯，而不是把门禁放宽。
+
+### Non-goals and deferred risks
+
+- 不承诺跨 toolchain ABI（R-093 / D-145 仍有效）。
+- 不在本决策中列出 1.2.0 allowlist 的逐个 mangled 名字。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 在 version script 只导出 documented allowlist / 仅改封闭集两栏 中明确选择前者，并作为 1A 同一验收。
+- Code or data evidence: `tools/check_cmake_package.py` 当前 `expected_symbols` 含大量 `_ZN5astra6detail...`。
+
+### Traceability
+
+- ADR: [ADR-0048](../../docs/adr/0048-compiled-task-control-block-leaves-installed-headers.md)
+- Spec destinations: R-123
+- Tickets: Pending
+- Tests: `check_cmake_package.py` 导出 allowlist；encapsulation 与独立 consumer 链接
+
 ## Open Questions
 
-- 无。2026-08-26 全项目功能覆盖、跨决策一致性、ADR映射与总设计旧文档冲突审计已完成；后续新需求或实现证据若改变语义，必须新增/取代决策而不得静默修改已接受规则。
+- 无（本轮 1A grilling 已关闭：D-170..D-175）。
+- 2026-08-26 全项目功能覆盖审计已完成。后续新需求或实现证据若改变语义，必须新增/取代决策而不得静默修改已接受规则。
+
+
+
+
+
+

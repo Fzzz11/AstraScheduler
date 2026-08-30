@@ -4,7 +4,7 @@ Status: active
 Source rules: R-094 (D-146), R-004 (D-004), R-005 (D-005), R-112 (D-168)
 Source ticket: AST-001 (`.scratch/astra-scheduler-runtime/issues/01-release-rule-gates.md`)
 
-本文档固定 AstraScheduler Phase 0 至 v1.1.0 的里程碑交付矩阵、每个 tag 的统一
+本文档固定 AstraScheduler Phase 0 至 v1.2.0 的里程碑交付矩阵、每个 tag 的统一
 Definition of Done 与 release gates，以及规则追踪入口。它是 R-094 的仓库级权威
 入口；`AstraScheduler_项目整体设计.md` 是架构参考，冲突处以 accepted decisions
 和对应 R-rule 为准（与 spec `Further Notes` 一致）。
@@ -27,6 +27,7 @@ Definition of Done 与 release gates，以及规则追踪入口。它是 R-094 �
 | v0.9.0 | Linux-only Tier matrix、sanitizer/weak-memory/package consumer、单实现实例部署约束 harden | Linux x86_64 GCC/Clang、native Linux AArch64、sanitizer 与 package consumer 证据；不存在Windows/MSVC release job。 |
 | v1.0.0 | Public source/semantic compatibility 冻结 | 全部 approved-rule、文档、package、schema、benchmark gates 通过。 |
 | v1.1.0 | 封装边界收紧：semantic API manifest、测试入口私有化、TaskId/admission 所有权归 Runtime、GraphExecution 边界 | semantic API gate（documented surface + consumer probes）、graph/coroutine/admission 并发证据、public tests 无 src/ include。 |
+| v1.2.0 | compiled TaskControlBlock：协议类型离开 installed headers；薄 awaiter、F 信封、private nested 结果格；shared 只导出 documented allowlist | 协议类型完成型 probes、VERSION 1.2.0、v1.0/v1.1 manifest 不可改写、shared dynsym allowlist。 |
 
 ## Definition of Done（每个 tag 的统一 DoD）
 

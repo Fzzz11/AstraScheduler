@@ -23,8 +23,8 @@ namespace astra::detail {
 
 extern thread_local GraphRunId t_current_executing_graph_run_id;
 
-ASTRA_EXPORT void record_metrics_graph_node_terminal(RuntimeId id) noexcept;
-ASTRA_EXPORT void record_metrics_graph_run_completed(RuntimeId id) noexcept;
+void record_metrics_graph_node_terminal(RuntimeId id) noexcept;
+void record_metrics_graph_run_completed(RuntimeId id) noexcept;
 
 class GraphRunSharedState : public std::enable_shared_from_this<GraphRunSharedState> {
 public:

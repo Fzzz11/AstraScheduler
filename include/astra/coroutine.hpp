@@ -6,6 +6,7 @@
 #include <astra/graph.hpp>
 #include <astra/task_handle.hpp>
 
+#include <chrono>
 #include <coroutine>
 #include <exception>
 #include <memory>
@@ -31,7 +32,7 @@
 //   挂起/恢复不需要你手写状态机。帧的所有权规则很严格：
 //   恰好由一个 invoker 对象持有，谁最后执行完协程谁销毁帧——
 //   挂起时所有权会移交给"恢复者"（resume invoker），避免两方同时
-//   拥有或销毁同一帧（这是并发正确性的关键，见 TaskSharedState 的
+//   拥有或销毁同一帧（这是并发正确性的关键，见 TaskControlBlock 的
 //   resume_handoff_seq 代际标记）。
 //
 // 【等待别人的三种路径】
@@ -62,7 +63,7 @@ namespace detail {
 
 template <typename T>
 struct TaskPromiseBase {
-    std::shared_ptr<TaskSharedState<T>> shared_state{nullptr};
+    std::shared_ptr<typename TaskHandle<T>::ResultCell> shared_state{nullptr};
 
     std::suspend_always initial_suspend() noexcept {
         return {};
@@ -185,165 +186,51 @@ inline Task<void> TaskPromise<void>::get_return_object() noexcept {
     return Task<void>{std::coroutine_handle<TaskPromise<void>>::from_promise(*this)};
 }
 
-// -----------------------------------------------------------------------------
-// AwaitHandshake —— "先 arm 还是先 trigger"的两方竞态仲裁器。
-//
-// 【解决什么问题】
-//   协程 A 挂起等待任务 B 时，要注册一个"B 完成后唤醒我"的回调。
-//   两个事件可能以任意顺序发生：B 先完成（回调先触发，此时 A 还没挂起），
-//   或 A 先挂起（回调后触发）。这个握手对象用 4 状态原子状态机保证
-//   无论顺序如何，唤醒动作恰好执行一次：
-//     Init --arm--> Armed --trigger--> Resolved（执行回调）
-//     Init --trigger--> Triggered --arm--> Resolved（立即执行回调）
-//   trigger_cancel 同理，但唤醒时协程会收到取消异常。
-//
-// 【使用纪律】
-//   arm/trigger 都可以带"恢复动作"（把协程重新排队的函数）；谁观察到
-//   状态从非 Resolved 迁到 Resolved，谁负责执行它。已 Resolved 再触发
-//   是无操作——幂等是并发安全的根基。
-// -----------------------------------------------------------------------------
 namespace detail {
 
-class AwaitHandshake {
-public:
-    enum class State : std::uint8_t {
-        Init = 0,
-        Triggered = 1,
-        Armed = 2,
-        Resolved = 3,
-    };
-
-    static constexpr std::uint8_t kStateMask = 0x0F;
-    static constexpr std::uint8_t kCancelled = 0x80;
-
-    AwaitHandshake() noexcept = default;
-
-    template <typename PostAction>
-    void trigger(PostAction&& post_action) {
-        std::uint8_t expected = static_cast<std::uint8_t>(State::Init);
-        if (raw_state_.compare_exchange_strong(expected, static_cast<std::uint8_t>(State::Triggered),
-                                                std::memory_order_acq_rel, std::memory_order_acquire)) {
-            return;
-        }
-
-        if ((expected & kStateMask) == static_cast<std::uint8_t>(State::Armed)) {
-            std::uint8_t new_state = static_cast<std::uint8_t>(State::Resolved) | (expected & kCancelled);
-            if (raw_state_.compare_exchange_strong(expected, new_state,
-                                                    std::memory_order_acq_rel, std::memory_order_acquire)) {
-                post_action();
-            }
-        }
-    }
-
-    template <typename PostAction>
-    void trigger_cancel(PostAction&& post_action) {
-        std::uint8_t current = raw_state_.load(std::memory_order_acquire);
-        while (true) {
-            if ((current & kStateMask) == static_cast<std::uint8_t>(State::Resolved)) {
-                return;
-            }
-            if ((current & kStateMask) == static_cast<std::uint8_t>(State::Triggered)) {
-                return;
-            }
-            if ((current & kStateMask) == static_cast<std::uint8_t>(State::Init)) {
-                std::uint8_t next = static_cast<std::uint8_t>(State::Triggered) | kCancelled;
-                if (raw_state_.compare_exchange_weak(current, next,
-                                                      std::memory_order_acq_rel, std::memory_order_acquire)) {
-                    return;
-                }
-                continue;
-            }
-            if ((current & kStateMask) == static_cast<std::uint8_t>(State::Armed)) {
-                std::uint8_t next = static_cast<std::uint8_t>(State::Resolved) | kCancelled;
-                if (raw_state_.compare_exchange_weak(current, next,
-                                                      std::memory_order_acq_rel, std::memory_order_acquire)) {
-                    post_action();
-                    return;
-                }
-                continue;
-            }
-            break;
-        }
-    }
-
-    template <typename PostAction>
-    void arm(PostAction&& post_action) {
-        std::uint8_t expected = static_cast<std::uint8_t>(State::Init);
-        if (raw_state_.compare_exchange_strong(expected, static_cast<std::uint8_t>(State::Armed),
-                                                std::memory_order_acq_rel, std::memory_order_acquire)) {
-            return;
-        }
-
-        if ((expected & kStateMask) == static_cast<std::uint8_t>(State::Triggered)) {
-            std::uint8_t new_state = static_cast<std::uint8_t>(State::Resolved) | (expected & kCancelled);
-            if (raw_state_.compare_exchange_strong(expected, new_state,
-                                                    std::memory_order_acq_rel, std::memory_order_acquire)) {
-                post_action();
-            }
-        }
-    }
-
-    [[nodiscard]] bool is_resolved() const noexcept {
-        return (raw_state_.load(std::memory_order_acquire) & kStateMask) == static_cast<std::uint8_t>(State::Resolved);
-    }
-
-    [[nodiscard]] bool is_cancelled() const noexcept {
-        return (raw_state_.load(std::memory_order_acquire) & kCancelled) != 0;
-    }
-
-    [[nodiscard]] State state() const noexcept {
-        return static_cast<State>(raw_state_.load(std::memory_order_acquire) & kStateMask);
-    }
-
-private:
-    std::atomic<std::uint8_t> raw_state_{static_cast<std::uint8_t>(State::Init)};
-};
+ASTRA_EXPORT std::shared_ptr<void> tcb_arm_task_await(
+    std::shared_ptr<void> waiter,
+    std::shared_ptr<void> target,
+    std::coroutine_handle<> coro);
+ASTRA_EXPORT std::shared_ptr<void> tcb_arm_graph_await(
+    std::shared_ptr<void> waiter,
+    GraphRun& run,
+    std::coroutine_handle<> coro);
+ASTRA_EXPORT void tcb_arm_yield(std::shared_ptr<void> waiter, std::coroutine_handle<> coro);
+ASTRA_EXPORT std::shared_ptr<void> tcb_arm_sleep(
+    std::shared_ptr<void> waiter,
+    std::chrono::steady_clock::time_point wake_time,
+    std::coroutine_handle<> coro);
+ASTRA_EXPORT void tcb_finish_await(std::shared_ptr<void>& token, TaskId target);
+ASTRA_EXPORT bool tcb_await_cancelled(const std::shared_ptr<void>& token) noexcept;
 
 template <typename T>
 class CoroutineTaskInvokerModel final : public TaskInvokerBase {
 public:
     std::coroutine_handle<TaskPromise<T>> coro;
-    std::shared_ptr<TaskSharedState<T>> state;
+    std::shared_ptr<typename TaskHandle<T>::ResultCell> state;
 
     CoroutineTaskInvokerModel(std::coroutine_handle<TaskPromise<T>> h,
-                              std::shared_ptr<TaskSharedState<T>> s)
+                              std::shared_ptr<typename TaskHandle<T>::ResultCell> s)
         : coro(h), state(std::move(s)) {}
 
     ~CoroutineTaskInvokerModel() override = default;
 
     void execute() override {
-        if (!state->try_start()) {
-            if (coro) {
-                coro.destroy();
-                coro = nullptr;
-            }
-            return;
-        }
-
-        // AST-056: 记录 resume 前的 handoff 代际; resume 期间若发生所有权移交
-        // (yield/sleep/await 挂起并 requeue), 帧归 resume invoker 所有,
-        // 本 invoker 不得再读取 done() 或销毁帧。
         const std::uint64_t handoff_seq_before = state->resume_handoff_seq();
         TaskExecutionContextGuard guard(state->id(), state->priority());
-        const auto t_start = std::chrono::steady_clock::now();
         try {
             if (coro && !coro.done()) {
                 coro.resume();
             }
-            const auto t_end = std::chrono::steady_clock::now();
-            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
         } catch (const task_cancelled&) {
-            const auto t_end = std::chrono::steady_clock::now();
-            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
             state->set_cancelled();
         } catch (...) {
-            const auto t_end = std::chrono::steady_clock::now();
-            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
             state->set_exception(std::current_exception());
         }
 
         if (state->resume_handoff_seq() != handoff_seq_before) {
-            coro = nullptr;  // 所有权已移交: 绝不触碰帧
+            coro = nullptr;
         } else if (coro && coro.done()) {
             coro.destroy();
             coro = nullptr;
@@ -356,6 +243,13 @@ public:
         }
     }
 
+    void abandon_unstarted() noexcept override {
+        if (coro) {
+            coro.destroy();
+            coro = nullptr;
+        }
+    }
+
     [[nodiscard]] Priority priority() const noexcept override {
         return state ? state->priority() : Priority::Normal;
     }
@@ -365,71 +259,10 @@ public:
     }
 };
 
-template <typename T>
-class CoroutineResumeInvokerModel final : public TaskInvokerBase {
-public:
-    std::coroutine_handle<TaskPromise<T>> coro;
-    std::shared_ptr<TaskSharedState<T>> state;
-
-    CoroutineResumeInvokerModel(std::coroutine_handle<TaskPromise<T>> h,
-                                std::shared_ptr<TaskSharedState<T>> s)
-        : coro(h), state(std::move(s)) {}
-
-    ~CoroutineResumeInvokerModel() override = default;
-
-    void execute() override {
-        state->transition_to_running();
-        const auto now = std::chrono::steady_clock::now();
-        const auto pub = state->ready_published_at();
-        if (now >= pub && pub != std::chrono::steady_clock::time_point{}) {
-            record_metrics_ready_queue_wait(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(now - pub).count());
-        }
-        record_metrics_resume_segment(state->id());
-        // AST-056: 与 CoroutineTaskInvokerModel 相同的 handoff 代际裁决。
-        const std::uint64_t handoff_seq_before = state->resume_handoff_seq();
-        TaskExecutionContextGuard guard(state->id(), state->priority());
-        const auto t_start = std::chrono::steady_clock::now();
-
-        try {
-            if (coro && !coro.done()) {
-                coro.resume();
-            }
-            const auto t_end = std::chrono::steady_clock::now();
-            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
-        } catch (const task_cancelled&) {
-            const auto t_end = std::chrono::steady_clock::now();
-            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
-            state->set_cancelled();
-        } catch (...) {
-            const auto t_end = std::chrono::steady_clock::now();
-            record_metrics_execution_segment(state->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count());
-            state->set_exception(std::current_exception());
-        }
-
-        if (state->resume_handoff_seq() != handoff_seq_before) {
-            coro = nullptr;  // 所有权已移交: 绝不触碰帧
-        } else if (coro && coro.done()) {
-            coro.destroy();
-            coro = nullptr;
-        }
-    }
-
-    void cancel_pre_start() noexcept override {
-    }
-
-    [[nodiscard]] bool is_resume_segment() const noexcept override {
-        return true;
-    }
-
-    [[nodiscard]] Priority priority() const noexcept override {
-        return state ? state->priority() : Priority::Normal;
-    }
-};
-
 class GraphCoroutineNodeInvoker final : public TaskInvokerBase {
 public:
     std::coroutine_handle<TaskPromise<void>> coro;
-    std::shared_ptr<TaskSharedState<void>> task_state{nullptr};
+    std::shared_ptr<typename TaskHandle<void>::ResultCell> task_state{nullptr};
 
     explicit GraphCoroutineNodeInvoker(std::coroutine_handle<TaskPromise<void>> h)
         : coro(h) {}
@@ -468,11 +301,7 @@ public:
 template <typename T>
 struct TaskHandleAwaiter {
     TaskHandle<T> handle;
-    std::shared_ptr<AwaitHandshake> handshake{std::make_shared<AwaitHandshake>()};
-    std::optional<std::stop_callback<std::function<void()>>> stop_cb;
-    // AST-048 / R-096：await 诊断的 source identity 与 arm 时间戳。
-    TaskId source_id{};
-    std::chrono::steady_clock::time_point armed_at{};
+    std::shared_ptr<void> token;
 
     explicit TaskHandleAwaiter(const TaskHandle<T>& h) : handle(h) {}
 
@@ -507,51 +336,16 @@ struct TaskHandleAwaiter {
             throw task_cancelled{};
         }
 
-        auto rescheduler = task_state->get_rescheduler();
-
-        auto post_action = [coro, task_state, rescheduler]() mutable {
-            if (rescheduler) {
-                task_state->set_ready_published_at(std::chrono::steady_clock::now());
-                auto invoker = std::make_unique<CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
-                    coro, std::move(task_state));
-                rescheduler(std::move(invoker));
-            }
-        };
-
-        source_id = task_state->id();
-        armed_at = std::chrono::steady_clock::now();
-
-        // AST-056: 完成回调可能在任意线程立即触发 requeue, 先移交帧所有权。
-        task_state->mark_resume_handoff();
-        auto hs = handshake;
-        handle.shared_state_internal()->add_completion_callback(
-            [hs, post_action, src = source_id, tgt = handle.task_id()]() mutable {
-                record_await_triggered(src, tgt, false);
-                hs->trigger(post_action);
-            });
-
-        stop_cb.emplace(task_state->stop_token(), [hs, post_action, src = source_id, tgt = handle.task_id()]() mutable {
-            record_await_triggered(src, tgt, true);
-            hs->trigger_cancel(post_action);
-        });
-
-        task_state->transition_to_suspended();
-        hs->arm(std::move(post_action));
-        // R-096 / D-149：await 注册计数与 AwaitArmed trace 事件（source/target identity）。
-        record_await_registration(source_id, handle.task_id());
+        token = tcb_arm_task_await(
+            task_state->protocol_token(),
+            handle.shared_state_internal()->protocol_token(),
+            std::coroutine_handle<>(coro));
         return true;
     }
 
     decltype(auto) await_resume() {
-        stop_cb.reset();
-        // R-096 / D-149：AwaitResumed 与 await 时长 histogram（arm → resume）。
-        if (source_id.valid()) {
-            const auto dur_ns = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - armed_at).count());
-            record_await_resumed(source_id, handle.task_id(), dur_ns);
-        }
-        if (handshake->is_cancelled()) {
+        tcb_finish_await(token, handle.task_id());
+        if (tcb_await_cancelled(token)) {
             throw task_cancelled{};
         }
         if constexpr (std::is_void_v<T>) {
@@ -567,8 +361,7 @@ struct TaskHandleAwaiter {
 // -----------------------------------------------------------------------------
 struct GraphRunAwaiter {
     GraphRun run;
-    std::shared_ptr<AwaitHandshake> handshake{std::make_shared<AwaitHandshake>()};
-    std::optional<std::stop_callback<std::function<void()>>> stop_cb;
+    std::shared_ptr<void> token;
 
     explicit GraphRunAwaiter(const GraphRun& r) : run(r) {}
 
@@ -600,36 +393,16 @@ struct GraphRunAwaiter {
             throw task_cancelled{};
         }
 
-        auto rescheduler = task_state->get_rescheduler();
-
-        auto post_action = [coro, task_state, rescheduler]() mutable {
-            if (rescheduler) {
-                task_state->set_ready_published_at(std::chrono::steady_clock::now());
-                auto invoker = std::make_unique<CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
-                    coro, std::move(task_state));
-                rescheduler(std::move(invoker));
-            }
-        };
-
-        // AST-056: 完成回调可能在任意线程立即触发 requeue, 先移交帧所有权。
-        task_state->mark_resume_handoff();
-        auto hs = handshake;
-        run.add_completion_callback_internal([hs, post_action]() mutable {
-            hs->trigger(post_action);
-        });
-
-        stop_cb.emplace(task_state->stop_token(), [hs, post_action]() mutable {
-            hs->trigger_cancel(post_action);
-        });
-
-        task_state->transition_to_suspended();
-        hs->arm(std::move(post_action));
+        token = tcb_arm_graph_await(
+            task_state->protocol_token(),
+            run,
+            std::coroutine_handle<>(coro));
         return true;
     }
 
     const GraphReport& await_resume() {
-        stop_cb.reset();
-        if (handshake->is_cancelled()) {
+        tcb_finish_await(token, TaskId{});
+        if (tcb_await_cancelled(token)) {
             throw task_cancelled{};
         }
         return run.get_report();
@@ -640,14 +413,14 @@ struct GraphRunAwaiter {
 
 template <typename T>
 inline detail::TaskHandleAwaiter<T> TaskHandle<T>::operator co_await() const & {
-    if (!state_) {
+    if (!cell_) {
         throw std::logic_error("operating on empty/moved-from TaskHandle");
     }
     return detail::TaskHandleAwaiter<T>(*this);
 }
 
 inline detail::TaskHandleAwaiter<void> TaskHandle<void>::operator co_await() const & {
-    if (!state_) {
+    if (!cell_) {
         throw std::logic_error("operating on empty/moved-from TaskHandle");
     }
     return detail::TaskHandleAwaiter<void>(*this);
@@ -710,19 +483,7 @@ struct YieldAwaiter {
             throw task_cancelled{};
         }
 
-        task_state->transition_to_suspended();
-        detail::record_metrics_explicit_yield();
-
-        auto rescheduler = task_state->get_rescheduler();
-        if (rescheduler) {
-            // AST-056: 帧所有权移交 resume invoker; 挂起方此后不得触碰帧。
-            task_state->mark_resume_handoff();
-            task_state->set_ready_published_at(std::chrono::steady_clock::now());
-            auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
-                coro, std::move(task_state));
-            rescheduler(std::move(invoker));
-        }
-
+        detail::tcb_arm_yield(task_state->protocol_token(), std::coroutine_handle<>(coro));
         return true;
     }
 
@@ -740,8 +501,7 @@ struct YieldAwaiter {
 // -----------------------------------------------------------------------------
 struct SleepAwaiter {
     std::chrono::steady_clock::time_point wake_time;
-    std::shared_ptr<detail::AwaitHandshake> handshake{nullptr};
-    std::optional<std::stop_callback<std::function<void()>>> stop_cb;
+    std::shared_ptr<void> token;
 
     explicit SleepAwaiter(std::chrono::steady_clock::time_point wt) noexcept
         : wake_time(wt) {}
@@ -768,69 +528,16 @@ struct SleepAwaiter {
             return false;
         }
 
-        auto rescheduler = task_state->get_rescheduler();
-        auto registrar = task_state->get_timer_registrar();
-        auto canceller = task_state->get_timer_canceller();
-
-        if (!rescheduler || !registrar || !canceller) {
-            throw std::logic_error("cannot sleep outside an AstraScheduler coroutine runtime");
-        }
-
-        task_state->transition_to_suspended();
-
-        handshake = std::make_shared<detail::AwaitHandshake>();
-
-        struct RegistrationContext {
-            std::atomic<std::uint64_t> timer_id{0};
-            std::atomic<bool> cancelled{false};
-        };
-        auto ctx = std::make_shared<RegistrationContext>();
-
-        stop_cb.emplace(task_state->stop_token(), [handshake = this->handshake, coro, task_state, rescheduler, canceller, ctx]() mutable {
-            ctx->cancelled.store(true, std::memory_order_release);
-            std::uint64_t tid = ctx->timer_id.load(std::memory_order_acquire);
-            if (tid != 0 && canceller) {
-                canceller(tid);
-            }
-            handshake->trigger_cancel([coro, task_state, rescheduler]() mutable {
-                if (rescheduler) {
-                    task_state->set_ready_published_at(std::chrono::steady_clock::now());
-                    auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
-                        coro, std::move(task_state));
-                    rescheduler(std::move(invoker));
-                }
-            });
-        });
-
-        if (task_state->stop_token().stop_requested()) {
-            stop_cb.reset();
-            throw task_cancelled{};
-        }
-
-        auto on_expiry = [coro, task_state, rescheduler]() mutable {
-            if (rescheduler) {
-                task_state->set_ready_published_at(std::chrono::steady_clock::now());
-                auto invoker = std::make_unique<detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
-                    coro, std::move(task_state));
-                rescheduler(std::move(invoker));
-            }
-        };
-
-        // AST-056: 定时器 resume 路径移交帧所有权。
-        task_state->mark_resume_handoff();
-        std::uint64_t tid = registrar(wake_time, handshake, on_expiry);
-        ctx->timer_id.store(tid, std::memory_order_release);
-        if (ctx->cancelled.load(std::memory_order_acquire) || task_state->stop_token().stop_requested()) {
-            canceller(tid);
-        }
-
-        handshake->arm(on_expiry);
+        token = detail::tcb_arm_sleep(
+            task_state->protocol_token(),
+            wake_time,
+            std::coroutine_handle<>(coro));
         return true;
     }
 
     void await_resume() {
-        stop_cb.reset();
-        if (handshake && handshake->is_cancelled()) {
+        detail::tcb_finish_await(token, TaskId{});
+        if (detail::tcb_await_cancelled(token)) {
             throw task_cancelled{};
         }
     }

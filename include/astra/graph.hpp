@@ -303,6 +303,7 @@ public:
 namespace detail {
 class GraphRunSharedState;
 struct GraphRunAwaiter;
+struct AwaitProtocolAccess;
 ASTRA_EXPORT GraphRunId current_executing_graph_run_id() noexcept;
 }
 
@@ -363,8 +364,9 @@ private:
     friend class Scheduler;
     friend class detail::GraphExecution;
     friend struct detail::GraphRunAwaiter;
+    friend struct detail::AwaitProtocolAccess;
 
-    void add_completion_callback_internal(std::function<void()> cb) const;
+    ASTRA_NO_EXPORT void add_completion_callback_internal(std::function<void()> cb) const;
 
     explicit GraphRun(std::shared_ptr<detail::GraphRunSharedState> state)
         : state_(std::move(state)) {}

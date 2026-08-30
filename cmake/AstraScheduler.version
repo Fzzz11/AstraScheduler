@@ -1,0 +1,10 @@
+/* R-123 / D-175: hidden-by-default; only default-visibility astra symbols stay global. */
+ASTRA_1.2 {
+  global:
+    _ZN5astra*;
+    _ZNK5astra*;
+    _ZNKR5astra*;
+    _ZNO5astra*;
+  local:
+    *;
+};
