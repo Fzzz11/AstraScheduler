@@ -1,7 +1,7 @@
 #include <astra/error.hpp>
 #include <astra/finalization.hpp>
 #include <astra/scheduler.hpp>
-#include "reaper_registry.hpp"
+#include "lifecycle/reaper_registry.hpp"
 
 #include <atomic>
 #include <chrono>

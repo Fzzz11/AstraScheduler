@@ -41,18 +41,21 @@
 #include <astra/coroutine.hpp>
 #include <astra/scheduler.hpp>
 #include <astra/trace.hpp>
-#include "admission_controller.hpp"
-#include "await_handshake.hpp"
-#include "chase_lev_deque.hpp"
-#include "graph_execution.hpp"
-#include "graph_shared_state.hpp"
-#include "reaper_registry.hpp"
-#include "runtime_identity.hpp"
-#include "runtime_metrics.hpp"
-#include "task_control_block.hpp"
-#include "test_seam.hpp"
-#include "timer_queue.hpp"
-#include "trace_collector.hpp"
+#include "graph/graph_execution.hpp"
+#include "graph/graph_runtime_port.hpp"
+#include "graph/graph_shared_state.hpp"
+#include "lifecycle/reaper_registry.hpp"
+#include "observability/trace_collector.hpp"
+#include "runtime/admission_controller.hpp"
+#include "runtime/runtime_identity.hpp"
+#include "runtime/runtime_metrics.hpp"
+#include "runtime/runtime_registry.hpp"
+#include "runtime/timer_queue.hpp"
+#include "runtime/worker_loop.hpp"
+#include "scheduling/chase_lev_deque.hpp"
+#include "task/await_handshake.hpp"
+#include "task/task_control_block.hpp"
+#include "testing/test_seam.hpp"
 
 #include <algorithm>
 #include <array>
@@ -67,7 +70,6 @@
 #include <stdexcept>
 #include <system_error>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -141,7 +143,8 @@ extern thread_local TaskId t_deferred_self_resume_owner;
 void flush_deferred_self_resume();
 }  // namespace detail
 
-struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Scheduler::Impl> {
+struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Scheduler::Impl>,
+                                         public detail::GraphRuntimePort {
     RuntimeId runtime_id;
     detail::RuntimeIdentityAllocator identities;
     SchedulerOptions options;
@@ -731,7 +734,15 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         return identities.allocate_task(runtime_id);
     }
 
-    GraphRunId allocate_graph_run_id() {
+    RuntimeId runtime_identity() const noexcept override {
+        return runtime_id;
+    }
+
+    TaskId allocate_graph_task_id() override {
+        return allocate_task_id();
+    }
+
+    GraphRunId allocate_graph_run_id() override {
         return identities.allocate_graph_run(runtime_id);
     }
 
@@ -743,12 +754,23 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         return admission.acquire(count, block, is_internal);
     }
 
+    detail::AdmissionDecision acquire_graph_slots(
+        std::size_t count,
+        bool block,
+        bool is_internal) override {
+        return acquire_admission_slots(count, block, is_internal);
+    }
+
     void release_external_slot() {
         admission.release(1);
     }
 
     void release_external_slots(std::size_t count) {
         admission.release(count);
+    }
+
+    void release_graph_slots(std::size_t count) noexcept override {
+        release_external_slots(count);
     }
 
     std::uint64_t register_timer(std::chrono::steady_clock::time_point wake_time,
@@ -766,6 +788,17 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
     void cancel_timer(std::uint64_t tid) {
         timers.cancel(tid);
+    }
+
+    std::uint64_t register_graph_timer(
+        std::chrono::steady_clock::time_point wake_time,
+        std::shared_ptr<detail::AwaitHandshake> handshake,
+        std::function<void()> resume_action) override {
+        return register_timer(wake_time, std::move(handshake), std::move(resume_action));
+    }
+
+    void cancel_graph_timer(std::uint64_t tid) noexcept override {
+        cancel_timer(tid);
     }
 
     void process_due_timers() {
@@ -793,8 +826,6 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     bool has_timers() {
         return !timers.empty();
     }
-
-    void worker_main(std::size_t worker_index);
 
     void post_task_internal(std::unique_ptr<detail::TaskInvokerBase> task, bool is_external) {
         if (!task) return;
@@ -843,6 +874,51 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         work_cv.notify_one();
     }
 
+    void post_graph_task(
+        std::unique_ptr<detail::TaskInvokerBase> task,
+        bool is_external) override {
+        post_task_internal(std::move(task), is_external);
+    }
+
+    void record_graph_admission_attempt() noexcept override {
+        if (metrics.level != MetricsLevel::Off) {
+            detail::RuntimeMetrics::saturating_inc(
+                metrics.shard_for_current().graph_admission_attempts);
+        }
+    }
+
+    void record_graph_rejected() noexcept override {
+        if (metrics.level != MetricsLevel::Off) {
+            detail::RuntimeMetrics::saturating_inc(
+                metrics.shard_for_current().graph_runs_rejected);
+        }
+    }
+
+    void record_graph_started() noexcept override {
+        if (metrics.level != MetricsLevel::Off) {
+            detail::RuntimeMetrics::saturating_inc(
+                metrics.shard_for_current().graph_runs_accepted);
+            metrics.active_graph_runs.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    void rollback_graph_started(std::size_t task_count) noexcept override {
+        if (metrics.level == MetricsLevel::Off) {
+            return;
+        }
+        auto ready = metrics.ready_tasks.load(std::memory_order_relaxed);
+        while (ready > 0) {
+            const auto decrement = std::min(ready, task_count);
+            if (metrics.ready_tasks.compare_exchange_weak(
+                    ready, ready - decrement, std::memory_order_relaxed)) {
+                break;
+            }
+        }
+        if (metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
+            metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
+        }
+    }
+
     static constexpr std::uint16_t pack(SchedulerState state, ShutdownMode mode) noexcept {
         return static_cast<std::uint16_t>((static_cast<std::uint8_t>(state) << 8) |
                                           static_cast<std::uint8_t>(mode));
@@ -862,7 +938,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     static void worker_thread_entry(void* arg, std::size_t index) noexcept {
         try {
             if (arg != nullptr) {
-                static_cast<Impl*>(arg)->worker_main(index);
+                detail::run_worker_loop(*static_cast<Impl*>(arg), index);
             }
         } catch (...) {
         }
@@ -870,26 +946,16 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 };
 
 namespace {
-std::mutex g_runtime_registry_mutex;
-std::unordered_map<std::uint64_t, Scheduler::Impl*> g_runtime_registry;
-
 void register_runtime_impl(Scheduler::Impl* impl) {
-    std::lock_guard<std::mutex> lock(g_runtime_registry_mutex);
-    g_runtime_registry[impl->runtime_id.value()] = impl;
+    detail::register_runtime_instance(impl->runtime_id, impl);
 }
 
 void unregister_runtime_impl(Scheduler::Impl* impl) {
-    std::lock_guard<std::mutex> lock(g_runtime_registry_mutex);
-    g_runtime_registry.erase(impl->runtime_id.value());
+    detail::unregister_runtime_instance(impl->runtime_id);
 }
 
 Scheduler::Impl* find_runtime_impl(RuntimeId id) {
-    std::lock_guard<std::mutex> lock(g_runtime_registry_mutex);
-    auto it = g_runtime_registry.find(id.value());
-    if (it != g_runtime_registry.end()) {
-        return it->second;
-    }
-    return nullptr;
+    return static_cast<Scheduler::Impl*>(detail::find_runtime_instance(id));
 }
 }  // namespace
 
@@ -1264,67 +1330,6 @@ Priority current_executing_task_priority() noexcept {
 GraphRunId current_executing_graph_run_id() noexcept {
     return t_current_executing_graph_run_id;
 }
-
-struct GraphNodeExecutionContextGuard {
-    GraphRunId prev_id;
-    Priority prev_priority;
-    explicit GraphNodeExecutionContextGuard(GraphRunId new_id, Priority new_priority = Priority::Normal) noexcept
-        : prev_id(t_current_executing_graph_run_id), prev_priority(t_current_executing_task_priority) {
-        t_current_executing_graph_run_id = new_id;
-        t_current_executing_task_priority = new_priority;
-    }
-    ~GraphNodeExecutionContextGuard() noexcept {
-        t_current_executing_graph_run_id = prev_id;
-        t_current_executing_task_priority = prev_priority;
-    }
-};
-
-struct GraphCoroutineResumeWrapper final : TaskInvokerBase {
-    std::unique_ptr<TaskInvokerBase> inner;
-    std::shared_ptr<GraphRunSharedState> graph_state;
-    std::shared_ptr<TaskHandle<void>::ResultCell> task_state;
-    NodeId node_id;
-    std::function<void(NodeId)> trigger_fn;
-
-    GraphCoroutineResumeWrapper(
-        std::unique_ptr<TaskInvokerBase> in,
-        std::shared_ptr<GraphRunSharedState> gs,
-        std::shared_ptr<TaskHandle<void>::ResultCell> ts,
-        NodeId nid,
-        std::function<void(NodeId)> tfn)
-        : inner(std::move(in)), graph_state(std::move(gs)), task_state(std::move(ts)),
-          node_id(nid), trigger_fn(std::move(tfn)) {}
-
-    void execute() override {
-        const Priority p = task_state ? task_state->priority() : Priority::Normal;
-        GraphNodeExecutionContextGuard node_guard(graph_state->id, p);
-        if (inner) {
-            inner->execute();
-        }
-        if (task_state && task_state->is_completed()) {
-            TaskState outcome = task_state->state();
-            std::exception_ptr ex = (outcome == TaskState::Failed) ? task_state->exception() : nullptr;
-            graph_state->mark_node_terminal(node_id.value(), outcome, ex);
-            if (trigger_fn) {
-                trigger_fn(node_id);
-            }
-        }
-    }
-
-    void cancel_pre_start() noexcept override {
-        if (inner) {
-            inner->cancel_pre_start();
-        }
-    }
-
-    [[nodiscard]] bool is_resume_segment() const noexcept override {
-        return true;
-    }
-
-    [[nodiscard]] Priority priority() const noexcept override {
-        return task_state ? task_state->priority() : Priority::Normal;
-    }
-};
 
 inline std::uint64_t next_random(std::uint64_t& state) noexcept {
     state ^= state >> 12;
@@ -1770,286 +1775,6 @@ std::uint64_t SchedulerTestAccess::current_work_epoch(const Scheduler& s) {
 
 }  // namespace detail
 
-void Scheduler::Impl::worker_main(std::size_t worker_index) {
-    detail::t_current_worker_runtime_id = runtime_id;
-    detail::t_current_worker_impl = this;
-    detail::t_current_worker_index = worker_index;
-    detail::t_current_helping_depth = 0;
-    detail::t_current_executing_task_id = TaskId{};
-
-    // 等待 startup 栅栏完成或中止
-    {
-        std::unique_lock<std::mutex> lock(lifecycle_mutex);
-        ++workers_ready;
-        startup_cv.notify_all();
-        startup_cv.wait(lock, [this] {
-            return startup_done || startup_failed || stop_requested;
-        });
-        if (startup_failed || (!startup_done && stop_requested)) {
-            detail::t_current_worker_runtime_id = RuntimeId{0};
-            detail::t_current_worker_impl = nullptr;
-            if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                detail::ReaperRegistry::instance().notify_join_ready(runtime_id);
-            }
-            return;
-        }
-    }
-
-    auto& my_local_deque = *local_deques[worker_index];
-    std::size_t consecutive_local_count = 0;
-    std::size_t local_calendar_idx = 0;
-    std::size_t global_calendar_idx = 0;
-    std::size_t steal_calendar_idx = 0;
-    std::array<std::size_t, 4> global_deadline_bursts{0, 0, 0, 0};
-    std::uint64_t rng_state = (static_cast<std::uint64_t>(runtime_id.value()) << 32) ^
-                              static_cast<std::uint64_t>(worker_index + 1) ^
-                              0x9E3779B97F4A7C15ULL;
-    std::vector<std::size_t> victims;
-
-    // 运行期工作循环（执行内部/测试任务，直至收到 stop_requested 且 Drain Closure 排空）
-    while (true) {
-        process_due_timers();
-
-        QueuedTask task;
-        bool found_task = false;
-
-        // 1. 优先尝试从本 Worker 的 Local Deque (LIFO) 获取任务（受 local_burst_limit 上限限制）
-        if (consecutive_local_count < options.local_burst_limit) {
-            if (my_local_deque.pop_back_weighted(local_calendar_idx, task)) {
-                found_task = true;
-                ++consecutive_local_count;
-                {
-                    std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                    ++active_task_count;
-                }
-            }
-        }
-
-        // 2. 若 Local 为空或防饥饿阈值触发，探测 Global Injection Queue (FIFO)
-        if (!found_task) {
-            std::unique_lock<std::mutex> lock(lifecycle_mutex);
-            if (pop_global_weighted(global_calendar_idx, global_deadline_bursts, task)) {
-                ++active_task_count;
-                found_task = true;
-                consecutive_local_count = 0;
-                if (task.is_external) {
-                    admission.release(1);
-                }
-            } else if (consecutive_local_count >= options.local_burst_limit) {
-                consecutive_local_count = 0;
-                lock.unlock();
-                if (my_local_deque.pop_back_weighted(local_calendar_idx, task)) {
-                    found_task = true;
-                    ++consecutive_local_count;
-                    std::lock_guard<std::mutex> lk(lifecycle_mutex);
-                    ++active_task_count;
-                }
-            }
-        }
-
-        // 3. 若仍无任务，执行 bounded non-repeating Steal Round (R-064)
-        if (!found_task) {
-            detail::generate_steal_victims(worker_index, options.worker_count, options.steal_probe_limit, rng_state, victims);
-            for (std::size_t v : victims) {
-                if (metrics.level != MetricsLevel::Off) {
-                    detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().steal_attempts);
-                }
-                if (v < local_deques.size() && local_deques[v]->steal_front_weighted(steal_calendar_idx, task)) {
-                    if (metrics.level != MetricsLevel::Off) {
-                        detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().steal_successes);
-                    }
-                    found_task = true;
-                    consecutive_local_count = 0;
-                    std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                    ++active_task_count;
-                    break;
-                } else {
-                    if (metrics.level != MetricsLevel::Off) {
-                        detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().steal_failures);
-                    }
-                }
-            }
-        }
-
-        // 4. 若仍未获取到任务，进入 Park Handshake 流程 (R-065)
-        if (!found_task) {
-            process_due_timers();
-
-            // (a) Active backoff: 少量自旋/yield 减少即时睡眠开销
-            for (int spin = 0; spin < 16; ++spin) {
-#if defined(__x86_64__) || defined(_M_X64)
-                __builtin_ia32_pause();
-#else
-                std::this_thread::yield();
-#endif
-            }
-
-            // (b) 登记休眠意图并记录当前 work epoch
-            parked_workers.fetch_add(1, std::memory_order_seq_cst);
-            const std::uint64_t observed_epoch = work_epoch.load(std::memory_order_acquire);
-
-            {
-                std::unique_lock<std::mutex> lock(lifecycle_mutex);
-                const auto next_wake = earliest_wake_time();
-                auto predicate = [this, &my_local_deque, observed_epoch] {
-                    if (stop_requested) {
-                        const auto st = unpack(packed_status.load(std::memory_order_acquire));
-                        if (st.state == SchedulerState::Stopped || st.shutdown_mode == ShutdownMode::Immediate) {
-                            return true;
-                        }
-                        if (!global_queues_empty() || !my_local_deque.empty() || (active_task_count == 0 && !has_timers())) {
-                            return true;
-                        }
-                        for (const auto& d : local_deques) {
-                            if (d && !d->empty()) return true;
-                        }
-                    } else {
-                        if (work_epoch.load(std::memory_order_acquire) != observed_epoch) {
-                            return true;
-                        }
-                        if (!global_queues_empty() || !my_local_deque.empty()) {
-                            return true;
-                        }
-                        for (const auto& d : local_deques) {
-                            if (d && !d->empty()) return true;
-                        }
-                    }
-                    return false;
-                };
-
-                if (metrics.level != MetricsLevel::Off) {
-                    detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().worker_parks);
-                }
-                const auto t_park_start = std::chrono::steady_clock::now();
-                if (next_wake.has_value()) {
-                    work_cv.wait_until(lock, *next_wake, predicate);
-                } else {
-                    work_cv.wait(lock, predicate);
-                }
-                const auto t_park_end = std::chrono::steady_clock::now();
-                if (metrics.level != MetricsLevel::Off) {
-                    detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().worker_wakes);
-                    if (metrics.level == MetricsLevel::Detailed && t_park_end >= t_park_start) {
-                        metrics.shard_for_current().worker_park_duration.record(
-                            std::chrono::duration_cast<std::chrono::nanoseconds>(t_park_end - t_park_start).count());
-                    }
-                }
-                parked_workers.fetch_sub(1, std::memory_order_seq_cst);
-
-                process_due_timers();
-
-                if (pop_global_weighted(global_calendar_idx, global_deadline_bursts, task)) {
-                    ++active_task_count;
-                    found_task = true;
-                    consecutive_local_count = 0;
-                    if (task.is_external) {
-                        admission.release(1);
-                    }
-                } else if (my_local_deque.pop_back_weighted(local_calendar_idx, task)) {
-                    ++active_task_count;
-                    found_task = true;
-                    ++consecutive_local_count;
-                } else {
-                    // 唤醒后尝试窃取一轮
-                    lock.unlock();
-                    detail::generate_steal_victims(worker_index, options.worker_count, options.steal_probe_limit, rng_state, victims);
-                    for (std::size_t v : victims) {
-                        if (metrics.level != MetricsLevel::Off) {
-                            detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().steal_attempts);
-                        }
-                        if (v < local_deques.size() && local_deques[v]->steal_front_weighted(steal_calendar_idx, task)) {
-                            if (metrics.level != MetricsLevel::Off) {
-                                detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().steal_successes);
-                            }
-                            found_task = true;
-                            consecutive_local_count = 0;
-                            std::lock_guard<std::mutex> lk(lifecycle_mutex);
-                            ++active_task_count;
-                            break;
-                        } else {
-                            if (metrics.level != MetricsLevel::Off) {
-                                detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().steal_failures);
-                            }
-                        }
-                    }
-                    lock.lock();
-                }
-
-                if (!found_task && stop_requested) {
-                    const auto st = unpack(packed_status.load(std::memory_order_acquire));
-                    if (st.state == SchedulerState::Stopped) {
-                        break;
-                    }
-                    if (st.shutdown_mode == ShutdownMode::Immediate) {
-                        bool any_resumes = false;
-                        for (const auto& q : global_injection_queues) {
-                            for (const auto& entry : q) {
-                                if (entry.invoker && entry.invoker->is_resume_segment()) {
-                                    any_resumes = true;
-                                    break;
-                                }
-                            }
-                            if (any_resumes) break;
-                        }
-                        if (!any_resumes && !my_local_deque.empty()) {
-                            any_resumes = true;
-                        }
-                        if (!any_resumes) {
-                            for (const auto& d : local_deques) {
-                                if (d && !d->empty()) {
-                                    any_resumes = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (!any_resumes && active_task_count == 0) {
-                            work_cv.notify_all();
-                            break;
-                        }
-                    } else {
-                        bool any_tasks = !global_queues_empty() || !my_local_deque.empty();
-                        if (!any_tasks) {
-                            for (const auto& d : local_deques) {
-                                if (d && !d->empty()) {
-                                    any_tasks = true;
-                                    break;
-                                }
-                            }
-                        }
-                        bool any_timers = has_timers();
-                        if (!any_tasks && active_task_count == 0 && !any_timers) {
-                            work_cv.notify_all();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 5. 执行获取到的任务
-        if (found_task && task.invoker) {
-            const auto st = get_status();
-            if (st.shutdown_mode == ShutdownMode::Immediate && !task.invoker->is_resume_segment()) {
-                task.invoker->cancel_pre_start();
-            } else {
-                task.invoker->execute();
-            }
-            {
-                std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                --active_task_count;
-            }
-            work_cv.notify_all();
-        }
-    }
-
-    detail::t_current_worker_runtime_id = RuntimeId{0};
-    detail::t_current_worker_impl = nullptr;
-    detail::t_current_helping_depth = 0;
-    detail::t_current_executing_task_id = TaskId{};
-    if (active_workers.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        detail::ReaperRegistry::instance().notify_join_ready(runtime_id);
-    }
-}
 
 detail::AdmissionDecision Scheduler::acquire_admission(bool block, bool is_internal) const {
     if (!impl_) {
@@ -2206,293 +1931,12 @@ void Scheduler::shutdown_now() {
     impl_->shutdown_sync(ShutdownMode::Immediate);
 }
 
-GraphRun detail::GraphExecution::run(
-    Scheduler& scheduler,
-    std::optional<TaskOptions> options,
-    FrozenTaskGraph&& graph) {
-    auto& impl_ = scheduler.impl_;
-
-    if (!scheduler.valid()) {
-        throw std::logic_error("operating on empty/moved-from Scheduler");
-    }
-
-    if (impl_->metrics.level != MetricsLevel::Off) {
-        detail::RuntimeMetrics::saturating_inc(
-            impl_->metrics.shard_for_current().graph_admission_attempts);
-    }
-
-    const std::size_t n = graph.node_count();
-    // Identity exhaustion is rejected before reserving admission capacity.
-    const GraphRunId gid = impl_->allocate_graph_run_id();
-    const bool is_internal = (detail::current_worker_runtime_id() == scheduler.runtime_id());
-    const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
-    const bool can_block = !is_worker;
-
-    Priority graph_priority = Priority::Normal;
-    if (options.has_value()) {
-        validate_priority(options->priority);
-        graph_priority = options->priority;
-    } else if (is_internal) {
-        graph_priority = detail::current_executing_task_priority();
-    } else {
-        graph_priority = Priority::Normal;
-    }
-
-    // R-070 / D-106: all-or-nothing slot reservation
-    const auto decision = impl_->acquire_admission_slots(n, can_block, is_internal);
-    if (decision == detail::AdmissionDecision::Stopping ||
-        decision == detail::AdmissionDecision::Stopped ||
-        decision == detail::AdmissionDecision::CapacityExhausted) {
-        if (impl_->metrics.level != MetricsLevel::Off) {
-            detail::RuntimeMetrics::saturating_inc(
-                impl_->metrics.shard_for_current().graph_runs_rejected);
-        }
-        if (decision == detail::AdmissionDecision::Stopping) {
-            throw submission_rejected(SubmissionError::Stopping);
-        }
-        if (decision == detail::AdmissionDecision::Stopped) {
-            throw submission_rejected(SubmissionError::Stopped);
-        }
-        if (decision == detail::AdmissionDecision::CapacityExhausted) {
-            throw submission_rejected(SubmissionError::CapacityExhausted);
-        }
-    }
-
-    if (impl_->metrics.level != MetricsLevel::Off) {
-        detail::RuntimeMetrics::saturating_inc(
-            impl_->metrics.shard_for_current().graph_runs_accepted);
-        impl_->metrics.active_graph_runs.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    // R-070: 空图直接完成
-    if (n == 0) {
-        auto state = std::make_shared<detail::GraphRunSharedState>(gid, 0);
-        state->run_state.store(GraphRunState::Succeeded, std::memory_order_release);
-        if (impl_->metrics.level != MetricsLevel::Off) {
-            if (impl_->metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
-                impl_->metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
-            }
-        }
-        return GraphRun(std::move(state));
-    }
-
-    std::shared_ptr<detail::GraphRunSharedState> state;
-    try {
-        state = std::make_shared<detail::GraphRunSharedState>(gid, n);
-    } catch (...) {
-        if (impl_->metrics.level != MetricsLevel::Off) {
-            if (impl_->metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
-                impl_->metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
-            }
-        }
-        if (!is_internal) {
-            impl_->release_external_slots(n);
-        }
-        throw;
-    }
-
-    // 在发布任何 root 前完成全部可能抛出的图物化；失败时统一回滚 admission。
-    try {
-      auto& nodes = graph.nodes_internal();
-      for (auto& node_data : nodes) {
-        const std::size_t idx = node_data.id.value();
-        Priority node_priority = graph_priority;
-        std::optional<TaskDeadline> node_deadline = std::nullopt;
-        if (node_data.options.has_value()) {
-            validate_priority(node_data.options->priority);
-            node_priority = node_data.options->priority;
-            node_deadline = node_data.options->deadline;
-        }
-        state->node_entries[idx].id = node_data.id;
-        state->node_entries[idx].invoker = std::move(node_data.invoker);
-        state->node_entries[idx].priority = node_priority;
-        state->node_entries[idx].deadline = node_deadline;
-        if (state->node_entries[idx].invoker && state->node_entries[idx].invoker->is_coroutine_node()) {
-            auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(state->node_entries[idx].invoker.get());
-            const TaskId task_id = impl_->allocate_task_id();
-            auto task_state = std::make_shared<TaskHandle<void>::ResultCell>(task_id, node_priority, node_deadline);
-            task_state->set_timer_functions(
-                [impl_ptr = impl_.get()](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
-                    return impl_ptr->register_timer(wt, std::move(hs), std::move(act));
-                },
-                [impl_ptr = impl_.get()](std::uint64_t tid) {
-                    impl_ptr->cancel_timer(tid);
-                }
-            );
-            coro_node->coro.promise().shared_state = task_state;
-            coro_node->task_state = task_state;
-        }
-      }
-
-      for (const auto& edge : graph.edges()) {
-        const std::size_t u = edge.from.value();
-        const std::size_t v = edge.to.value();
-        state->node_entries[v].remaining_predecessors.fetch_add(1, std::memory_order_relaxed);
-        state->node_entries[u].successors.push_back({edge.to, edge.policy});
-      }
-    } catch (...) {
-        if (impl_->metrics.level != MetricsLevel::Off &&
-            impl_->metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
-            impl_->metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
-        }
-        if (!is_internal) {
-            impl_->release_external_slots(n);
-        }
-        throw;
-    }
-
-    // 递归/内部分发与依赖传播函数（R-070 / R-071 / D-107 / D-109 / D-110）
-    auto trigger_successors = [impl_ptr = impl_.get(), state, is_internal](auto self, auto post_node_fn, NodeId u_id) -> void {
-        const std::size_t node_idx = u_id.value();
-        auto& entry = state->node_entries[node_idx];
-        const TaskState u_outcome = entry.outcome.load(std::memory_order_acquire);
-
-        for (const auto& [succ_id, policy] : entry.successors) {
-            auto& succ_entry = state->node_entries[succ_id.value()];
-            if (policy == EdgePolicy::RequireSuccess && u_outcome != TaskState::Succeeded) {
-                succ_entry.has_failed_required_predecessor.store(true, std::memory_order_release);
-            }
-            if (succ_entry.remaining_predecessors.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                // 成为唯一 1->0 successor release owner
-                if (succ_entry.has_failed_required_predecessor.load(std::memory_order_acquire) ||
-                    state->cancel_requested.load(std::memory_order_acquire)) {
-                    // 前置依赖失败或图已取消：取消该后继节点，不执行 Callable，直接发布 Cancelled 并释放 external slot
-                    if (!is_internal) {
-                        impl_ptr->release_external_slots(1);
-                    }
-                    state->mark_node_terminal(succ_id.value(), TaskState::Cancelled);
-                    // 递归触发 succ_id 的后继
-                    self(self, post_node_fn, succ_id);
-                } else {
-                    // 前置依赖全部满足且未取消：发布给 Scheduler 调度执行
-                    post_node_fn(post_node_fn, succ_id);
-                }
-            }
-        }
-    };
-
-    auto post_node = [impl_ptr = impl_.get(), state, is_internal, trigger_successors](auto self, NodeId u_id) -> void {
-        const std::size_t node_idx = u_id.value();
-        auto& entry = state->node_entries[node_idx];
-        const Priority node_p = entry.priority;
-
-        if (entry.invoker && entry.invoker->is_coroutine_node()) {
-            auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(entry.invoker.get());
-            auto task_state = coro_node->task_state;
-            auto coro = coro_node->coro;
-            coro_node->coro = nullptr;
-
-            task_state->set_rescheduler([impl_ptr, state, u_id, is_internal, task_state, trigger_successors, self](std::unique_ptr<detail::TaskInvokerBase> invoker) {
-                auto trigger_fn = [trigger_successors, self](NodeId id) {
-                    trigger_successors(trigger_successors, self, id);
-                };
-                auto wrapper = std::make_unique<detail::GraphCoroutineResumeWrapper>(
-                    std::move(invoker), state, task_state, u_id, std::move(trigger_fn));
-                impl_ptr->post_task_internal(std::move(wrapper), false /* is_external */);
-            });
-
-            auto task_fn = [impl_ptr, state, u_id, is_internal, self, trigger_successors, task_state, coro, node_p] {
-                const std::size_t n_idx = u_id.value();
-
-                if (state->cancel_requested.load(std::memory_order_acquire)) {
-                    task_state->request_cancel();
-                }
-
-                detail::GraphNodeExecutionContextGuard node_guard(state->id, node_p);
-
-                auto start_invoker = std::make_unique<detail::CoroutineTaskInvokerModel<void>>(
-                    coro, task_state);
-                start_invoker->execute();
-
-                if (task_state->is_completed()) {
-                    TaskState outcome = task_state->state();
-                    std::exception_ptr ex = (outcome == TaskState::Failed) ? task_state->exception() : nullptr;
-                    state->mark_node_terminal(n_idx, outcome, ex);
-                    trigger_successors(trigger_successors, self, u_id);
-                }
-            };
-
-            impl_ptr->post_task_internal(
-                detail::make_graph_node_invoker<true>(std::move(task_fn), node_p, task_state->deadline()),
-                !is_internal);
-            return;
-        }
-
-        auto task_fn = [impl_ptr, state, u_id, is_internal, self, trigger_successors, node_p] {
-            const std::size_t n_idx = u_id.value();
-            auto& node_entry = state->node_entries[n_idx];
-
-            if (state->cancel_requested.load(std::memory_order_acquire)) {
-                state->mark_node_terminal(n_idx, TaskState::Cancelled);
-                trigger_successors(trigger_successors, self, u_id);
-                return;
-            }
-
-            detail::GraphNodeExecutionContextGuard node_guard(state->id, node_p);
-
-            if (node_entry.deadline.has_value() && node_entry.deadline_disposition == DeadlineDisposition::None) {
-                const auto now = std::chrono::steady_clock::now();
-                if (now <= node_entry.deadline->time_point()) {
-                    node_entry.deadline_disposition = DeadlineDisposition::Met;
-                } else {
-                    node_entry.deadline_disposition = DeadlineDisposition::Missed;
-                    const auto lateness = std::chrono::duration_cast<std::chrono::nanoseconds>(now - node_entry.deadline->time_point()).count();
-                    detail::record_metrics_deadline_start_lateness(TaskId{impl_ptr->runtime_id, n_idx}, lateness);
-                }
-            }
-            detail::record_metrics_first_start(TaskId{impl_ptr->runtime_id, n_idx},
-                node_entry.deadline.has_value() ? std::optional{node_entry.deadline_disposition} : std::nullopt);
-
-            const auto t_exec_start = std::chrono::steady_clock::now();
-            try {
-                if (node_entry.invoker) {
-                    node_entry.invoker->execute();
-                }
-                const auto t_exec_end = std::chrono::steady_clock::now();
-                detail::record_metrics_execution_segment(TaskId{impl_ptr->runtime_id, n_idx},
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_exec_end - t_exec_start).count());
-                detail::record_metrics_succeeded(TaskId{impl_ptr->runtime_id, n_idx});
-                state->mark_node_terminal(n_idx, TaskState::Succeeded);
-            } catch (const astra::task_cancelled&) {
-                const auto t_exec_end = std::chrono::steady_clock::now();
-                detail::record_metrics_execution_segment(TaskId{impl_ptr->runtime_id, n_idx},
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_exec_end - t_exec_start).count());
-                detail::record_metrics_cancelled_cooperative(TaskId{impl_ptr->runtime_id, n_idx});
-                state->mark_node_terminal(n_idx, TaskState::Cancelled);
-            } catch (...) {
-                const auto t_exec_end = std::chrono::steady_clock::now();
-                detail::record_metrics_execution_segment(TaskId{impl_ptr->runtime_id, n_idx},
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_exec_end - t_exec_start).count());
-                detail::record_metrics_failed(TaskId{impl_ptr->runtime_id, n_idx});
-                state->mark_node_terminal(n_idx, TaskState::Failed, std::current_exception());
-            }
-
-            trigger_successors(trigger_successors, self, u_id);
-        };
-
-        impl_ptr->post_task_internal(
-            detail::make_graph_node_invoker<true>(std::move(task_fn), node_p, entry.deadline),
-            !is_internal);
-    };
-
-    // 寻找所有 0-predecessor roots 并直接发布 Ready
-    std::vector<NodeId> roots;
-    roots.reserve(n);
-    for (std::size_t i = 1; i <= n; ++i) {
-        if (state->node_entries[i].remaining_predecessors.load(std::memory_order_relaxed) == 0) {
-            roots.push_back(NodeId{i});
-        }
-    }
-
-    for (NodeId root_id : roots) {
-        post_node(post_node, root_id);
-    }
-
-    return GraphRun(std::move(state));
-}
 
 GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph) {
-    return detail::GraphExecution::run(*this, options, std::move(graph));
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    return detail::GraphExecution::run(*impl_, options, std::move(graph));
 }
 
 GraphRun Scheduler::run(FrozenTaskGraph&& graph) {

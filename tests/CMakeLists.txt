@@ -9,6 +9,8 @@ if(BUILD_SHARED_LIBS)
   target_include_directories(AstraSchedulerTestRuntime PUBLIC
     ${PROJECT_BINARY_DIR}/include
     ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
   )
   target_compile_options(AstraSchedulerTestRuntime PRIVATE
     -Wall
@@ -65,6 +67,7 @@ astra_add_internal_test(astra_chase_lev_growth_test test_chase_lev_growth.cpp)
 astra_add_internal_test(astra_chase_lev_indices_test test_chase_lev_indices.cpp)
 astra_add_public_test(astra_task_graph_freeze_test test_task_graph_freeze.cpp)
 astra_add_public_test(astra_graph_admission_test test_graph_admission.cpp)
+astra_add_internal_test(astra_graph_runtime_port_test test_graph_runtime_port.cpp)
 astra_add_public_test(astra_graph_edge_policies_test test_graph_edge_policies.cpp)
 astra_add_public_test(astra_graph_run_control_test test_graph_run_control.cpp)
 astra_add_public_test(astra_coroutine_spawn_test test_coroutine_spawn.cpp)

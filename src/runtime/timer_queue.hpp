@@ -1,7 +1,7 @@
 #ifndef ASTRA_SRC_TIMER_QUEUE_HPP
 #define ASTRA_SRC_TIMER_QUEUE_HPP
 
-#include "await_handshake.hpp"
+#include "task/await_handshake.hpp"
 #include "runtime_metrics.hpp"
 
 #include <atomic>

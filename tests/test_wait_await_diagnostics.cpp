@@ -9,7 +9,7 @@
 #include "astra/trace.hpp"
 #include "astra/trace_export.hpp"
 #include "astra/task_handle.hpp"
-#include "trace_collector.hpp"
+#include "observability/trace_collector.hpp"
 
 #include <atomic>
 #include <future>

@@ -173,7 +173,6 @@ public:
 
 private:
     friend class TaskGraph;
-    friend class Scheduler;
     friend class detail::GraphExecution;
 
     // 内部访问接口（转移 NodeData 所有权至 GraphRunSharedState）
@@ -361,7 +360,6 @@ public:
     void operator co_await() && = delete;
 
 private:
-    friend class Scheduler;
     friend class detail::GraphExecution;
     friend struct detail::GraphRunAwaiter;
     friend struct detail::AwaitProtocolAccess;

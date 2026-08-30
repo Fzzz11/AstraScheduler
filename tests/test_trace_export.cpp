@@ -4,7 +4,7 @@
 
 #include "astra/trace.hpp"
 #include "astra/trace_export.hpp"
-#include "trace_collector.hpp"
+#include "observability/trace_collector.hpp"
 
 #include <cassert>
 #include <cstdint>

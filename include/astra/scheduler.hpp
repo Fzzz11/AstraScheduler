@@ -6,7 +6,7 @@
 //
 // 【这是什么】
 //   Scheduler 是一个可复制/可移动的"句柄"（Handle），多个副本共享同一个
-//   后台运行时（Impl，实现在 src/scheduler.cpp）。你通过它 submit() 普通函数、
+//   后台运行时（Impl，实现在 src/runtime/scheduler.cpp）。你通过它 submit() 普通函数、
 //   spawn() 协程、run() 任务图；每个任务返回 TaskHandle 用来取结果。
 //
 // 【整体架构（为什么有 Worker / Reaper 两类线程）】
@@ -40,7 +40,7 @@
 //   astra::process_metrics_snapshot()  // 进程级 Reaper/Finalization 诊断
 //   TraceCollector（trace.hpp）   // 高频事件时间线（离线导出）
 //
-// 本文件只声明公共 API；实现位于 src/scheduler.cpp（class Impl 为内部细节，
+// 本文件只声明公共 API；实现位于 src/runtime/scheduler.cpp（class Impl 为内部细节，
 // 对使用者不可见）。
 //
 // （可追溯性：AST-004 / R-098 / R-099 / R-100 / R-101 / D-155；平台仅 64-bit
@@ -71,7 +71,6 @@ class Scheduler;
 namespace detail {
 class AwaitHandshake;
 class GraphRunSharedState;
-class GraphExecution;
 struct SchedulerTestAccess;
 
 void perform_graph_caller_wait(const GraphRunSharedState&,
@@ -499,7 +498,6 @@ private:
     void cancel_timer(std::uint64_t timer_id) const;
 
     friend struct detail::SchedulerTestAccess;
-    friend class detail::GraphExecution;
     friend void detail::perform_caller_wait(const detail::TaskControlBlock&,
                                             std::optional<std::chrono::steady_clock::time_point>);
     friend void detail::perform_graph_caller_wait(const detail::GraphRunSharedState&,

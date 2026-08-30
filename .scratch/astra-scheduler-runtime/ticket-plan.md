@@ -762,9 +762,9 @@ AST-066 <- AST-065
 
 - Tracker: local Markdown (`.scratch/astra-scheduler-runtime/issues/`).
 - Published at: 2026-08-30.
-- Published Tickets: 66 (`AST-001` through `AST-066`；无 AST-056 文件编号空洞若存在则保持历史)。
-- Status: `AST-001` through `AST-066`为`done`。
-- Frontier: v1.2.0 Impl 深模块拆分已实现（AST-064..066）。
+- Published Tickets: 71 (`AST-001` through `AST-071`)。
+- Status: 本轮 `AST-067` through `AST-070` 为 `done`，`AST-071` 为 `ready-for-agent`；历史状态以表格与各 Ticket 为准。
+- Frontier: v1.2.0 Graph/Worker/Registry 模块化与 private src 重组已实现；wait/await diagnostics 路由拆分由 AST-071 跟踪。
 - Unpublished or failed items: None.
 - Traceability inventory: 以校验器输出为准（R-118至R-123由AST-058至AST-063覆盖；R-124由AST-064至AST-066覆盖）。
 
@@ -836,6 +836,11 @@ AST-066 <- AST-065
 | AST-064 | v1.2.0 | [64-admission-controller.md](issues/64-admission-controller.md) | done | AST-063 |
 | AST-065 | v1.2.0 | [65-timer-queue.md](issues/65-timer-queue.md) | done | AST-064 |
 | AST-066 | v1.2.0 | [66-runtime-metrics.md](issues/66-runtime-metrics.md) | done | AST-065 |
+| AST-067 | v1.2.0 | [67-graph-runtime-port.md](issues/67-graph-runtime-port.md) | done | AST-066 |
+| AST-068 | v1.2.0 | [68-graph-execution-unit.md](issues/68-graph-execution-unit.md) | done | AST-067 |
+| AST-069 | v1.2.0 | [69-worker-registry-split.md](issues/69-worker-registry-split.md) | done | AST-068 |
+| AST-070 | v1.2.0 | [70-src-layout.md](issues/70-src-layout.md) | done | AST-069 |
+| AST-071 | v1.2.0 | [71-runtime-diagnostics-routing.md](issues/71-runtime-diagnostics-routing.md) | ready-for-agent | AST-069, AST-070 |
 
 ## Approval
 
@@ -844,5 +849,6 @@ Approved by: project owner（user）
 Approved at: 2026-08-27
 Revision approved by: project owner（user）
 Revision approved at: 2026-08-30（v1.1 encapsulation revision；v1.2.0 compiled TCB increment）
+Latest revision approved at: 2026-08-31（D-177 / AST-067..070 internal modularization increment；AST-071 diagnostics follow-up requested by project owner）
 
-本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-066 承载。
+本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-071 承载。

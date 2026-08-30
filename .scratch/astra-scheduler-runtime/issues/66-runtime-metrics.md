@@ -38,4 +38,4 @@ Claimed by: agent
 
 - Spec: `.scratch/astra-scheduler-runtime/spec.md` — R-124
 - Decisions: D-176
-- Verification: WSL `build/wsl-gcc-debug`；`src/runtime_metrics.{hpp,cpp}` 拥有 worker/control shard 与 `fill_counters_and_histograms`；encapsulation 审计拒绝 `Scheduler::Impl*`；`astra_runtime_metrics_test` 与 `astra_metrics_snapshot_test` 通过；ctest 52/52。
+- Verification: WSL `build/wsl-gcc-debug`；`src/runtime/runtime_metrics.{hpp,cpp}` 拥有 worker/control shard 与 `fill_counters_and_histograms`；encapsulation 审计拒绝 `Scheduler::Impl*`；`astra_runtime_metrics_test` 与 `astra_metrics_snapshot_test` 通过；ctest 52/52。

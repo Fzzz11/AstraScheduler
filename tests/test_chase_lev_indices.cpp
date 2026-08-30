@@ -1,4 +1,4 @@
-#include "../src/chase_lev_deque.hpp"
+#include "../src/scheduling/chase_lev_deque.hpp"
 #include <astra/capabilities.hpp>
 #include <astra/scheduler.hpp>
 #include <astra/scheduler_options.hpp>

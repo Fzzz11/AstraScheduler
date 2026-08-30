@@ -6,22 +6,25 @@
 # 仓库自有 scenario runner + harness self-test（无外部依赖，always built）。
 add_executable(astra_bench_scenarios
   astra_bench_scenarios.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph_execution.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_control_block.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/await_protocol.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime_metrics.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/timer_queue.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/admission_controller.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/task_control_block.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/await_protocol.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_metrics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/timer_queue.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/admission_controller.cpp
 )
 target_link_libraries(astra_bench_scenarios PRIVATE Threads::Threads)
 target_include_directories(astra_bench_scenarios PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
   ${CMAKE_CURRENT_BINARY_DIR}/../include
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -31,6 +34,7 @@ add_executable(astra_bench_harness_selftest astra_bench_harness_selftest.cpp)
 target_include_directories(astra_bench_harness_selftest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
   ${CMAKE_CURRENT_BINARY_DIR}/../include
 )
 target_compile_features(astra_bench_harness_selftest PRIVATE cxx_std_20)
@@ -40,18 +44,20 @@ add_test(NAME astra_bench_harness_selftest COMMAND astra_bench_harness_selftest)
 # --- 固定 benchmark corpus（AST-050 / R-003 / R-090 / D-142）---
 add_executable(astra_bench_corpus
   astra_bench_corpus.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph_execution.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_control_block.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/await_protocol.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime_metrics.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/timer_queue.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/admission_controller.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/task_control_block.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/await_protocol.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_metrics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/timer_queue.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/admission_controller.cpp
 )
 target_compile_definitions(astra_bench_corpus PRIVATE
   ASTRA_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
@@ -62,51 +68,58 @@ target_link_libraries(astra_bench_corpus PRIVATE Threads::Threads)
 target_include_directories(astra_bench_corpus PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
   ${CMAKE_CURRENT_BINARY_DIR}/../include
 )
 target_compile_features(astra_bench_corpus PRIVATE cxx_std_20)
 
 add_executable(astra_bench_corpus_selftest astra_bench_corpus_selftest.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph_execution.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_control_block.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/await_protocol.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime_metrics.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/timer_queue.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/admission_controller.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/task_control_block.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/await_protocol.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_metrics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/timer_queue.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/admission_controller.cpp
 )
 target_link_libraries(astra_bench_corpus_selftest PRIVATE Threads::Threads)
 target_include_directories(astra_bench_corpus_selftest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
   ${CMAKE_CURRENT_BINARY_DIR}/../include
 )
 target_compile_features(astra_bench_corpus_selftest PRIVATE cxx_std_20)
 add_test(NAME astra_bench_corpus_selftest COMMAND astra_bench_corpus_selftest)
 
 add_executable(astra_bench_stats_selftest astra_bench_stats_selftest.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph_execution.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_control_block.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/await_protocol.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime_metrics.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/timer_queue.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/admission_controller.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/task_control_block.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/await_protocol.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_metrics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/timer_queue.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/admission_controller.cpp
 )
 target_link_libraries(astra_bench_stats_selftest PRIVATE Threads::Threads)
 target_include_directories(astra_bench_stats_selftest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
   ${CMAKE_CURRENT_BINARY_DIR}/../include
 )
 target_compile_features(astra_bench_stats_selftest PRIVATE cxx_std_20)
@@ -157,22 +170,25 @@ if(ASTRA_GB_CODE EQUAL 0 AND EXISTS "${ASTRA_GB_ARCHIVE}")
   FetchContent_MakeAvailable(googlebenchmark)
 
   add_executable(astra_bench_micro astra_bench_micro.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/reaper_registry.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/scheduler.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_collector.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/trace_export.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/reaper_registry.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_registry.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_collector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/observability/trace_export.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/lifecycle/finalization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph/graph_execution.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_control_block.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/await_protocol.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime_metrics.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/timer_queue.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src/admission_controller.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/task_control_block.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task/await_protocol.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/runtime_metrics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/timer_queue.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/runtime/admission_controller.cpp
   )
   target_link_libraries(astra_bench_micro PRIVATE benchmark::benchmark Threads::Threads)
   target_include_directories(astra_bench_micro PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
     ${CMAKE_CURRENT_BINARY_DIR}/../include
   )
   target_compile_features(astra_bench_micro PRIVATE cxx_std_20)

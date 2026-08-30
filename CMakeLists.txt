@@ -54,17 +54,19 @@ endif()
 
 set(ASTRA_SCHEDULER_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/task_control_block.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/await_protocol.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime_metrics.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/timer_queue.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/admission_controller.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/reaper_registry.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/finalization.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/graph.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/trace_collector.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/trace_export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/task/task_control_block.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/task/await_protocol.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/runtime_metrics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/runtime_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/timer_queue.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/admission_controller.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/scheduler.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/lifecycle/reaper_registry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/lifecycle/finalization.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/graph/graph.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/graph/graph_execution.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/observability/trace_collector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/observability/trace_export.cpp
 )
 add_library(AstraScheduler ${ASTRA_SCHEDULER_SOURCES})
 add_library(AstraScheduler::AstraScheduler ALIAS AstraScheduler)
@@ -79,6 +81,8 @@ target_include_directories(AstraScheduler
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # R-110 Exceptions：warnings-as-errors 等内部诊断选项为 PRIVATE，不传播给 consumer。

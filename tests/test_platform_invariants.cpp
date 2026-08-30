@@ -5,7 +5,7 @@
 #include "astra/finalization.hpp"
 #include "astra/process_metrics.hpp"
 #include "astra/scheduler.hpp"
-#include "reaper_registry.hpp"
+#include "lifecycle/reaper_registry.hpp"
 
 #include <cassert>
 #include <iostream>

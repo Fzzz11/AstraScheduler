@@ -3,7 +3,7 @@
 
 #include "astra/scheduler.hpp"
 #include "astra/trace.hpp"
-#include "trace_collector.hpp"
+#include "observability/trace_collector.hpp"
 
 #include <algorithm>
 #include <cassert>

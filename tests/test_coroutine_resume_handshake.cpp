@@ -1,5 +1,5 @@
-#include "await_handshake.hpp"
-#include "coroutine_resume.hpp"
+#include "task/await_handshake.hpp"
+#include "task/coroutine_resume.hpp"
 
 #include <astra/coroutine.hpp>
 #include <astra/error.hpp>

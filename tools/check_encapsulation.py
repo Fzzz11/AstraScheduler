@@ -119,17 +119,17 @@ def audit_installed_headers() -> list[str]:
 
 
 R124_MODULE_FILES = (
-    "src/admission_controller.hpp",
-    "src/admission_controller.cpp",
-    "src/timer_queue.hpp",
-    "src/timer_queue.cpp",
-    "src/runtime_metrics.hpp",
-    "src/runtime_metrics.cpp",
+    "src/runtime/admission_controller.hpp",
+    "src/runtime/admission_controller.cpp",
+    "src/runtime/timer_queue.hpp",
+    "src/runtime/timer_queue.cpp",
+    "src/runtime/runtime_metrics.hpp",
+    "src/runtime/runtime_metrics.cpp",
 )
 R124_OWNED_STATE = {
-    "src/admission_controller.hpp": ("pending_", "slot_cv_", "capacity_"),
-    "src/timer_queue.hpp": ("heap_", "map_"),
-    "src/runtime_metrics.hpp": ("worker_shards", "control_shard"),
+    "src/runtime/admission_controller.hpp": ("pending_", "slot_cv_", "capacity_"),
+    "src/runtime/timer_queue.hpp": ("heap_", "map_"),
+    "src/runtime/runtime_metrics.hpp": ("worker_shards", "control_shard"),
 }
 IMPL_PTR_RE = re.compile(r"Scheduler\s*::\s*Impl\s*\*")
 
@@ -152,6 +152,46 @@ def audit_impl_deep_modules() -> list[str]:
         for name in names:
             if name not in text:
                 problems.append(f"{rel} missing owned state {name} (R-124 deletion test)")
+    return problems
+
+
+def audit_internal_module_boundaries() -> list[str]:
+    problems: list[str] = []
+
+    graph_execution = ROOT / "src" / "graph" / "graph_execution.cpp"
+    if not graph_execution.is_file():
+        problems.append("R-126 module missing: src/graph/graph_execution.cpp")
+    else:
+        graph_text = graph_execution.read_text(encoding="utf-8")
+        for forbidden in ("Scheduler::Impl", "scheduler.impl_", "Scheduler&"):
+            if forbidden in graph_text:
+                problems.append(
+                    f"src/graph/graph_execution.cpp depends on {forbidden} (R-125)"
+                )
+
+    scheduler = ROOT / "src" / "runtime" / "scheduler.cpp"
+    if not scheduler.is_file():
+        problems.append("R-127 module missing: src/runtime/scheduler.cpp")
+    else:
+        scheduler_text = scheduler.read_text(encoding="utf-8")
+        for forbidden in (
+            "GraphRun detail::GraphExecution::run",
+            "void Scheduler::Impl::worker_main",
+            "g_runtime_registry",
+        ):
+            if forbidden in scheduler_text:
+                problems.append(f"scheduler.cpp still owns {forbidden} (R-126/R-127)")
+
+    allowed_root_files = {"version.cpp"}
+    for path in (ROOT / "src").iterdir():
+        if path.is_file() and path.name not in allowed_root_files:
+            problems.append(f"flat private source remains at {path.relative_to(ROOT)} (R-128)")
+    for path in (ROOT / "src").rglob("*"):
+        if path.suffix not in {".hpp", ".cpp"}:
+            continue
+        if '#include "../' in path.read_text(encoding="utf-8"):
+            problems.append(f"cross-module ../ include in {path.relative_to(ROOT)} (R-128)")
+
     return problems
 
 
@@ -193,6 +233,7 @@ def main() -> int:
         + audit_installed_headers()
         + run_negative_probes()
         + audit_impl_deep_modules()
+        + audit_internal_module_boundaries()
     )
     if problems:
         print("FAIL: encapsulation boundary drift:")
@@ -201,7 +242,7 @@ def main() -> int:
         return 1
     print(
         f"Encapsulation gate OK: public tests isolated; {len(NEGATIVE_PROBES)} internal probes rejected; "
-        "R-124 modules own state and hold no Impl*."
+        "R-124 modules own state; R-125..R-128 Graph/Worker/layout boundaries hold."
     )
     return 0
 

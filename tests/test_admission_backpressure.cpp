@@ -11,7 +11,7 @@
 #include <string>
 #include <thread>
 #include <variant>
-#include "test_seam.hpp"
+#include "testing/test_seam.hpp"
 
 #define TEST_ASSERT(cond)                                                      \
     do {                                                                       \

@@ -229,6 +229,7 @@ AstraScheduler 面向 Linux-only 的现代 C++20 任务调度场景，最终范�
 | D-174 | R-121 |
 | D-175 | R-123 |
 | D-176 | R-124 |
+| D-177 | R-125, R-126, R-127, R-128 |
 
 ## Normative Rules
 
@@ -1840,9 +1841,61 @@ Applies to: v1.2.0之后的内部Runtime分解。
 Exceptions: GraphExecution深化不在本规则范围。submit/spawn header仍可调用Scheduler上的admission/timer窄桥。
 Source decisions: D-176
 Source support: D-176 => 抽出AdmissionController、TimerQueue、RuntimeMetrics；禁止浅wrapper；延期ReadyQueues/steal/park。
-Code evidence: `src/admission_controller.{hpp,cpp}`、`src/timer_queue.{hpp,cpp}`、`src/runtime_metrics.{hpp,cpp}`；`tools/check_encapsulation.py` 拒绝 `Scheduler::Impl*`。
+Code evidence: `src/runtime/admission_controller.{hpp,cpp}`、`src/runtime/timer_queue.{hpp,cpp}`、`src/runtime/runtime_metrics.{hpp,cpp}`；`tools/check_encapsulation.py` 拒绝 `Scheduler::Impl*`。
 Disposition: implementation
 Observable result: 三个模块拥有独立状态；现有admission/timer/metrics测试通过；对`Impl*`浅转发的静态审计失败。
+
+### R-125 — GraphExecution 只通过窄 Runtime Port 使用调度能力
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: GraphExecution必须通过非安装GraphRuntimePort使用identity、admission、ready publication、timer与graph metrics能力；不得包含或访问Scheduler、Scheduler::Impl、scheduler.impl_或Runtime字段布局。Graph reservation必须由单一RAII lease在ownership转移前统一回滚。
+Applies to: v1.2.0之后的Graph内部执行。
+Exceptions: port可由Scheduler::Impl适配，但不得进入安装头或public manifest。
+Source decisions: D-177
+Source support: D-177 => 建立能力seam并统一admission rollback ownership。
+Code evidence: `src/graph/graph_runtime_port.hpp`、`src/graph/graph_execution.cpp`、`tests/test_graph_runtime_port.cpp`。
+Disposition: implementation
+Observable result: GraphExecution可在独立翻译单元编译；静态审计拒绝Scheduler/Impl依赖；Graph失败注入无slot/metric泄漏。
+
+### R-126 — Graph 运行协议由独立 GraphExecution 实例拥有
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: Graph依赖传播、node publication、Coroutine resume包装、取消与terminal publication必须迁入独立graph_execution.cpp并由GraphExecution实例方法维护；scheduler.cpp只保留Graph入口委托。
+Applies to: FrozenTaskGraph到GraphRun的单次执行。
+Exceptions: GraphRun public control与GraphRunSharedState observable semantics保持不变。
+Source decisions: D-177
+Source support: D-177 => 将类型独立深化为实现和生命周期独立。
+Code evidence: `src/graph/graph_execution.{hpp,cpp}`；`src/runtime/scheduler.cpp` 只委托 Graph 入口。
+Disposition: implementation
+Observable result: scheduler.cpp不含Graph edge propagation；GraphExecution不再是静态命名空间替代品。
+
+### R-127 — Worker loop 与 Runtime registry 从 Scheduler facade 分离
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: Worker claim/steal/priority/park/execute/helping协议与non-owning Runtime lookup/diagnostic routing必须从scheduler.cpp迁入内部模块；Scheduler facade只负责public校验和委托。抽取不得改变weak-memory ordering、shutdown ownership或Runtime lifetime。
+Applies to: v1.2.0之后的内部Runtime实现。
+Exceptions: Runtime State仍可组合现有queues、AdmissionController、TimerQueue与RuntimeMetrics。
+Source decisions: D-177
+Source support: D-177 => 按Worker与registry完整协议拆分，而非按函数长度拆分。
+Code evidence: `src/runtime/worker_loop.hpp`、`src/runtime/runtime_registry.{hpp,cpp}`。
+Disposition: implementation
+Observable result: scheduler.cpp不再定义worker_main或全局Runtime map；既有Worker/weak-memory/shutdown测试不变。
+
+### R-128 — src 按子系统组织且内部头保持非安装
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: src必须按runtime/task/graph/lifecycle/observability/scheduling/testing组织相关hpp/cpp，内部include以src为PRIVATE根且不得使用跨模块../路径；仍只构建AstraScheduler产品target，src头不得安装或进入public consumer include path。
+Applies to: source layout、CMake、internal tests与package。
+Exceptions: version.cpp可保留src根；不要求每个目录形成独立library。
+Source decisions: D-177
+Source support: D-177 => 目录结构表达代码所有权并以纯rename提交完成。
+Code evidence: `src/{runtime,task,graph,lifecycle,observability,scheduling,testing}`、根 `CMakeLists.txt`、`tools/check_encapsulation.py`。
+Disposition: implementation
+Observable result: package/install清单只含include/astra；CMake和public/internal test边界通过；无脆弱跨目录相对include。
 
 ## State and Lifecycle
 
@@ -2064,6 +2117,10 @@ Observable result: 三个模块拥有独立状态；现有admission/timer/metric
 | R-122 | D-171 | R-093 version contract and immutable v1.0.0/v1.1.0 manifests | Pending |
 | R-123 | D-175, D-170 | shared-library documented export allowlist | AST-063 |
 | R-124 | D-176 | admission/timer/metrics module tests plus no-Impl* audit | AST-064, AST-065, AST-066 |
+| R-125 | D-177 | Graph runtime-port and rollback-owner probes | AST-067 |
+| R-126 | D-177 | Graph execution ownership and behaviour tests | AST-068 |
+| R-127 | D-177 | Worker/registry/diagnostic split plus scheduler ownership audit | AST-069, AST-071 |
+| R-128 | D-177 | source-layout, install and package audits | AST-070 |
 
 ## Open Questions
 
@@ -2079,3 +2136,5 @@ None。已确认范围内没有未决语义；明确排除项保留在 Non-goals
 - 本次v1.1封装性修订由项目owner于2026-08-30批准；只收回未文档化的实现表面，不改变既有observable semantics。
 - 本次v1.2.0 compiled TaskControlBlock修订（D-170至D-175，R-118至R-123，ADR-0048）已由项目owner于2026-08-30批准。
 - 本次按完整不变量拆Scheduler::Impl（D-176，R-124，架构审查第4点A）已由项目owner于2026-08-30确认；不深化GraphExecution，不抽ReadyQueues/steal/park。
+- D-177是D-176之后的新批准增量：深化GraphExecution、抽出Worker/registry并重组src；不回改D-176的历史范围。
+- AST-071继续承载D-177中尚未完成的 wait/await diagnostics 路由拆分；该 Ticket 不改变 R-096 的观测语义。

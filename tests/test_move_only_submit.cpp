@@ -4,7 +4,7 @@
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
 #include <astra/task_handle.hpp>
-#include "reaper_registry.hpp"
+#include "lifecycle/reaper_registry.hpp"
 
 #include <atomic>
 #include <cassert>

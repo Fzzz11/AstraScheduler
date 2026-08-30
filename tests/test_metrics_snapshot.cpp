@@ -13,7 +13,7 @@
 #include <limits>
 #include <thread>
 #include <vector>
-#include "test_seam.hpp"
+#include "testing/test_seam.hpp"
 
 using namespace std::chrono_literals;
 

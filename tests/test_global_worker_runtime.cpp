@@ -4,7 +4,7 @@
 #include <astra/scheduler.hpp>
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
-#include "reaper_registry.hpp"
+#include "lifecycle/reaper_registry.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -19,7 +19,7 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
-#include "test_seam.hpp"
+#include "testing/test_seam.hpp"
 
 // AST-008 测试套件：交付 Global-only Worker Runtime 基线
 // 覆盖 primary 规则：

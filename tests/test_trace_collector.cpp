@@ -5,8 +5,8 @@
 #include "astra/scheduler.hpp"
 #include "astra/scheduler_options.hpp"
 #include "astra/trace.hpp"
-#include "reaper_registry.hpp"
-#include "trace_collector.hpp"
+#include "lifecycle/reaper_registry.hpp"
+#include "observability/trace_collector.hpp"
 
 #include <atomic>
 #include <cassert>

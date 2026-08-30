@@ -12976,12 +12976,68 @@ Superseded by: None
 - Tickets: AST-064, AST-065, AST-066
 - Tests: admission/timer/metrics 现有行为测试；encapsulation 禁止新模块持有 Impl*
 
+## D-177 — GraphExecution 通过 Runtime Port 独立并按所有权重组内部源码
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+D-176 已按完整不变量抽出 AdmissionController、TimerQueue 与 RuntimeMetrics，但明确延期 GraphExecution、ReadyQueues、steal 与 park。当前 `scheduler.cpp` 仍约 2500 行；`GraphExecution::run()` 虽有独立类型，仍定义在该文件并直接读取 `scheduler.impl_`。`src` 的 Runtime、Task、Graph、Lifecycle、Observability 文件也全部平铺，目录未表达所有权。
+
+### Decision
+
+GraphExecution 必须通过非安装的窄 `GraphRuntimePort` 使用 identity、admission、ready publication、timer 与 graph metrics 能力，不得访问 `Scheduler`、`Scheduler::Impl` 或其字段。Graph admission reservation 使用单一 RAII lease，在 root publication ownership 转移前统一回滚 slots 与 active-run accounting。Graph 协议迁入独立 `graph_execution.cpp`，依赖传播、node publication、terminal 与取消入口由 GraphExecution 实例方法拥有。
+
+Scheduler 内部进一步抽出 Worker loop 与 non-owning Runtime registry/diagnostic routing；Scheduler facade 保留 public API 校验和委托，Runtime State 继续拥有 lifecycle、queues 与组件组合。最后以纯 rename 提交按 runtime/task/graph/lifecycle/observability/scheduling/testing 重组 `src`；内部头保持不安装，单一产品 target 保持不变。
+
+### Invariants
+
+- R-069 至 R-079、R-084 至 R-088 与全部 shutdown/ownership observable semantics 不变。
+- GraphRuntimePort 是 internal seam，不进入 install/public manifest。
+- Graph reservation 在 commit 前只有 RAII lease 一个 rollback owner；commit 后由 node terminal/completion 路径拥有 accounting。
+- Runtime registry 只做 non-owning lookup，不延长 Runtime lifetime。
+- Worker loop 抽取不改变 claim、steal、priority、park、helping 或 weak-memory ordering。
+- 目录移动只改变路径、CMake 与 internal include，不与行为变化混合。
+
+### Rationale
+
+先建立能力 seam 再迁移实现，能避免把大型 Impl 定义扩散到更多翻译单元。按协议所有权拆分可使目录结构反映真实依赖，而不是制造字段转发 wrapper。
+
+### Rejected alternatives
+
+- 直接把 Impl 定义移入共享内部头：扩大字段耦合并增加重编译面。
+- 先移动目录再拆职责：产生大量 rename 噪声且所有权仍不清晰。
+- GraphExecution 继续 friend Scheduler：类型独立但实现仍依赖 private representation。
+- 为每个子目录建立 object/static library：当前没有独立链接边界，只增加构建复杂度。
+
+### Consequences
+
+- 新增 GraphRuntimePort、GraphAdmissionLease 与 graph_execution.cpp。
+- scheduler.cpp 删除 Graph protocol，并逐步把 worker/registry 协议迁出；wait/await diagnostics 路由的剩余拆分由 AST-071 跟踪。
+- CMake source paths 和 internal test include 更新；install surface 不变。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 要求先记录 `docs/src目录与Scheduler模块化优化方案.md`，随后明确要求按该方案优化项目。
+- Code or data evidence: `scheduler.cpp` 约 2541 行；`GraphExecution::run()` 当前位于其中并读取 `scheduler.impl_`。
+
+### Traceability
+
+- Spec destinations: R-125 through R-128
+- Tickets: AST-067 through AST-071
+- Tests: Graph/admission/coroutine suites、Debug/ASan/TSan、semantic API、encapsulation、package consumer
+
 ## Open Questions
 
 - 无（本轮 1A grilling 已关闭：D-170..D-175）。
 - 2026-08-26 全项目功能覆盖审计已完成。后续新需求或实现证据若改变语义，必须新增/取代决策而不得静默修改已接受规则。
-
-
 
 
 
