@@ -18,6 +18,7 @@
 #include <thread>
 #include <type_traits>
 #include <vector>
+#include "test_seam.hpp"
 
 // AST-006 测试套件：解耦 Runtime State 并实现最后 Worker Handle handoff
 // 覆盖 primary 规则：

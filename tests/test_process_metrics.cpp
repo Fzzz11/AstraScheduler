@@ -13,6 +13,7 @@
 #include <iostream>
 #include <memory>
 #include <thread>
+#include "test_seam.hpp"
 
 using namespace std::chrono_literals;
 

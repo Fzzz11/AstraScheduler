@@ -54,6 +54,7 @@ endif()
 
 set(ASTRA_SCHEDULER_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/task_shared_state.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/reaper_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/finalization.cpp

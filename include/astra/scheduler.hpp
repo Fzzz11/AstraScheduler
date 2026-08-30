@@ -434,14 +434,6 @@ private:
                                                   std::optional<std::chrono::steady_clock::time_point>);
 };
 
-namespace detail {
-void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
-std::size_t global_injection_queue_size(const Scheduler& s);
-std::size_t external_pending_count(const Scheduler& s);
-std::size_t parked_workers_count(const Scheduler& s);
-std::uint64_t current_work_epoch(const Scheduler& s);
-}
-
 }  // namespace astra
 
 #endif  // ASTRA_SCHEDULER_HPP

@@ -13,6 +13,7 @@ add_executable(astra_bench_scenarios
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_shared_state.cpp
 )
 target_link_libraries(astra_bench_scenarios PRIVATE Threads::Threads)
 target_include_directories(astra_bench_scenarios PRIVATE
@@ -42,6 +43,7 @@ add_executable(astra_bench_corpus
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_shared_state.cpp
 )
 target_compile_definitions(astra_bench_corpus PRIVATE
   ASTRA_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
@@ -64,6 +66,7 @@ add_executable(astra_bench_corpus_selftest astra_bench_corpus_selftest.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_shared_state.cpp
 )
 target_link_libraries(astra_bench_corpus_selftest PRIVATE Threads::Threads)
 target_include_directories(astra_bench_corpus_selftest PRIVATE
@@ -82,6 +85,7 @@ add_executable(astra_bench_stats_selftest astra_bench_stats_selftest.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_shared_state.cpp
 )
 target_link_libraries(astra_bench_stats_selftest PRIVATE Threads::Threads)
 target_include_directories(astra_bench_stats_selftest PRIVATE
@@ -144,6 +148,7 @@ if(ASTRA_GB_CODE EQUAL 0 AND EXISTS "${ASTRA_GB_ARCHIVE}")
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/finalization.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/graph.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/version.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_shared_state.cpp
   )
   target_link_libraries(astra_bench_micro PRIVATE benchmark::benchmark Threads::Threads)
   target_include_directories(astra_bench_micro PRIVATE

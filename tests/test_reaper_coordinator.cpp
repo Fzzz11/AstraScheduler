@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
+#include "test_seam.hpp"
 
 // AST-007 测试套件：实现唯一 Reaper coordinator 的 pending/join/idle 循环
 // 覆盖 primary 规则：

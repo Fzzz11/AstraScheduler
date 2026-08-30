@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <thread>
 #include <vector>
+#include "test_seam.hpp"
 
 #define TEST_ASSERT(cond)                                                      \
     do {                                                                       \
