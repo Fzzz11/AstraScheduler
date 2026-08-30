@@ -66,6 +66,9 @@ TraceCategory TraceSnapshot::categories() const noexcept {
 }
 std::size_t TraceSnapshot::producer_count() const noexcept { return impl_ ? impl_->producers.size() : 0; }
 const TraceSnapshot::ProducerReport& TraceSnapshot::producer(std::size_t index) const {
+    if (!impl_) {
+        throw std::out_of_range("TraceSnapshot::producer index out of range");
+    }
     return impl_->producers.at(index);
 }
 const std::vector<TraceEvent>& TraceSnapshot::events() const noexcept {

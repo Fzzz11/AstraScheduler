@@ -11,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -188,6 +189,16 @@ void test_R088_corrupt_input_fails_explicitly_and_snapshot_retryable() {
         std::ostringstream out;
         (void)astra::write_chrome_trace(empty, out);
     } catch (const std::invalid_argument&) {
+        thrown = true;
+    }
+    assert(thrown);
+
+    // 空 snapshot 的 producer() 不得空指针解引用；index 越界抛 out_of_range。
+    assert(empty.producer_count() == 0);
+    thrown = false;
+    try {
+        (void)empty.producer(0);
+    } catch (const std::out_of_range&) {
         thrown = true;
     }
     assert(thrown);
