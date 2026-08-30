@@ -12,11 +12,29 @@
 
 namespace astra::detail {
 
-void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
-std::size_t global_injection_queue_size(const Scheduler& s);
-std::size_t external_pending_count(const Scheduler& s);
-std::size_t parked_workers_count(const Scheduler& s);
-std::uint64_t current_work_epoch(const Scheduler& s);
+struct SchedulerTestAccess {
+    static void run_task_on_worker(Scheduler& s, std::function<void()> task);
+    static std::size_t global_queue_size(const Scheduler& s);
+    static std::size_t external_pending_count(const Scheduler& s);
+    static std::size_t parked_workers_count(const Scheduler& s);
+    static std::uint64_t current_work_epoch(const Scheduler& s);
+};
+
+inline void run_test_task_on_worker(Scheduler& s, std::function<void()> task) {
+    SchedulerTestAccess::run_task_on_worker(s, std::move(task));
+}
+inline std::size_t global_injection_queue_size(const Scheduler& s) {
+    return SchedulerTestAccess::global_queue_size(s);
+}
+inline std::size_t external_pending_count(const Scheduler& s) {
+    return SchedulerTestAccess::external_pending_count(s);
+}
+inline std::size_t parked_workers_count(const Scheduler& s) {
+    return SchedulerTestAccess::parked_workers_count(s);
+}
+inline std::uint64_t current_work_epoch(const Scheduler& s) {
+    return SchedulerTestAccess::current_work_epoch(s);
+}
 
 }  // namespace astra::detail
 

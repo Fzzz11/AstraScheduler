@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""AstraScheduler v1 public surface 冻结门禁（AST-054 / R-004 / R-093 / R-094）。
+"""AstraScheduler semantic public surface gate（AST-057 / R-113）。
 
-对全新 configure/build/install 的产物计算 public surface 指纹并与 golden
-manifest（tools/api_manifest/v1.0.0.json）比对：
-  - installed headers（文件名 → SHA-256）：任何内容漂移都使 gate 失败；
-  - shared library 导出的 astra 命名空间动态符号（排序集合）；
+对全新 configure/build/install 的产物计算 documented public contract 指纹并与
+当前版本 manifest 比对：
+  - installed public header 名称（不冻结实现文本）；
+  - shared library 导出的非 detail/internal astra 符号；
+  - 可独立编译的 canonical public consumer contract；
   - 版本三元组（CMake project VERSION、installed version.hpp 宏、CMake
     version file 三处一致性，R-093 单一版本源）。
 另执行 public header 自包含编译矩阵（每个 header 单独 -fsyntax-only）。
@@ -31,8 +32,8 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GOLDEN_PATH = REPO_ROOT / "tools" / "api_manifest" / "v1.0.0.json"
 ROOT_CMAKE = REPO_ROOT / "CMakeLists.txt"
+PUBLIC_CONTRACT = REPO_ROOT / "tools" / "api_manifest" / "public_contract.cpp"
 
 SYMBOL_REGEX = r"_ZN5astra\w+|_ZNK5astra\w+|_ZNKR5astra\w+|_ZNO5astra\w+"
 
@@ -71,14 +72,26 @@ def build_and_install(workdir: Path) -> tuple[Path, Path]:
 
 
 def compute_fingerprint(static_install: Path, shared_install: Path) -> dict:
-    headers = {}
     include_dir = static_install / "include" / "astra"
-    for header in sorted(include_dir.glob("*.hpp")):
-        headers[header.name] = sha256_of(header.read_bytes())
+    headers = sorted(header.name for header in include_dir.glob("*.hpp"))
 
     shared = shared_install / "lib" / "libAstraScheduler.so"
     nm = run(["nm", "-D", "--defined-only", str(shared)], "nm shared library")
-    symbols = sorted(set(re.findall(SYMBOL_REGEX, nm)))
+    symbols = sorted(set(
+        symbol for symbol in re.findall(SYMBOL_REGEX, nm)
+        if "6detail" not in symbol
+        and "9Scheduler4Impl" not in symbol
+        and "14AwaitHandshake" not in symbol
+        and "4Impl" not in symbol
+        and "_internal" not in symbol
+        and "8run_impl" not in symbol
+        and "12cancel_timer" not in symbol
+        and "14register_timer" not in symbol
+        and "16allocate_task_id" not in symbol
+        and "17acquire_admission" not in symbol
+        and "17post_task_invoker" not in symbol
+        and "22rollback_external_slot" not in symbol
+    ))
 
     version_hpp = (include_dir / "version.hpp").read_text(encoding="utf-8")
     macros = {}
@@ -92,9 +105,10 @@ def compute_fingerprint(static_install: Path, shared_install: Path) -> dict:
     package_version = m.group(1) if m else "unknown"
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "headers": headers,
-        "exported_symbols": symbols,
+        "documented_exported_symbols": symbols,
+        "public_contract_sha256": sha256_of(PUBLIC_CONTRACT.read_bytes()),
         "version": {
             "macros": macros,
             "cmake_package_version": package_version,
@@ -136,6 +150,25 @@ def compile_matrix(static_install: Path, workdir: Path) -> list[str]:
     return problems
 
 
+def compile_public_contract(static_install: Path) -> list[str]:
+    proc = subprocess.run(
+        ["g++", "-std=c++20", "-fsyntax-only", "-I", str(static_install / "include"),
+         str(PUBLIC_CONTRACT)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    if proc.returncode != 0:
+        return [f"public consumer contract failed to compile:\n{proc.stdout[-1500:]}"]
+    return []
+
+
+def project_version() -> str:
+    text = ROOT_CMAKE.read_text(encoding="utf-8")
+    match = re.search(r"project\(AstraScheduler\s+VERSION\s+([\d.]+)", text)
+    if not match:
+        raise SystemExit("FAIL: project VERSION missing")
+    return match.group(1)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="AST-054 API freeze gate")
     parser.add_argument("--update-golden", action="store_true",
@@ -149,38 +182,41 @@ def main() -> int:
 
     problems = check_version_consistency(fingerprint)
 
+    golden_path = REPO_ROOT / "tools" / "api_manifest" / f"v{project_version()}.json"
+
     if args.update_golden:
-        GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GOLDEN_PATH.write_text(json.dumps(fingerprint, indent=2, sort_keys=True) + "\n",
+        if golden_path.exists():
+            print(f"FAIL: refusing to overwrite release manifest: {golden_path}")
+            return 2
+        golden_path.parent.mkdir(parents=True, exist_ok=True)
+        golden_path.write_text(json.dumps(fingerprint, indent=2, sort_keys=True) + "\n",
                                encoding="utf-8")
-        print(f"golden manifest updated: {GOLDEN_PATH}")
+        print(f"new version manifest created: {golden_path}")
         for p in problems:
             print(f"VERSION PROBLEM: {p}")
         return 1 if problems else 0
 
-    if not GOLDEN_PATH.is_file():
-        print(f"FAIL: golden manifest missing: {GOLDEN_PATH}")
+    if not golden_path.is_file():
+        print(f"FAIL: golden manifest missing: {golden_path}")
         return 2
 
-    golden = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+    golden = json.loads(golden_path.read_text(encoding="utf-8"))
 
-    if golden.get("schema_version") != 1:
+    if golden.get("schema_version") != 2:
         print("FAIL: golden manifest schema_version mismatch")
         return 2
 
     drift = []
-    old_headers = golden.get("headers", {})
-    new_headers = fingerprint["headers"]
+    old_headers = set(golden.get("headers", []))
+    new_headers = set(fingerprint["headers"])
     for name in sorted(set(old_headers) | set(new_headers)):
         if name not in new_headers:
             drift.append(f"header REMOVED: astra/{name}")
         elif name not in old_headers:
             drift.append(f"header ADDED: astra/{name}")
-        elif old_headers[name] != new_headers[name]:
-            drift.append(f"header MODIFIED: astra/{name}")
 
-    old_syms = set(golden.get("exported_symbols", []))
-    new_syms = set(fingerprint["exported_symbols"])
+    old_syms = set(golden.get("documented_exported_symbols", []))
+    new_syms = set(fingerprint["documented_exported_symbols"])
     for sym in sorted(old_syms - new_syms):
         drift.append(f"symbol REMOVED: {sym}")
     for sym in sorted(new_syms - old_syms):
@@ -188,6 +224,8 @@ def main() -> int:
 
     if golden.get("version", {}).get("macros") != fingerprint["version"]["macros"]:
         drift.append("version macros drifted")
+    if golden.get("public_contract_sha256") != fingerprint["public_contract_sha256"]:
+        drift.append("documented public consumer contract changed")
 
     for p in problems:
         drift.append(p)
@@ -196,6 +234,7 @@ def main() -> int:
         matrix_problems: list = []
     else:
         matrix_problems = compile_matrix(static_install, workdir)
+        matrix_problems += compile_public_contract(static_install)
         for mp in matrix_problems:
             drift.append(mp)
 
@@ -207,7 +246,7 @@ def main() -> int:
         return 1
 
     print(f"API freeze gate OK: {len(new_headers)} headers, "
-          f"{len(new_syms)} exported symbols unchanged vs golden v1 manifest.")
+          f"{len(new_syms)} documented exported symbols and consumer contract unchanged.")
     shutil.rmtree(str(workdir), True)
     return 0
 

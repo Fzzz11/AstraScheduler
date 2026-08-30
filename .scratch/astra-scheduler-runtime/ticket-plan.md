@@ -1,4 +1,4 @@
-# AstraScheduler v0.1 → v1.0 Ticket Plan
+# AstraScheduler v0.1 → v1.1 Ticket Plan
 
 Status: approved
 Approved by: project owner（user）
@@ -6,7 +6,7 @@ Approved at: 2026-08-27
 Target tracker: local Markdown (`.scratch/astra-scheduler-runtime/issues/`)
 Source spec: `.scratch/astra-scheduler-runtime/spec.md` (`approved`, Linux-only/WSL revision approved 2026-08-27)
 Generated at: 2026-08-26
-Revised at: 2026-08-27 (D-167, D-168, R-111, R-112)
+Revised at: 2026-08-30 (D-169, R-113 through R-117)
 
 ## Input Audit
 
@@ -39,6 +39,7 @@ Revised at: 2026-08-27 (D-167, D-168, R-111, R-112)
 | v0.8.0 | Micro harness、scenario runner、语义基线、原始 artifact 与受限 regression gate。 |
 | v0.9.0 | Linux-only Tier matrix、Linux sanitizer/native AArch64 weak-memory、package consumer、单实现实例部署约束全部 harden。 |
 | v1.0.0 | Public source/semantic compatibility 冻结，全部 approved-rule、文档、package、schema、benchmark gates 通过。 |
+| v1.1.0 | Semantic API freeze、public/internal test isolation、Runtime-owned Task identity 与 GraphExecution 深模块边界。 |
 
 ## Planned Tickets
 
@@ -457,6 +458,15 @@ Revised at: 2026-08-27 (D-167, D-168, R-111, R-112)
 - What to build: 汇总全部approved-rule tests、Tier-1 Linux x86_64 GCC/Clang builds、native Linux AArch64 weak-memory证据及docs/package/schema/benchmark artifacts，形成Linux-only v1.0.0可重现发布基线。
 - Test-first seam: release checklist 默认失败，只有所有可追踪证据具备、版本一致且 artifact 可重算时才通过。
 
+### v1.1.0 — Encapsulation Boundaries
+
+#### AST-057 — 收紧 public/internal 边界并深模块化运行时协议
+
+- Primary Rules: R-113, R-114, R-115, R-116, R-117
+- Blockers: AST-056
+- What to build: 使用semantic public contract替代整头文件冻结，私有化实现逃逸入口，把Task identity归还Runtime，把Graph运行协议收拢到内部GraphExecution，并物理隔离public/internal tests。
+- Test-first seam: public consumer contract、negative compile probes、TaskId/admission tests、GraphRun并发/取消测试与独立package consumer。
+
 ## Dependency DAG
 
 以下使用 `Ticket <- direct blockers` 表示精确直接依赖；它与每个 Ticket 的 `Blockers` 字段必须逐项一致。
@@ -517,6 +527,7 @@ AST-052 <- AST-003, AST-007, AST-027, AST-044
 AST-053 <- AST-002, AST-003, AST-047, AST-051, AST-052
 AST-054 <- AST-031, AST-037, AST-041, AST-048, AST-053
 AST-055 <- AST-051, AST-053, AST-054
+AST-057 <- AST-056
 ```
 
 ## Rule Coverage
@@ -628,26 +639,32 @@ AST-055 <- AST-051, AST-053, AST-054
 | R-109 | AST-047 | None | `[R-109]` Task hot path不获取logger I/O锁，Trace overflow/export不递归进入日志系统。 | Covered (1 primary) |
 | R-110 | AST-002 | AST-053 | `[R-110]` 安装目录可被独立最小工程消费，consumer compile line不包含项目内部依赖或强制诊断选项。 | Covered (1 primary + 1 supporting) |
 | R-112 | AST-001 | None | `[R-112]` 仓库指令、开发文档与Ticket verification只给出WSL/Linux命令，WSL build目录与Windows native cache隔离，任何通过声明均可追溯到WSL或native Linux输出。 | Covered (1 primary) |
+| R-113 | AST-057 | None | `[R-113]` 旧release manifest不可变，documented contract变化才触发semantic gate。 | Covered (1 primary) |
+| R-114 | AST-057 | None | `[R-114]` public consumer无法访问raw frame、shared state、Graph storage、completion list或test seam。 | Covered (1 primary) |
+| R-115 | AST-057 | None | `[R-115]` TaskId由Runtime分配且admission失败保持计数和identity平衡。 | Covered (1 primary) |
+| R-116 | AST-057 | None | `[R-116]` Scheduler graph入口委托内部GraphExecution且既有Graph语义不变。 | Covered (1 primary) |
+| R-117 | AST-057 | None | `[R-117]` public tests无src include path，internal tests显式选择白盒seam。 | Covered (1 primary) |
 
 ## Semantic Audit
 
-- Coverage target: 105/105 active rules have one Primary Ticket.
+- Coverage target: 110/110 active rules have one Primary Ticket.
 - Superseded rules R-008, R-017, R-018, R-027, R-029, R-030, R-092 are intentionally absent; their replacements are covered by R-106, R-103, R-105, R-107, R-097, R-104, R-111.
 - No Ticket introduces Dynamic Worker Scaling、affinity/NUMA、lock-free Global Queue、Timer Wheel、I/O Runtime、Distributed/GPU Runtime or binary ABI stability.
 - Lifecycle rules are delivered in v0.1 before later subsystems depend on them; later milestones add routing/backends/features without weakening Task outcome or shutdown semantics.
 - AST-053/054/055 are integration/release evidence Tickets. They own no new rule and reference active Supporting Rules only, avoiding duplicate primary ownership.
 - Human semantic audit: passed。Ticket 仅切分 approved rules，不扩张变体；早期 supporting criteria 已缩小为各自里程碑的协作证据，最终主实现责任保持唯一。
 - Linux-only/WSL revision audit: R-111只替换平台支持范围，R-112只约束本机开发证据；Ticket编号、里程碑与blocker边保持不变。
+- Encapsulation revision audit: R-113至R-117只重划实现边界和兼容证据，不改变既有Runtime observable semantics。
 
 ## Publication Results
 
 - Tracker: local Markdown (`.scratch/astra-scheduler-runtime/issues/`).
-- Published at: 2026-08-27.
-- Published Tickets: 55 (`AST-001` through `AST-055`).
-- Status: `AST-001`、`AST-002`、`AST-003`与`AST-004`为`done`；其余51个Ticket为`ready-for-agent`且`Claimed by: None`。
-- Frontier: `AST-005`（AST-004已完成；AST-004 blocker已done）。
+- Published at: 2026-08-30.
+- Published Tickets: 57 (`AST-001` through `AST-057`)。
+- Status: `AST-001` through `AST-057`为`done`。
+- Frontier: None。
 - Unpublished or failed items: None.
-- Traceability validator: `decisions=168, rules=105, tickets=55, covered_rules=105`（WSL）。
+- Traceability inventory: `decisions=169, active_rules=110, tickets=57`（WSL；R-113至R-117均由AST-057 primary覆盖）。
 
 | ID | Milestone | Published file | Status | Blocked by |
 |---|---|---|---|---|
@@ -706,6 +723,8 @@ AST-055 <- AST-051, AST-053, AST-054
 | AST-053 | v0.9.0 | [53-platform-hardening.md](issues/53-platform-hardening.md) | ready-for-agent | AST-002, AST-003, AST-047, AST-051, AST-052 |
 | AST-054 | v1.0.0 | [54-v1-api-freeze.md](issues/54-v1-api-freeze.md) | ready-for-agent | AST-031, AST-037, AST-041, AST-048, AST-053 |
 | AST-055 | v1.0.0 | [55-v1-release-gate.md](issues/55-v1-release-gate.md) | ready-for-agent | AST-051, AST-053, AST-054 |
+| AST-056 | v0.8.0 | [56-coroutine-frame-lifetime-hotfix.md](issues/56-coroutine-frame-lifetime-hotfix.md) | done | None |
+| AST-057 | v1.1.0 | [57-encapsulation-boundaries.md](issues/57-encapsulation-boundaries.md) | done | AST-056 |
 
 ## Approval
 
@@ -713,6 +732,6 @@ Status: approved
 Approved by: project owner（user）
 Approved at: 2026-08-27
 Revision approved by: project owner（user）
-Revision approved at: 2026-08-27（Linux-only/WSL Spec）
+Revision approved at: 2026-08-30（v1.1 encapsulation revision）
 
-本计划及Linux-only/WSL修订均已获明确批准。具体 Ticket 按依赖顺序发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；发布不等于实现。AST-001 至 AST-033 已全部完成，当前就绪执行前沿为 AST-034（Milestone v0.5.0）。
+本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`；AST-057承载本次v1.1封装性修订。

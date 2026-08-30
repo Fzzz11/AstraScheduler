@@ -12434,6 +12434,65 @@ WSL/Linux构建目录必须使用明确的Linux专用路径并与任何宿主原
 - Tickets: AST-001（R-112门禁修订已获批准）
 - Tests: `R112WslDevelopmentGateTests`覆盖WSL命令、开发文档与build-cache隔离
 
+## D-169 — v1.1 收回误暴露实现并以深模块边界重构内部运行时
+
+Status: accepted
+
+Date: 2026-08-30
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+v1.0 的安装头文件同时承载了 documented public API 与实现桥接，导致 `astra::detail` 类型、`*_internal` 访问器、原始 coroutine frame handle、Graph 节点存储、Scheduler 测试注入函数和共享状态写入口都可被普通 consumer 直接调用。现有 API freeze 又按整文件哈希和全部 `astra` 动态符号冻结，把这些实现细节误分类为稳定接口，并曾直接重写 v1.0 golden manifest。结果是内部不变量跨越多个头文件和调用方，Scheduler、Graph 与 Coroutine 难以独立演进。
+
+### Decision
+
+v1.1 保持已文档化的 Scheduler、TaskHandle、TaskGraph/GraphRun、Task/awaiter、Metrics/Trace 的 source 与 observable semantics，不把 `astra::detail`、名称含 `_internal` 的入口、原始 coroutine handle、共享状态 mutator、测试注入入口及未文档化的 Graph 存储布局视为 public compatibility surface。上述实现桥接必须私有化或迁入非安装的 internal header。
+
+API freeze 改为冻结明确维护的 documented public interface 与 consumer compile contract；已发布版本 manifest 不得被后续提交改写。TaskId 由 Runtime/Scheduler 状态分配，不能由 public header 中的进程静态原子生成。Graph 的运行状态机由内部 `GraphExecution` 深模块拥有，Scheduler 仅提供 admission、ready publication、timer 与 observability 所需窄桥接。测试注入只通过非安装的 `src/test_seam.hpp` 暴露，public consumer tests 不得拥有 `src/` include path。
+
+### Invariants
+
+- documented public 调用的返回值、异常、取消、等待、优先级、deadline、metrics 与 trace 语义保持不变。
+- `tools/api_manifest/v1.0.0.json` 是不可变发布证据；v1.1 使用独立 manifest。
+- public consumer 无法构造或修改 Task shared state、FrozenGraph node storage、GraphRun completion list 或 Scheduler fault injection state。
+- TaskId 的唯一性、单调性与 overflow 行为继续满足 R-100，但分配所有权属于 Scheduler Runtime。
+- GraphExecution 的依赖传播、取消、terminal publication 和 report snapshot 形成单一内部不变量边界。
+- internal tests 可以使用私有 seam；public tests 只编译安装式 public headers 与 target。
+
+### Rationale
+
+稳定接口应描述 consumer 能依赖的能力，而不是偶然出现在安装头文件中的表示。把复杂协议放入拥有其状态的深模块，可减少朋友关系、重复 admission 回滚和跨模块可写状态，同时让 API freeze 对真正的兼容性变化敏感。
+
+### Rejected alternatives
+
+- 继续冻结整头文件哈希：任何私有实现调整都被当成 public breaking change，同时无法区分 accidental surface。
+- 继续把所有 `astra` 动态符号当成 public API：模板桥接和隐藏不彻底的 detail 符号会永久污染兼容清单。
+- 仅用注释声明 internal：consumer 仍能调用，编译器和测试无法执行边界。
+- 一次性重写全部 Scheduler 实现：并发语义回归面过大；采用可独立验证的窄边界重构。
+
+### Consequences
+
+- 项目版本进入 v1.1.0，并产生新的 semantic API manifest。
+- public header 中仍可能保留模板实现必需的 detail 声明，但它们不进入 documented compatibility allowlist，且不得提供可写控制入口。
+- 现有直接依赖 accidental surface 的 consumer 源码可能无法继续编译；该表面从未被文档化或承诺。
+- 重构按 API/test seam、Task identity/admission、GraphExecution、Scheduler internal decomposition 顺序实施并分别验证。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: project owner 要求按全项目封装性审查意见修改项目，并明确不要求使用额外 skills。
+- Code evidence: `docs/封装性改进建议.md` 记录了 public/internal inventory、逃逸入口与目标边界。
+
+### Traceability
+
+- Spec destinations: R-113 through R-117
+- Tickets: AST-057
+- Tests: semantic API manifest、public consumer boundary audit、TaskId/admission tests、GraphRun state/cancellation tests 与全量 WSL build/test
+
 ## Open Questions
 
 - 无。2026-08-26 全项目功能覆盖、跨决策一致性、ADR映射与总设计旧文档冲突审计已完成；后续新需求或实现证据若改变语义，必须新增/取代决策而不得静默修改已接受规则。

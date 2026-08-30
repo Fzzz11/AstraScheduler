@@ -2,8 +2,11 @@
 #include <astra/scheduler.hpp>
 #include <astra/trace.hpp>
 #include "chase_lev_deque.hpp"
+#include "graph_execution.hpp"
 #include "graph_shared_state.hpp"
 #include "reaper_registry.hpp"
+#include "runtime_identity.hpp"
+#include "test_seam.hpp"
 #include "trace_collector.hpp"
 
 #include <algorithm>
@@ -87,6 +90,7 @@ extern thread_local std::size_t t_current_helping_depth;
 
 struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Scheduler::Impl> {
     RuntimeId runtime_id;
+    detail::RuntimeIdentityAllocator identities;
     SchedulerOptions options;
     SchedulerCapabilities capabilities;
     // 单字原子状态，保证 status() 线性化读取成对快照，不发生跨维度撕裂（D-160）。
@@ -805,10 +809,12 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
     }
 
-    std::atomic<std::uint64_t> next_graph_run_sequence{0};
+    TaskId allocate_task_id() {
+        return identities.allocate_task(runtime_id);
+    }
 
-    GraphRunId allocate_graph_run_id() noexcept {
-        return GraphRunId{runtime_id, ++next_graph_run_sequence};
+    GraphRunId allocate_graph_run_id() {
+        return identities.allocate_graph_run(runtime_id);
     }
 
     detail::AdmissionDecision acquire_admission_slot(bool block, bool is_internal) {
@@ -938,7 +944,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         std::uint64_t timer_id{0};
         std::chrono::steady_clock::time_point wake_time{};
         std::uint64_t sequence{0};
-        std::shared_ptr<AwaitHandshake> handshake{nullptr};
+        std::shared_ptr<detail::AwaitHandshake> handshake{nullptr};
         std::function<void()> resume_action{nullptr};
         std::size_t heap_index{0};
     };
@@ -994,7 +1000,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     std::uint64_t register_timer(std::chrono::steady_clock::time_point wake_time,
-                                 std::shared_ptr<AwaitHandshake> handshake,
+                                 std::shared_ptr<detail::AwaitHandshake> handshake,
                                  std::function<void()> resume_action) {
         const std::uint64_t tid = next_timer_id.fetch_add(1, std::memory_order_relaxed);
         const std::uint64_t seq = next_timer_sequence.fetch_add(1, std::memory_order_relaxed);
@@ -1054,7 +1060,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     void process_due_timers() {
         const auto now = std::chrono::steady_clock::now();
         struct DueItem {
-            std::shared_ptr<AwaitHandshake> handshake;
+            std::shared_ptr<detail::AwaitHandshake> handshake;
             std::function<void()> resume_action;
             std::chrono::steady_clock::time_point wake_time;
         };
@@ -1094,7 +1100,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     void cancel_all_timers() {
-        std::vector<std::pair<std::shared_ptr<AwaitHandshake>, std::function<void()>>> all_items;
+        std::vector<std::pair<std::shared_ptr<detail::AwaitHandshake>, std::function<void()>>> all_items;
         {
             std::lock_guard<std::mutex> lock(timer_mutex);
             while (!timer_heap.empty()) {
@@ -2030,13 +2036,13 @@ private:
 };
 }  // namespace
 
-void run_test_task_on_worker(Scheduler& s, std::function<void()> task) {
+void SchedulerTestAccess::run_task_on_worker(Scheduler& s, std::function<void()> task) {
     if (s.impl_) {
         s.impl_->post_task_internal(std::make_unique<FunctionTaskInvoker>(std::move(task)), false /* not external */);
     }
 }
 
-std::size_t global_injection_queue_size(const Scheduler& s) {
+std::size_t SchedulerTestAccess::global_queue_size(const Scheduler& s) {
     if (s.impl_) {
         std::lock_guard<std::mutex> lock(s.impl_->lifecycle_mutex);
         std::size_t total = 0;
@@ -2048,7 +2054,7 @@ std::size_t global_injection_queue_size(const Scheduler& s) {
     return 0;
 }
 
-std::size_t external_pending_count(const Scheduler& s) {
+std::size_t SchedulerTestAccess::external_pending_count(const Scheduler& s) {
     if (s.impl_) {
         std::lock_guard<std::mutex> lock(s.impl_->lifecycle_mutex);
         return s.impl_->external_pending_count;
@@ -2056,14 +2062,14 @@ std::size_t external_pending_count(const Scheduler& s) {
     return 0;
 }
 
-std::size_t parked_workers_count(const Scheduler& s) {
+std::size_t SchedulerTestAccess::parked_workers_count(const Scheduler& s) {
     if (s.impl_) {
         return s.impl_->parked_workers.load(std::memory_order_acquire);
     }
     return 0;
 }
 
-std::uint64_t current_work_epoch(const Scheduler& s) {
+std::uint64_t SchedulerTestAccess::current_work_epoch(const Scheduler& s) {
     if (s.impl_) {
         return s.impl_->work_epoch.load(std::memory_order_acquire);
     }
@@ -2362,6 +2368,13 @@ detail::AdmissionDecision Scheduler::acquire_admission(bool block, bool is_inter
     return impl_->acquire_admission_slot(block, is_internal);
 }
 
+TaskId Scheduler::allocate_task_id() const {
+    if (!impl_) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+    return impl_->allocate_task_id();
+}
+
 void Scheduler::rollback_external_slot() const {
     if (impl_) {
         impl_->release_external_slot();
@@ -2376,7 +2389,7 @@ void Scheduler::post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invok
 }
 
 std::uint64_t Scheduler::register_timer(std::chrono::steady_clock::time_point wake_time,
-                                        std::shared_ptr<AwaitHandshake> handshake,
+                                        std::shared_ptr<detail::AwaitHandshake> handshake,
                                         std::function<void()> resume_action) const {
     if (!impl_) {
         throw std::logic_error("operating on empty/moved-from Scheduler");
@@ -2479,8 +2492,13 @@ void Scheduler::shutdown_now() {
     impl_->shutdown_sync(ShutdownMode::Immediate);
 }
 
-GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph) {
-    if (!valid()) {
+GraphRun detail::GraphExecution::run(
+    Scheduler& scheduler,
+    std::optional<TaskOptions> options,
+    FrozenTaskGraph&& graph) {
+    auto& impl_ = scheduler.impl_;
+
+    if (!scheduler.valid()) {
         throw std::logic_error("operating on empty/moved-from Scheduler");
     }
 
@@ -2490,7 +2508,9 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
     }
 
     const std::size_t n = graph.node_count();
-    const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+    // Identity exhaustion is rejected before reserving admission capacity.
+    const GraphRunId gid = impl_->allocate_graph_run_id();
+    const bool is_internal = (detail::current_worker_runtime_id() == scheduler.runtime_id());
     const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
     const bool can_block = !is_worker;
 
@@ -2530,8 +2550,6 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
         impl_->metrics.active_graph_runs.fetch_add(1, std::memory_order_relaxed);
     }
 
-    const GraphRunId gid = impl_->allocate_graph_run_id();
-
     // R-070: 空图直接完成
     if (n == 0) {
         auto state = std::make_shared<detail::GraphRunSharedState>(gid, 0);
@@ -2559,9 +2577,10 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
         throw;
     }
 
-    // 填充 node_entries 与 edges
-    auto& nodes = graph.nodes_internal();
-    for (auto& node_data : nodes) {
+    // 在发布任何 root 前完成全部可能抛出的图物化；失败时统一回滚 admission。
+    try {
+      auto& nodes = graph.nodes_internal();
+      for (auto& node_data : nodes) {
         const std::size_t idx = node_data.id.value();
         Priority node_priority = graph_priority;
         std::optional<TaskDeadline> node_deadline = std::nullopt;
@@ -2576,10 +2595,10 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
         state->node_entries[idx].deadline = node_deadline;
         if (state->node_entries[idx].invoker && state->node_entries[idx].invoker->is_coroutine_node()) {
             auto* coro_node = static_cast<detail::GraphCoroutineNodeInvoker*>(state->node_entries[idx].invoker.get());
-            const TaskId task_id = detail::allocate_task_id(impl_->runtime_id);
+            const TaskId task_id = impl_->allocate_task_id();
             auto task_state = std::make_shared<detail::TaskSharedState<void>>(task_id, node_priority, node_deadline);
             task_state->set_timer_functions(
-                [impl_ptr = impl_.get()](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
+                [impl_ptr = impl_.get()](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
                     return impl_ptr->register_timer(wt, std::move(hs), std::move(act));
                 },
                 [impl_ptr = impl_.get()](std::uint64_t tid) {
@@ -2589,13 +2608,23 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
             coro_node->coro.promise().shared_state = task_state;
             coro_node->task_state = task_state;
         }
-    }
+      }
 
-    for (const auto& edge : graph.edges()) {
+      for (const auto& edge : graph.edges()) {
         const std::size_t u = edge.from.value();
         const std::size_t v = edge.to.value();
         state->node_entries[v].remaining_predecessors.fetch_add(1, std::memory_order_relaxed);
         state->node_entries[u].successors.push_back({edge.to, edge.policy});
+      }
+    } catch (...) {
+        if (impl_->metrics.level != MetricsLevel::Off &&
+            impl_->metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
+            impl_->metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
+        }
+        if (!is_internal) {
+            impl_->release_external_slots(n);
+        }
+        throw;
     }
 
     // 递归/内部分发与依赖传播函数（R-070 / R-071 / D-107 / D-109 / D-110）
@@ -2746,6 +2775,10 @@ GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph
     }
 
     return GraphRun(std::move(state));
+}
+
+GraphRun Scheduler::run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph) {
+    return detail::GraphExecution::run(*this, options, std::move(graph));
 }
 
 GraphRun Scheduler::run(FrozenTaskGraph&& graph) {

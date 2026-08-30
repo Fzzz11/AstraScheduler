@@ -19,7 +19,7 @@ namespace {
 // -----------------------------------------------------------------------------
 struct CancellationAwareEvent {
     struct State {
-        astra::AwaitHandshake handshake;
+        astra::detail::AwaitHandshake handshake;
         std::atomic<bool> completed{false};
         std::function<void()> trigger_fn;
         std::function<void()> cancel_fn;
@@ -117,7 +117,7 @@ struct CancellationAwareEvent {
 // -----------------------------------------------------------------------------
 struct ForeignEvent {
     struct State {
-        astra::AwaitHandshake handshake;
+        astra::detail::AwaitHandshake handshake;
         std::atomic<bool> completed{false};
         std::function<void()> trigger_fn;
         std::mutex mtx;

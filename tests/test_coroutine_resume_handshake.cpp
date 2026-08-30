@@ -56,7 +56,7 @@ struct FrameTracker {
 // -----------------------------------------------------------------------------
 struct TestEventAwaiter {
     struct EventState {
-        astra::AwaitHandshake handshake;
+        astra::detail::AwaitHandshake handshake;
         std::atomic<bool> completed{false};
         std::function<void()> trigger_fn;
         std::mutex mtx;

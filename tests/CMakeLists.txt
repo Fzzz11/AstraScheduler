@@ -23,9 +23,6 @@ endif()
 function(astra_add_test target source library)
   add_executable(${target} ${source})
   target_link_libraries(${target} PRIVATE ${library})
-  target_include_directories(${target} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src
-  )
   target_compile_features(${target} PRIVATE cxx_std_20)
   add_test(NAME ${target} COMMAND ${target})
 endfunction()
@@ -36,6 +33,9 @@ endfunction()
 
 function(astra_add_internal_test target source)
   astra_add_test(${target} ${source} ${ASTRA_INTERNAL_TEST_LIBRARY})
+  target_include_directories(${target} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src
+  )
 endfunction()
 
 astra_add_public_test(astra_selftest selftest.cpp)
@@ -68,7 +68,7 @@ astra_add_public_test(astra_graph_admission_test test_graph_admission.cpp)
 astra_add_public_test(astra_graph_edge_policies_test test_graph_edge_policies.cpp)
 astra_add_public_test(astra_graph_run_control_test test_graph_run_control.cpp)
 astra_add_public_test(astra_coroutine_spawn_test test_coroutine_spawn.cpp)
-astra_add_public_test(astra_coroutine_resume_handshake_test test_coroutine_resume_handshake.cpp)
+astra_add_internal_test(astra_coroutine_resume_handshake_test test_coroutine_resume_handshake.cpp)
 astra_add_internal_test(astra_suspended_cancellation_test test_suspended_cancellation.cpp)
 astra_add_public_test(astra_source_runtime_await_test test_source_runtime_await.cpp)
 astra_add_internal_test(astra_graph_coroutine_identity_test test_graph_coroutine_identity.cpp)
@@ -78,12 +78,12 @@ astra_add_public_test(astra_priority_bands_test test_priority_bands.cpp)
 astra_add_public_test(astra_task_deadline_test test_task_deadline.cpp)
 astra_add_public_test(astra_global_edf_test test_global_edf.cpp)
 astra_add_public_test(astra_runtime_metrics_test test_runtime_metrics.cpp)
-astra_add_public_test(astra_metrics_snapshot_test test_metrics_snapshot.cpp)
+astra_add_internal_test(astra_metrics_snapshot_test test_metrics_snapshot.cpp)
 astra_add_internal_test(astra_process_metrics_test test_process_metrics.cpp)
 astra_add_internal_test(astra_trace_collector_test test_trace_collector.cpp)
 astra_add_internal_test(astra_trace_event_schema_test test_trace_event_schema.cpp)
 astra_add_internal_test(astra_trace_export_test test_trace_export.cpp)
-astra_add_public_test(astra_wait_await_diagnostics_test test_wait_await_diagnostics.cpp)
+astra_add_internal_test(astra_wait_await_diagnostics_test test_wait_await_diagnostics.cpp)
 astra_add_public_test(astra_coroutine_frame_lifetime_test test_coroutine_frame_lifetime.cpp)
 astra_add_internal_test(astra_platform_invariants_test test_platform_invariants.cpp)
 astra_add_internal_test(astra_weak_memory_stress_test test_weak_memory_stress.cpp)
@@ -99,4 +99,10 @@ set_tests_properties(check_package_efficiency PROPERTIES
 add_test(NAME check_platform_matrix COMMAND
          ${CMAKE_COMMAND} -E env python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_platform_matrix.py)
 set_tests_properties(check_platform_matrix PROPERTIES
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# AST-057 / R-114 / R-117：public tests 与实现控制入口必须物理隔离。
+add_test(NAME check_encapsulation COMMAND
+         ${CMAKE_COMMAND} -E env python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_encapsulation.py)
+set_tests_properties(check_encapsulation PROPERTIES
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")

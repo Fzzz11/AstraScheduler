@@ -221,6 +221,7 @@ AstraScheduler 面向 Linux-only 的现代 C++20 任务调度场景，最终范�
 | D-166 | R-108 |
 | D-167 | R-092 (historical), R-101, R-110, R-111, Non-goals, Compatibility |
 | D-168 | R-112, `AGENTS.md`, `docs/development.md` |
+| D-169 | R-113, R-114, R-115, R-116, R-117 |
 
 ## Normative Rules
 
@@ -1680,6 +1681,71 @@ Code evidence: `AGENTS.md`与`docs/development.md`保存当前操作约束。
 Disposition: documentation-only
 Observable result: 仓库指令、开发文档与Ticket verification只给出WSL/Linux命令，WSL build目录与Windows native cache隔离，任何通过声明均可追溯到WSL或native Linux输出。
 
+### R-113 — API freeze 只冻结 documented public contract 且发布 manifest 不可变
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: v1.1起API freeze必须使用明确维护的documented public header/type/function/symbol allowlist与独立consumer compile contract，不得以整头文件哈希或全部`astra`动态符号替代语义分类；每个已发布版本manifest必须不可变，新版本只能新增独立manifest并与project/header/package版本一致。
+Applies to: v1.1及后续source compatibility、release manifest与package gate。
+Exceptions: 不承诺跨toolchain ABI；模板实现所需detail声明可出现在安装头，但不属于documented compatibility allowlist。
+Source decisions: D-169
+Source support: D-169 => 区分documented contract与accidental implementation surface，并禁止改写旧发布证据。
+Code evidence: None
+Disposition: implementation
+Observable result: 私有实现可在不改变public contract时演进，删除或改变documented API会使gate失败，v1.0 manifest保持字节不变。
+
+### R-114 — Consumer 不可访问实现状态和测试控制入口
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: `astra::detail`、`*_internal`、原始coroutine handle、Task shared-state mutator、FrozenGraph node storage、GraphRun completion storage与Scheduler fault-injection入口必须私有化或仅存在于非安装internal header；public headers不得授予普通consumer修改运行时不变量的能力。
+Applies to: Scheduler、TaskHandle、Coroutine Task、FrozenTaskGraph、GraphRun和测试seam。
+Exceptions: public template实现可通过最小friend或不可直接调用的internal bridge完成编译。
+Source decisions: D-169
+Source support: D-169 => 收回审查确认的 accidental control surface。
+Code evidence: None
+Disposition: implementation
+Observable result: public consumer对上述入口的编译探测失败，而已文档化用例继续编译运行。
+
+### R-115 — Task identity 与 admission transaction 归 Runtime 所有
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: TaskId必须由目标Scheduler Runtime状态分配，不得由public header中的进程静态对象生成；submit、try_submit、spawn、try_spawn与Graph node admission必须共享同一分配与回滚协议，失败不得泄漏admission slot、pending accounting、TaskId或已接纳工作。
+Applies to: 全部Task与Graph admission路径。
+Exceptions: R-100规定的进程期不复用与overflow语义保持不变。
+Source decisions: D-169
+Source support: D-169 => 将身份与事务所有权放回拥有admission状态的Runtime。
+Code evidence: None
+Disposition: implementation
+Observable result: public header无TaskId全局分配器，全部admission失败注入保持计数平衡且TaskId不复用。
+
+### R-116 — GraphExecution 深模块拥有图运行状态机
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: Graph依赖计数、ready传播、edge policy、取消、terminal publication、completion callback与report snapshot必须由非安装的内部GraphExecution模块封装；Scheduler只提供窄的Task admission/publication、timer与observability桥接，不得直接读写GraphRunSharedState字段。
+Applies to: FrozenTaskGraph执行和GraphRun控制。
+Exceptions: 不改变R-069至R-072及R-077定义的observable graph semantics。
+Source decisions: D-169
+Source support: D-169 => 把约260行跨对象图协议收拢到拥有状态的深模块。
+Code evidence: None
+Disposition: implementation
+Observable result: Scheduler graph入口委托GraphExecution，Graph state只能通过模块操作且现有图测试语义不变。
+
+### R-117 — Public tests 与 internal seams 物理隔离
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: public consumer tests不得获得`src/` include path、不得包含internal header或调用`detail`/`*_internal`/fault-injection入口；需要白盒控制的测试必须显式注册为internal test并仅通过非安装`src/test_seam.hpp`访问。
+Applies to: tests CMake topology、package consumer与API boundary gates。
+Exceptions: 编译失败型boundary test可在独立probe中有意引用被禁止的名称。
+Source decisions: D-169
+Source support: D-169 => 让测试拓扑执行public/internal边界而非依赖约定。
+Code evidence: None
+Disposition: implementation
+Observable result: public tests在移除源码include后通过，误用internal入口的静态audit或compile probe失败。
+
 ## State and Lifecycle
 
 | Scope | Transition / stage | Governing rules |
@@ -1767,6 +1833,7 @@ Observable result: 仓库指令、开发文档与Ticket verification只给出WSL
 - Metrics/Trace schema fixtures and loss tests cover R-084 through R-088, R-095 and R-096.
 - Benchmark validity, artifact and dedicated-runner fixtures cover R-089 through R-094.
 - Linux-only build/package/CI matrix覆盖R-111；所有本机验证命令与build-cache隔离检查覆盖R-112并必须从WSL执行。
+- Semantic API manifest与consumer boundary probes覆盖R-113、R-114和R-117；admission fault injection覆盖R-115；Graph状态机/取消/报告测试覆盖R-116。
 
 ## Traceability
 
@@ -1884,6 +1951,11 @@ Observable result: 仓库指令、开发文档与Ticket verification只给出WSL
 | R-110 | D-167, D-145 | Linux install/find_package static/shared smoke | Pending |
 | R-111 | D-167 | Linux-only release/package/CI matrix audit | AST-052 |
 | R-112 | D-168 | repository instruction and WSL verification audit | AST-001 |
+| R-113 | D-169 | semantic public API manifest and immutable release evidence | AST-057 |
+| R-114 | D-169 | public compile boundary probes | AST-057 |
+| R-115 | D-169 | TaskId ownership and admission rollback tests | AST-057 |
+| R-116 | D-169 | Graph execution state/cancel/report tests | AST-057 |
+| R-117 | D-169 | public/internal test topology audit | AST-057 |
 
 ## Open Questions
 
@@ -1896,3 +1968,4 @@ None。已确认范围内没有未决语义；明确排除项保留在 Non-goals
 - R-008由R-106取代，R-017由R-103取代、R-018由R-105取代，R-027由R-107取代、R-029由R-097取代、R-030由R-104取代；其余早期R-ID语义保持。
 - 本次Linux-only修订以R-111取代R-092，并新增R-112固定WSL开发入口；R-101与R-110仅替换为当前accepted来源D-167，行为边界保持。
 - 本次Linux-only/WSL修订已由项目owner于2026-08-27批准；通过非draft校验后同步修订已发布Tickets。
+- 本次v1.1封装性修订由项目owner于2026-08-30批准；只收回未文档化的实现表面，不改变既有observable semantics。

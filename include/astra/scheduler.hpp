@@ -24,10 +24,12 @@
 namespace astra {
 
 class Scheduler;
-class AwaitHandshake;
 
 namespace detail {
+class AwaitHandshake;
 class GraphRunSharedState;
+class GraphExecution;
+struct SchedulerTestAccess;
 
 void perform_graph_caller_wait(const GraphRunSharedState&,
                                std::optional<std::chrono::steady_clock::time_point>);
@@ -40,11 +42,6 @@ enum class AdmissionDecision : std::uint8_t {
 };
 
 ASTRA_EXPORT RuntimeId current_worker_runtime_id() noexcept;
-void run_test_task_on_worker(Scheduler& s, std::function<void()> task);
-std::size_t global_injection_queue_size(const Scheduler& s);
-std::size_t external_pending_count(const Scheduler& s);
-std::size_t parked_workers_count(const Scheduler& s);
-std::uint64_t current_work_epoch(const Scheduler& s);
 }
 
 // 调度器共享 Handle（D-155）。
@@ -185,11 +182,11 @@ private:
         }
 
         // 强异常安全事务：构造过程抛出异常则回滚 slot
-        const TaskId tid = detail::allocate_task_id(runtime_id());
         std::shared_ptr<detail::TaskSharedState<ResultType>> state;
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
+            const TaskId tid = allocate_task_id();
             state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority, resolved_deadline);
             invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
                 state, std::forward<F>(f), std::forward<Args>(args)...);
@@ -251,11 +248,11 @@ private:
         }
 
         // 强异常安全事务：构造过程抛出异常则回滚 slot
-        const TaskId tid = detail::allocate_task_id(runtime_id());
         std::shared_ptr<detail::TaskSharedState<ResultType>> state;
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
+            const TaskId tid = allocate_task_id();
             state = std::make_shared<detail::TaskSharedState<ResultType>>(tid, resolved_priority, resolved_deadline);
             invoker = detail::make_task_invoker<Traits::is_ordinary_invocable, ResultType>(
                 state, std::forward<F>(f), std::forward<Args>(args)...);
@@ -308,18 +305,18 @@ private:
             throw submission_rejected(SubmissionError::CapacityExhausted);
         }
 
-        const TaskId tid = detail::allocate_task_id(runtime_id());
         std::shared_ptr<detail::TaskSharedState<T>> state;
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
+            const TaskId tid = allocate_task_id();
             state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority, resolved_deadline);
             auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
             state->set_rescheduler(std::move(rescheduler));
             state->set_timer_functions(
-                [sched = *this](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
+                [sched = *this](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
                     return sched.register_timer(wt, std::move(hs), std::move(act));
                 },
                 [sched = *this](std::uint64_t tid) {
@@ -376,18 +373,18 @@ private:
             return SubmissionResult<T>(SubmissionError::CapacityExhausted);
         }
 
-        const TaskId tid = detail::allocate_task_id(runtime_id());
         std::shared_ptr<detail::TaskSharedState<T>> state;
         std::unique_ptr<detail::TaskInvokerBase> invoker;
 
         try {
+            const TaskId tid = allocate_task_id();
             state = std::make_shared<detail::TaskSharedState<T>>(tid, resolved_priority, resolved_deadline);
             auto rescheduler = [sched = *this](std::unique_ptr<detail::TaskInvokerBase> inv) {
                 sched.post_task_invoker(std::move(inv), false /* is_external */);
             };
             state->set_rescheduler(std::move(rescheduler));
             state->set_timer_functions(
-                [sched = *this](std::chrono::steady_clock::time_point wt, std::shared_ptr<AwaitHandshake> hs, std::function<void()> act) {
+                [sched = *this](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
                     return sched.register_timer(wt, std::move(hs), std::move(act));
                 },
                 [sched = *this](std::uint64_t tid) {
@@ -415,19 +412,17 @@ private:
     std::shared_ptr<Impl> impl_;
 
     detail::AdmissionDecision acquire_admission(bool block, bool is_internal) const;
+    TaskId allocate_task_id() const;
     void rollback_external_slot() const;
     void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const;
     GraphRun run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph);
     std::uint64_t register_timer(std::chrono::steady_clock::time_point wake_time,
-                                 std::shared_ptr<AwaitHandshake> handshake,
+                                 std::shared_ptr<detail::AwaitHandshake> handshake,
                                  std::function<void()> resume_action) const;
     void cancel_timer(std::uint64_t timer_id) const;
 
-    friend void detail::run_test_task_on_worker(Scheduler&, std::function<void()>);
-    friend std::size_t detail::global_injection_queue_size(const Scheduler&);
-    friend std::size_t detail::external_pending_count(const Scheduler&);
-    friend std::size_t detail::parked_workers_count(const Scheduler&);
-    friend std::uint64_t detail::current_work_epoch(const Scheduler&);
+    friend struct detail::SchedulerTestAccess;
+    friend class detail::GraphExecution;
     friend void detail::perform_caller_wait(const detail::TaskSharedStateBase&,
                                             std::optional<std::chrono::steady_clock::time_point>);
     friend void detail::perform_graph_caller_wait(const detail::GraphRunSharedState&,

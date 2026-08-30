@@ -23,6 +23,7 @@ template <typename T>
 class Task;
 
 namespace detail {
+class GraphExecution;
 template <bool Ordinary, typename F>
 struct GraphTaskInvokerModel;
 
@@ -115,13 +116,14 @@ struct GraphEdge {
 // 不可变、单次执行的已校验任务图快照
 // -----------------------------------------------------------------------------
 class ASTRA_EXPORT FrozenTaskGraph {
-public:
+private:
     struct NodeData {
         NodeId id{};
         std::unique_ptr<detail::TaskInvokerBase> invoker{nullptr};
         std::optional<TaskOptions> options{std::nullopt};
     };
 
+public:
     FrozenTaskGraph() noexcept = default;
     ~FrozenTaskGraph() = default;
 
@@ -147,14 +149,15 @@ public:
         return edges_;
     }
 
+private:
+    friend class TaskGraph;
+    friend class Scheduler;
+    friend class detail::GraphExecution;
+
     // 内部访问接口（转移 NodeData 所有权至 GraphRunSharedState）
     [[nodiscard]] std::vector<NodeData>& nodes_internal() noexcept {
         return nodes_;
     }
-
-private:
-    friend class TaskGraph;
-    friend class Scheduler;
 
     explicit FrozenTaskGraph(std::vector<NodeData> nodes, std::vector<GraphEdge> edges)
         : nodes_(std::move(nodes)), edges_(std::move(edges)) {}
@@ -323,14 +326,13 @@ public:
     void operator co_await() const && = delete;
     void operator co_await() && = delete;
 
-    void add_completion_callback_internal(std::function<void()> cb) const;
-
-    [[nodiscard]] std::shared_ptr<detail::GraphRunSharedState> shared_state_internal() const noexcept {
-        return state_;
-    }
-
 private:
     friend class Scheduler;
+    friend class detail::GraphExecution;
+    friend struct detail::GraphRunAwaiter;
+
+    void add_completion_callback_internal(std::function<void()> cb) const;
+
     explicit GraphRun(std::shared_ptr<detail::GraphRunSharedState> state)
         : state_(std::move(state)) {}
 

@@ -624,39 +624,10 @@ int main() {
     }
     sched_coro.shutdown();
 
-    // 22. AST-033: Coroutine resume ownership & AwaitHandshake (R-074)
-    astra::AwaitHandshake hs_test;
-    if (hs_test.state() != astra::AwaitHandshake::State::Init || hs_test.is_resolved()) {
-        std::printf("AwaitHandshake initial state must be Init\n");
-        return 1;
-    }
-    bool hs_ran = false;
-    hs_test.trigger([&] { hs_ran = true; });
-    if (hs_ran) {
-        std::printf("Trigger before arm must not run callback\n");
-        return 1;
-    }
-    hs_test.arm([&] { hs_ran = true; });
-    if (!hs_ran || !hs_test.is_resolved()) {
-        std::printf("Arm after trigger must resolve and run callback\n");
-        return 1;
-    }
+    // AST-033/034 的 AwaitHandshake 是实现协议，只由 internal tests 验证。
+    // Public consumer 从 spawn/await/cancellation 的可观察结果验证同一语义。
 
-    // 23. AST-034: Suspended cancellation & trigger_cancel (R-075 / D-119 / D-154)
-    astra::AwaitHandshake hs_cancel_test;
-    bool hs_cancel_ran = false;
-    hs_cancel_test.trigger_cancel([&] { hs_cancel_ran = true; });
-    if (hs_cancel_ran) {
-        std::printf("Trigger cancel before arm must not run callback\n");
-        return 1;
-    }
-    hs_cancel_test.arm([&] { hs_cancel_ran = true; });
-    if (!hs_cancel_ran || !hs_cancel_test.is_resolved() || !hs_cancel_test.is_cancelled()) {
-        std::printf("Arm after trigger_cancel must resolve, mark cancelled, and run callback\n");
-        return 1;
-    }
-
-    // 24. AST-035: Source-Runtime await & Restricted API Surface (R-076 / R-078 / D-120 / D-121 / D-122 / D-147 / D-125)
+    // 22. AST-035: Source-Runtime await & Restricted API Surface (R-076 / R-078 / D-120 / D-121 / D-122 / D-147 / D-125)
     static_assert(requires(astra::TaskHandle<int> h) {
         h.operator co_await();
     }, "TaskHandle must support operator co_await() const &");

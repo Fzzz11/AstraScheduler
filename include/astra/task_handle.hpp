@@ -7,7 +7,6 @@
 #include <astra/status.hpp>
 #include <astra/task_options.hpp>
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <exception>
@@ -24,7 +23,7 @@
 
 namespace astra {
 
-class AwaitHandshake;
+class Scheduler;
 
 // 检查并抛出取消异常辅助函数（R-054 / D-060）。
 inline void throw_if_stop_requested(std::stop_token token) {
@@ -35,19 +34,7 @@ inline void throw_if_stop_requested(std::stop_token token) {
 
 namespace detail {
 
-inline TaskId allocate_task_id(RuntimeId runtime_id) noexcept {
-    static std::atomic<std::uint64_t> global_task_sequence{0};
-    std::uint64_t current = global_task_sequence.load(std::memory_order_relaxed);
-    while (true) {
-        if (current == std::numeric_limits<std::uint64_t>::max()) {
-            return TaskId{runtime_id, std::numeric_limits<std::uint64_t>::max()};
-        }
-        if (global_task_sequence.compare_exchange_weak(
-                current, current + 1, std::memory_order_relaxed)) {
-            return TaskId{runtime_id, current + 1};
-        }
-    }
-}
+class AwaitHandshake;
 
 class ASTRA_EXPORT TaskSharedStateBase;
 
@@ -481,9 +468,6 @@ public:
     TaskHandle(TaskHandle&&) noexcept = default;
     TaskHandle& operator=(TaskHandle&&) noexcept = default;
 
-    explicit TaskHandle(std::shared_ptr<detail::TaskSharedState<T>> state) noexcept
-        : state_(std::move(state)) {}
-
     [[nodiscard]] bool valid() const noexcept {
         return static_cast<bool>(state_);
     }
@@ -563,11 +547,17 @@ public:
     void operator co_await() const && = delete;
     void operator co_await() && = delete;
 
+private:
+    friend class Scheduler;
+    friend struct detail::TaskHandleAwaiter<T>;
+
+    explicit TaskHandle(std::shared_ptr<detail::TaskSharedState<T>> state) noexcept
+        : state_(std::move(state)) {}
+
     [[nodiscard]] std::shared_ptr<detail::TaskSharedState<T>> shared_state_internal() const noexcept {
         return state_;
     }
 
-private:
     std::shared_ptr<detail::TaskSharedState<T>> state_;
 };
 
@@ -583,9 +573,6 @@ public:
 
     TaskHandle(TaskHandle&&) noexcept = default;
     TaskHandle& operator=(TaskHandle&&) noexcept = default;
-
-    explicit TaskHandle(std::shared_ptr<detail::TaskSharedState<void>> state) noexcept
-        : state_(std::move(state)) {}
 
     [[nodiscard]] bool valid() const noexcept {
         return static_cast<bool>(state_);
@@ -665,11 +652,17 @@ public:
     void operator co_await() const && = delete;
     void operator co_await() && = delete;
 
+private:
+    friend class Scheduler;
+    friend struct detail::TaskHandleAwaiter<void>;
+
+    explicit TaskHandle(std::shared_ptr<detail::TaskSharedState<void>> state) noexcept
+        : state_(std::move(state)) {}
+
     [[nodiscard]] std::shared_ptr<detail::TaskSharedState<void>> shared_state_internal() const noexcept {
         return state_;
     }
 
-private:
     std::shared_ptr<detail::TaskSharedState<void>> state_;
 };
 

@@ -17,6 +17,8 @@
 namespace astra {
 
 // 前向声明
+class Scheduler;
+class TaskGraph;
 template <typename T = void>
 class Task;
 
@@ -123,6 +125,10 @@ public:
         return valid();
     }
 
+private:
+    friend class Scheduler;
+    friend class TaskGraph;
+
     [[nodiscard]] handle_type handle() const noexcept {
         return coro_;
     }
@@ -131,7 +137,6 @@ public:
         return std::exchange(coro_, nullptr);
     }
 
-private:
     handle_type coro_{nullptr};
 };
 
@@ -147,6 +152,8 @@ inline Task<void> TaskPromise<void>::get_return_object() noexcept {
 // -----------------------------------------------------------------------------
 // AwaitHandshake (R-074 / R-075 / D-118 / D-119)
 // -----------------------------------------------------------------------------
+namespace detail {
+
 class AwaitHandshake {
 public:
     enum class State : std::uint8_t {
@@ -241,8 +248,6 @@ public:
 private:
     std::atomic<std::uint8_t> raw_state_{static_cast<std::uint8_t>(State::Init)};
 };
-
-namespace detail {
 
 template <typename T>
 class CoroutineTaskInvokerModel final : public TaskInvokerBase {
@@ -681,7 +686,7 @@ struct YieldAwaiter {
 // -----------------------------------------------------------------------------
 struct SleepAwaiter {
     std::chrono::steady_clock::time_point wake_time;
-    std::shared_ptr<AwaitHandshake> handshake{nullptr};
+    std::shared_ptr<detail::AwaitHandshake> handshake{nullptr};
     std::optional<std::stop_callback<std::function<void()>>> stop_cb;
 
     explicit SleepAwaiter(std::chrono::steady_clock::time_point wt) noexcept
@@ -719,7 +724,7 @@ struct SleepAwaiter {
 
         task_state->transition_to_suspended();
 
-        handshake = std::make_shared<AwaitHandshake>();
+        handshake = std::make_shared<detail::AwaitHandshake>();
 
         struct RegistrationContext {
             std::atomic<std::uint64_t> timer_id{0};
