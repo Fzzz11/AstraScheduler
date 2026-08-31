@@ -244,7 +244,7 @@ void test_steal_retry_does_not_claim_lower_priority_band() {
     TEST_ASSERT(high->identity() == 10);
 }
 
-void test_immediate_cleanup_keeps_resume_on_local() {
+void test_immediate_cleanup_moves_resume_to_global() {
     if (!kExpectedLocalDequeLockFree) {
         return;
     }
@@ -253,6 +253,37 @@ void test_immediate_cleanup_keeps_resume_on_local() {
     metrics.init(astra::MetricsLevel::Off, 1, astra::RuntimeId{1});
     astra::detail::ReadyQueues queues(
         1, metrics, astra::LocalDequeBackend::ChaseLevLockFree);
+    std::atomic<std::uint16_t> packed_status{0};
+    astra::detail::AdmissionController admission(
+        8, astra::ExternalBackpressure::Block, packed_status, metrics);
+
+    queues.publish(std::make_unique<ResumeInvoker>(1), false, true, 0);
+    queues.publish(std::make_unique<TestInvoker>(2), false, true, 0);
+    queues.cancel_unstarted(admission);
+
+    TEST_ASSERT(queues.local_empty(0));
+    TEST_ASSERT(!queues.global_empty());
+
+    astra::detail::ReadyQueues::QueuedTask task;
+    std::size_t global_calendar = 0;
+    std::array<std::size_t, 4> deadline_bursts{0, 0, 0, 0};
+    TEST_ASSERT(queues.claim_global(global_calendar, deadline_bursts, task));
+    auto* resume = dynamic_cast<ResumeInvoker*>(task.invoker.get());
+    TEST_ASSERT(resume != nullptr);
+    TEST_ASSERT(resume->identity() == 1);
+    TEST_ASSERT(!resume->cancelled());
+    queues.complete_claim();
+
+    std::size_t local_calendar = 0;
+    TEST_ASSERT(!queues.claim_local(0, local_calendar, task));
+    TEST_ASSERT(queues.global_empty());
+}
+
+void test_immediate_cleanup_locked_keeps_resume_on_local() {
+    astra::detail::RuntimeMetrics metrics;
+    metrics.init(astra::MetricsLevel::Off, 1, astra::RuntimeId{1});
+    astra::detail::ReadyQueues queues(
+        1, metrics, astra::LocalDequeBackend::Locked);
     std::atomic<std::uint16_t> packed_status{0};
     astra::detail::AdmissionController admission(
         8, astra::ExternalBackpressure::Block, packed_status, metrics);
@@ -284,7 +315,8 @@ int main() {
     test_growth_failure_falls_back_to_global_without_loss();
     test_steal_oldest_from_owner_local_band();
     test_steal_retry_does_not_claim_lower_priority_band();
-    test_immediate_cleanup_keeps_resume_on_local();
+    test_immediate_cleanup_moves_resume_to_global();
+    test_immediate_cleanup_locked_keeps_resume_on_local();
     std::printf("All production Chase-Lev ReadyQueues tests passed!\n");
     return 0;
 }
