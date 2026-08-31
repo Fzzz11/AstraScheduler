@@ -22,21 +22,29 @@
 
 namespace {
 
+constexpr bool kExpectedLocalDequeLockFree =
+    std::atomic<std::int64_t>::is_always_lock_free &&
+    std::atomic<void*>::is_always_lock_free;
+constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
+    kExpectedLocalDequeLockFree
+        ? astra::LocalDequeBackend::ChaseLevLockFree
+        : astra::LocalDequeBackend::Locked;
+
 // -----------------------------------------------------------------------------
-// R-101: capabilities() 报告 Locked Local Deque 且 lock_free_local_deque()==false
+// R-101: capabilities() 精确报告生产 Local Deque backend。
 // -----------------------------------------------------------------------------
-void test_R101_capabilities_reports_locked() {
+void test_R101_capabilities_reports_actual_backend() {
     astra::SchedulerOptions opt{};
     opt.worker_count = 2;
     astra::Scheduler s(opt);
 
     auto caps = s.capabilities();
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
-    TEST_ASSERT(!caps.lock_free_local_deque());
+    TEST_ASSERT(caps.local_deque_backend() == kExpectedLocalDequeBackend);
+    TEST_ASSERT(caps.lock_free_local_deque() == kExpectedLocalDequeLockFree);
 
     s.shutdown();
     // Stopped 之后能力快照不变
-    TEST_ASSERT(s.capabilities().local_deque_backend() == astra::LocalDequeBackend::Locked);
+    TEST_ASSERT(s.capabilities().local_deque_backend() == kExpectedLocalDequeBackend);
 
     // 空/moved-from Handle 抛出 logic_error
     astra::Scheduler moved = std::move(s);
@@ -96,7 +104,7 @@ void test_R063_routing_precedence_and_anti_starvation() {
 
 int main() {
     std::printf("Running astra_locked_local_routing_test...\n");
-    test_R101_capabilities_reports_locked();
+    test_R101_capabilities_reports_actual_backend();
     test_R063_routing_precedence_and_anti_starvation();
     std::printf("All AST-022 locked local routing tests passed successfully!\n");
     return 0;

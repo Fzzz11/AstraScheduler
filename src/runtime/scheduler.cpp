@@ -1204,8 +1204,8 @@ Scheduler::Scheduler(SchedulerOptions options) {
     validate_options(options);
     const RuntimeId id = allocate_runtime_id();
     // R-101 / D-162：能力快照必须描述 ReadyQueues 当前实际使用的后端。
-    // Chase-Lev 仍由独立测试覆盖，但尚未接入四优先级 + EDF 的生产队列。
-    const auto backend = LocalDequeBackend::Locked;
+    // Tier-1 选择生产 Chase-Lev；所需 atomic 不 lock-free 时保留 Locked fallback。
+    const auto backend = detail::ReadyQueues::preferred_local_backend();
     const SchedulerCapabilities caps{backend};
     impl_ = std::make_shared<Impl>(id, std::move(options), caps);
 }

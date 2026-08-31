@@ -19,6 +19,14 @@
 
 namespace {
 
+constexpr bool kExpectedLocalDequeLockFree =
+    std::atomic<std::int64_t>::is_always_lock_free &&
+    std::atomic<void*>::is_always_lock_free;
+constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
+    kExpectedLocalDequeLockFree
+        ? astra::LocalDequeBackend::ChaseLevLockFree
+        : astra::LocalDequeBackend::Locked;
+
 // -----------------------------------------------------------------------------
 // 1. R-068 / D-102: 三态结果区分（Success / Empty / Retry）与边界算术
 // -----------------------------------------------------------------------------
@@ -66,15 +74,14 @@ void test_R068_quiescent_rebase_high_watermark() {
 }
 
 // -----------------------------------------------------------------------------
-// 3. R-101 / D-162 / D-167: 生产 ReadyQueues 当前使用 Locked 能力报告；
-//    Chase-Lev 仅作为独立算法资产验证，尚未接入生产队列。
+// 3. R-101 / D-162 / D-167: capability 精确反映生产 ReadyQueues backend。
 // -----------------------------------------------------------------------------
 void test_R101_scheduler_capabilities_reflect_chase_lev_lock_free() {
     astra::Scheduler s;
     const auto caps = s.capabilities();
 
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
-    TEST_ASSERT(caps.lock_free_local_deque() == false);
+    TEST_ASSERT(caps.local_deque_backend() == kExpectedLocalDequeBackend);
+    TEST_ASSERT(caps.lock_free_local_deque() == kExpectedLocalDequeLockFree);
 
     // 关停后能力快照依然保留且不可变
     s.shutdown();
@@ -90,7 +97,8 @@ void test_R101_scheduler_capabilities_reflect_chase_lev_lock_free() {
         // Expected
     }
 
-    TEST_ASSERT(s_moved.capabilities().lock_free_local_deque() == false);
+    TEST_ASSERT(
+        s_moved.capabilities().lock_free_local_deque() == kExpectedLocalDequeLockFree);
 }
 
 }  // namespace

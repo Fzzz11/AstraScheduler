@@ -3,7 +3,9 @@
 
 #include "runtime/admission_controller.hpp"
 #include "runtime/runtime_metrics.hpp"
+#include "scheduling/chase_lev_deque.hpp"
 
+#include <astra/capabilities.hpp>
 #include <astra/task_handle.hpp>
 
 #include <array>
@@ -14,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace astra::detail {
@@ -28,10 +31,15 @@ public:
         bool is_external{false};
     };
 
-    ReadyQueues(std::size_t worker_count, RuntimeMetrics& metrics);
+    ReadyQueues(
+        std::size_t worker_count,
+        RuntimeMetrics& metrics,
+        LocalDequeBackend local_backend);
 
     ReadyQueues(const ReadyQueues&) = delete;
     ReadyQueues& operator=(const ReadyQueues&) = delete;
+
+    [[nodiscard]] static LocalDequeBackend preferred_local_backend() noexcept;
 
     void publish(
         std::unique_ptr<TaskInvokerBase> task,
@@ -64,6 +72,9 @@ public:
     [[nodiscard]] bool any_resume_work_after_immediate_cleanup() const;
     [[nodiscard]] std::size_t global_size() const;
     [[nodiscard]] std::size_t worker_count() const noexcept;
+    void set_local_growth_failure_for_testing(
+        std::size_t worker_index,
+        bool inject) noexcept;
 
 private:
     static constexpr std::size_t kPriorityCalendarLength = 15;
@@ -84,15 +95,35 @@ private:
         bool operator>(const EdfEntry& other) const noexcept;
     };
 
-    struct LocalQueues {
-        mutable std::mutex mutex;
-        std::array<std::deque<QueuedTask>, 4> bands;
+    struct ChaseNode {
+        explicit ChaseNode(QueuedTask&& queued_task)
+            : task(std::move(queued_task)) {}
 
-        void push(QueuedTask task, Priority priority);
+        QueuedTask task;
+        std::atomic<bool> published{false};
+    };
+
+    struct LocalQueues {
+        explicit LocalQueues(LocalDequeBackend backend);
+        ~LocalQueues();
+
+        LocalDequeBackend backend;
+        mutable std::mutex locked_mutex;
+        std::array<std::deque<QueuedTask>, 4> locked_bands;
+        std::array<std::unique_ptr<ChaseLevDeque<ChaseNode*>>, 4> chase_lev_bands;
+
+        bool push(QueuedTask& task, Priority priority);
         bool claim_back(std::size_t& calendar_index, QueuedTask& out);
         bool steal_front(std::size_t& calendar_index, QueuedTask& out);
         [[nodiscard]] bool empty() const;
-        void cancel_unstarted() noexcept;
+        void cancel_unstarted(std::vector<QueuedTask>& resumes) noexcept;
+        void set_growth_failure_for_testing(bool inject) noexcept;
+
+    private:
+        bool claim_chase_lev(
+            std::size_t& calendar_index,
+            bool owner,
+            QueuedTask& out);
     };
 
     bool claim_global_band_locked(

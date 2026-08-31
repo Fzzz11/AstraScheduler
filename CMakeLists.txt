@@ -50,6 +50,12 @@ endif()
 if(ASTRA_ENABLE_TSAN)
   add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
   add_link_options(-fsanitize=thread)
+  # GCC 的 TSan 不建模 atomic_thread_fence，会发出 -Wtsan；Chase-Lev 的
+  # fence 是 R-066/D-098 已批准的 portable ordering，保留警告但不能让
+  # AstraScheduler 的常规 -Werror 阻止 TSan instrumentation 构建。
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(-Wno-error=tsan)
+  endif()
 endif()
 
 set(ASTRA_SCHEDULER_SOURCES

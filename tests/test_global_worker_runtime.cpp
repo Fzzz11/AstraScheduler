@@ -42,6 +42,14 @@ std::size_t global_injection_queue_size(const Scheduler& s);
 
 namespace {
 
+constexpr bool kExpectedLocalDequeLockFree =
+    std::atomic<std::int64_t>::is_always_lock_free &&
+    std::atomic<void*>::is_always_lock_free;
+constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
+    kExpectedLocalDequeLockFree
+        ? astra::LocalDequeBackend::ChaseLevLockFree
+        : astra::LocalDequeBackend::Locked;
+
 // -----------------------------------------------------------------------------
 // R-001: 全局注入队列 FIFO 调度与并发提交正确性
 // -----------------------------------------------------------------------------
@@ -158,10 +166,10 @@ void test_R002_exclude_local_queues_and_work_stealing() {
     opt.worker_count = 4;
     astra::Scheduler s(opt);
 
-    // 验证能力报告：当前生产 ReadyQueues 使用 Locked（R-101）
+    // 验证能力报告与生产 ReadyQueues 实际 backend 一致（R-101）。
     const auto caps = s.capabilities();
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
-    TEST_ASSERT(!caps.lock_free_local_deque());
+    TEST_ASSERT(caps.local_deque_backend() == kExpectedLocalDequeBackend);
+    TEST_ASSERT(caps.lock_free_local_deque() == kExpectedLocalDequeLockFree);
 }
 
 }  // namespace

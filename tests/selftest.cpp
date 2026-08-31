@@ -7,6 +7,8 @@
 #include <astra/status.hpp>
 #include <astra/version.hpp>
 
+#include <atomic>
+#include <cstdint>
 #include <type_traits>
 
 // in-tree 测试入口：public header 可编译，库 target 可链接，
@@ -34,6 +36,13 @@ static_assert(noexcept(std::declval<astra::scheduler_creation_rejected>().reason
 
 namespace {
 constexpr astra::Version kExpectedHeader{ASTRA_VERSION_MAJOR, ASTRA_VERSION_MINOR, ASTRA_VERSION_PATCH};
+constexpr bool kExpectedLocalDequeLockFree =
+    std::atomic<std::int64_t>::is_always_lock_free &&
+    std::atomic<void*>::is_always_lock_free;
+constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
+    kExpectedLocalDequeLockFree
+        ? astra::LocalDequeBackend::ChaseLevLockFree
+        : astra::LocalDequeBackend::Locked;
 }  // namespace
 
 int main() {
@@ -49,8 +58,8 @@ int main() {
     if (s.status().state != astra::SchedulerState::Running) {
         return 1;
     }
-    if (s.capabilities().local_deque_backend() != astra::LocalDequeBackend::Locked ||
-        s.capabilities().lock_free_local_deque()) {
+    if (s.capabilities().local_deque_backend() != kExpectedLocalDequeBackend ||
+        s.capabilities().lock_free_local_deque() != kExpectedLocalDequeLockFree) {
         return 1;
     }
 

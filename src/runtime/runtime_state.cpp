@@ -19,7 +19,10 @@ RuntimeState::RuntimeState(
           packed_status,
           metrics),
       timers(metrics),
-      ready_queues(options.worker_count, metrics) {
+      ready_queues(
+          options.worker_count,
+          metrics,
+          capabilities.local_deque_backend()) {
     metrics.init(options.metrics_level, options.worker_count, runtime_id);
 }
 

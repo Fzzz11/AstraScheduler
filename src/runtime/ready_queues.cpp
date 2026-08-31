@@ -6,11 +6,20 @@
 
 namespace astra::detail {
 
-ReadyQueues::ReadyQueues(std::size_t worker_count, RuntimeMetrics& metrics)
+LocalDequeBackend ReadyQueues::preferred_local_backend() noexcept {
+    return ChaseLevDeque<ChaseNode*>::is_lock_free()
+               ? LocalDequeBackend::ChaseLevLockFree
+               : LocalDequeBackend::Locked;
+}
+
+ReadyQueues::ReadyQueues(
+    std::size_t worker_count,
+    RuntimeMetrics& metrics,
+    LocalDequeBackend local_backend)
     : metrics_(metrics) {
     local_queues_.reserve(worker_count);
     for (std::size_t index = 0; index < worker_count; ++index) {
-        local_queues_.push_back(std::make_unique<LocalQueues>());
+        local_queues_.push_back(std::make_unique<LocalQueues>(local_backend));
     }
 }
 
@@ -21,9 +30,50 @@ bool ReadyQueues::EdfEntry::operator>(const EdfEntry& other) const noexcept {
     return admission_sequence > other.admission_sequence;
 }
 
-void ReadyQueues::LocalQueues::push(QueuedTask task, Priority priority) {
-    std::lock_guard<std::mutex> lock(mutex);
-    bands[static_cast<std::size_t>(priority)].push_back(std::move(task));
+ReadyQueues::LocalQueues::LocalQueues(LocalDequeBackend selected_backend)
+    : backend(selected_backend) {
+    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+        for (auto& band : chase_lev_bands) {
+            band = std::make_unique<ChaseLevDeque<ChaseNode*>>();
+        }
+    }
+}
+
+ReadyQueues::LocalQueues::~LocalQueues() {
+    if (backend != LocalDequeBackend::ChaseLevLockFree) {
+        return;
+    }
+    for (auto& band : chase_lev_bands) {
+        ChaseNode* node = nullptr;
+        while (band->steal(node) == DequeResultStatus::Success) {
+            (void)node->published.load(std::memory_order_acquire);
+            delete node;
+            node = nullptr;
+        }
+    }
+}
+
+bool ReadyQueues::LocalQueues::push(QueuedTask& task, Priority priority) {
+    const auto band_index = static_cast<std::size_t>(priority);
+    if (backend != LocalDequeBackend::ChaseLevLockFree) {
+        std::lock_guard<std::mutex> lock(locked_mutex);
+        locked_bands[band_index].push_back(std::move(task));
+        return true;
+    }
+
+    std::unique_ptr<ChaseNode> node;
+    try {
+        node = std::make_unique<ChaseNode>(std::move(task));
+    } catch (...) {
+        return false;
+    }
+    node->published.store(true, std::memory_order_release);
+    if (!chase_lev_bands[band_index]->push(node.get())) {
+        task = std::move(node->task);
+        return false;
+    }
+    (void)node.release();
+    return true;
 }
 
 bool ReadyQueues::choose_local_band(
@@ -61,36 +111,121 @@ bool ReadyQueues::choose_local_band(
 bool ReadyQueues::LocalQueues::claim_back(
     std::size_t& calendar_index,
     QueuedTask& out) {
-    std::lock_guard<std::mutex> lock(mutex);
-    return ReadyQueues::choose_local_band(bands, calendar_index, true, out);
+    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+        return claim_chase_lev(calendar_index, true, out);
+    }
+    std::lock_guard<std::mutex> lock(locked_mutex);
+    return ReadyQueues::choose_local_band(locked_bands, calendar_index, true, out);
 }
 
 bool ReadyQueues::LocalQueues::steal_front(
     std::size_t& calendar_index,
     QueuedTask& out) {
-    std::lock_guard<std::mutex> lock(mutex);
-    return ReadyQueues::choose_local_band(bands, calendar_index, false, out);
+    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+        return claim_chase_lev(calendar_index, false, out);
+    }
+    std::lock_guard<std::mutex> lock(locked_mutex);
+    return ReadyQueues::choose_local_band(locked_bands, calendar_index, false, out);
 }
 
 bool ReadyQueues::LocalQueues::empty() const {
-    std::lock_guard<std::mutex> lock(mutex);
-    return bands[0].empty() && bands[1].empty() && bands[2].empty() && bands[3].empty();
+    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+        return chase_lev_bands[0]->empty() && chase_lev_bands[1]->empty() &&
+               chase_lev_bands[2]->empty() && chase_lev_bands[3]->empty();
+    }
+    std::lock_guard<std::mutex> lock(locked_mutex);
+    return locked_bands[0].empty() && locked_bands[1].empty() &&
+           locked_bands[2].empty() && locked_bands[3].empty();
 }
 
-void ReadyQueues::LocalQueues::cancel_unstarted() noexcept {
-    std::lock_guard<std::mutex> lock(mutex);
-    for (auto& queue : bands) {
-        std::deque<QueuedTask> resumes;
+bool ReadyQueues::LocalQueues::claim_chase_lev(
+    std::size_t& calendar_index,
+    bool owner,
+    QueuedTask& out) {
+    const Priority target = kPriorityCalendar[calendar_index % kPriorityCalendarLength];
+    auto claim = [&](Priority priority) {
+        auto& band = *chase_lev_bands[static_cast<std::size_t>(priority)];
+        ChaseNode* raw = nullptr;
+        DequeResultStatus status = DequeResultStatus::Empty;
+        if (owner) {
+            status = band.pop(raw);
+        } else {
+            constexpr std::size_t kMaxStealRetries = 3;
+            for (std::size_t retry = 0; retry < kMaxStealRetries; ++retry) {
+                status = band.steal(raw);
+                if (status != DequeResultStatus::Retry) {
+                    break;
+                }
+            }
+        }
+        if (status != DequeResultStatus::Success || raw == nullptr) {
+            return false;
+        }
+        std::unique_ptr<ChaseNode> node(raw);
+        (void)node->published.load(std::memory_order_acquire);
+        out = std::move(node->task);
+        calendar_index = (calendar_index + 1) % kPriorityCalendarLength;
+        return true;
+    };
+
+    if (claim(target)) {
+        return true;
+    }
+    for (Priority priority : kFallbackPriorityOrder) {
+        if (priority != target && claim(priority)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ReadyQueues::LocalQueues::cancel_unstarted(
+    std::vector<QueuedTask>& resumes) noexcept {
+    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+        for (auto& band : chase_lev_bands) {
+            while (true) {
+                ChaseNode* raw = nullptr;
+                const auto status = band->steal(raw);
+                if (status == DequeResultStatus::Retry) {
+                    continue;
+                }
+                if (status == DequeResultStatus::Empty) {
+                    break;
+                }
+                std::unique_ptr<ChaseNode> node(raw);
+                (void)node->published.load(std::memory_order_acquire);
+                if (node->task.invoker && node->task.invoker->is_resume_segment()) {
+                    resumes.push_back(std::move(node->task));
+                } else if (node->task.invoker) {
+                    node->task.invoker->cancel_pre_start();
+                }
+            }
+        }
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(locked_mutex);
+    for (auto& queue : locked_bands) {
+        std::deque<QueuedTask> retained_resumes;
         while (!queue.empty()) {
             auto task = std::move(queue.front());
             queue.pop_front();
             if (task.invoker && task.invoker->is_resume_segment()) {
-                resumes.push_back(std::move(task));
+                retained_resumes.push_back(std::move(task));
             } else if (task.invoker) {
                 task.invoker->cancel_pre_start();
             }
         }
-        queue = std::move(resumes);
+        queue = std::move(retained_resumes);
+    }
+}
+
+void ReadyQueues::LocalQueues::set_growth_failure_for_testing(bool inject) noexcept {
+    if (backend != LocalDequeBackend::ChaseLevLockFree) {
+        return;
+    }
+    for (auto& band : chase_lev_bands) {
+        band->set_inject_growth_failure(inject);
     }
 }
 
@@ -124,8 +259,11 @@ void ReadyQueues::publish(
     }
 
     if (use_local_queue && worker_index < local_queues_.size()) {
-        local_queues_[worker_index]->push({std::move(task), false}, priority);
-        return;
+        QueuedTask local_task{std::move(task), false};
+        if (local_queues_[worker_index]->push(local_task, priority)) {
+            return;
+        }
+        task = std::move(local_task.invoker);
     }
 
     std::lock_guard<std::mutex> lock(global_mutex_);
@@ -282,8 +420,16 @@ void ReadyQueues::cancel_unstarted(AdmissionController& admission) noexcept {
         }
     }
 
+    std::vector<QueuedTask> local_resumes;
     for (auto& local : local_queues_) {
-        local->cancel_unstarted();
+        local->cancel_unstarted(local_resumes);
+    }
+    if (!local_resumes.empty()) {
+        std::lock_guard<std::mutex> lock(global_mutex_);
+        for (auto& task : local_resumes) {
+            const auto band = static_cast<std::size_t>(task.invoker->priority());
+            global_fifo_queues_[band].push_back(std::move(task));
+        }
     }
 }
 
@@ -347,6 +493,14 @@ std::size_t ReadyQueues::global_size() const {
 
 std::size_t ReadyQueues::worker_count() const noexcept {
     return local_queues_.size();
+}
+
+void ReadyQueues::set_local_growth_failure_for_testing(
+    std::size_t worker_index,
+    bool inject) noexcept {
+    if (worker_index < local_queues_.size()) {
+        local_queues_[worker_index]->set_growth_failure_for_testing(inject);
+    }
 }
 
 }  // namespace astra::detail

@@ -10,6 +10,7 @@
 #include <astra/status.hpp>
 #include <astra/version.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <future>
@@ -30,6 +31,13 @@ static_assert(noexcept(astra::library_version()), "library_version() must be noe
 static_assert(noexcept(astra::library_version_string()), "library_version_string() must be noexcept");
 static_assert(std::is_trivially_copyable_v<astra::Version>, "Version must be trivially copyable");
 constexpr astra::Version kHeaderVersion = astra::header_version();
+constexpr bool kExpectedLocalDequeLockFree =
+    std::atomic<std::int64_t>::is_always_lock_free &&
+    std::atomic<void*>::is_always_lock_free;
+constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
+    kExpectedLocalDequeLockFree
+        ? astra::LocalDequeBackend::ChaseLevLockFree
+        : astra::LocalDequeBackend::Locked;
 
 // 编译期契约：Version 经 defaulted operator<=> 可比较（含隐式 ==）。
 static_assert(kHeaderVersion == astra::Version{ASTRA_VERSION_MAJOR, ASTRA_VERSION_MINOR, ASTRA_VERSION_PATCH});
@@ -189,9 +197,9 @@ int main() {
         return 1;
     }
     const astra::SchedulerCapabilities caps = scheduler.capabilities();
-    if (caps.local_deque_backend() != astra::LocalDequeBackend::Locked ||
-        caps.lock_free_local_deque() != false) {
-        std::printf("SchedulerCapabilities must report LocalDequeBackend::Locked\n");
+    if (caps.local_deque_backend() != kExpectedLocalDequeBackend ||
+        caps.lock_free_local_deque() != kExpectedLocalDequeLockFree) {
+        std::printf("SchedulerCapabilities must report the actual LocalDequeBackend\n");
         return 1;
     }
 
@@ -447,9 +455,9 @@ int main() {
 
     // 14. AST-022: Local Deque & Ready Routing Precedence (R-063 / R-101)
     astra::Scheduler s_locked;
-    if (s_locked.capabilities().local_deque_backend() != astra::LocalDequeBackend::Locked ||
-        s_locked.capabilities().lock_free_local_deque()) {
-        std::printf("AST-022 capability must be Locked\n");
+    if (s_locked.capabilities().local_deque_backend() != kExpectedLocalDequeBackend ||
+        s_locked.capabilities().lock_free_local_deque() != kExpectedLocalDequeLockFree) {
+        std::printf("Local deque capability must match the production backend\n");
         return 1;
     }
     auto h_ext = s_locked.submit([&] {

@@ -6,6 +6,7 @@
 #include <astra/status.hpp>
 #include <astra/version.hpp>
 
+#include <atomic>
 #include <cassert>
 #include <concepts>
 #include <cstdint>
@@ -23,6 +24,14 @@
 // =============================================================================
 // Compile-time assertions: Invariants for R-098, R-099, R-100, R-101
 // =============================================================================
+
+constexpr bool kExpectedLocalDequeLockFree =
+    std::atomic<std::int64_t>::is_always_lock_free &&
+    std::atomic<void*>::is_always_lock_free;
+constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
+    kExpectedLocalDequeLockFree
+        ? astra::LocalDequeBackend::ChaseLevLockFree
+        : astra::LocalDequeBackend::Locked;
 
 // R-098: recommended_worker_count() must be noexcept
 static_assert(noexcept(astra::recommended_worker_count()),
@@ -418,9 +427,8 @@ void test_R101_capabilities() {
     TEST_ASSERT(s.valid());
 
     astra::SchedulerCapabilities caps = s.capabilities();
-    // The production ReadyQueues currently use the mutex-backed implementation.
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
-    TEST_ASSERT(caps.lock_free_local_deque() == false);
+    TEST_ASSERT(caps.local_deque_backend() == kExpectedLocalDequeBackend);
+    TEST_ASSERT(caps.lock_free_local_deque() == kExpectedLocalDequeLockFree);
 
     // Capabilities mappings
     astra::SchedulerCapabilities caps_none(astra::LocalDequeBackend::None);
@@ -438,7 +446,7 @@ void test_R101_capabilities() {
     // Empty scheduler capabilities throws logic_error
     astra::Scheduler moved = std::move(s);
     TEST_THROWS(s.capabilities(), std::logic_error);
-    TEST_ASSERT(moved.capabilities().local_deque_backend() == astra::LocalDequeBackend::Locked);
+    TEST_ASSERT(moved.capabilities().local_deque_backend() == kExpectedLocalDequeBackend);
 }
 
 // =============================================================================
