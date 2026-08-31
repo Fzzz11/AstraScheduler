@@ -117,6 +117,9 @@ private:
         [[nodiscard]] bool empty() const noexcept { return head == nullptr; }
         [[nodiscard]] std::size_t size() const noexcept { return count; }
         [[nodiscard]] bool any_resume() const noexcept;
+
+    private:
+        void clear() noexcept;
     };
 
     struct LocalQueues {

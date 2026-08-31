@@ -39,7 +39,7 @@ ReadyQueues::LocalQueues::LocalQueues(LocalDequeBackend selected_backend)
     }
 }
 
-ReadyQueues::IntrusiveFifo::~IntrusiveFifo() {
+void ReadyQueues::IntrusiveFifo::clear() noexcept {
     while (head != nullptr) {
         ReadyLinkedInvoker* raw = head;
         head = raw->ready_next;
@@ -48,6 +48,10 @@ ReadyQueues::IntrusiveFifo::~IntrusiveFifo() {
     }
     tail = nullptr;
     count = 0;
+}
+
+ReadyQueues::IntrusiveFifo::~IntrusiveFifo() {
+    clear();
 }
 
 ReadyQueues::IntrusiveFifo::IntrusiveFifo(IntrusiveFifo&& other) noexcept
@@ -62,12 +66,7 @@ ReadyQueues::IntrusiveFifo& ReadyQueues::IntrusiveFifo::operator=(
     if (this == &other) {
         return *this;
     }
-    while (head != nullptr) {
-        ReadyLinkedInvoker* raw = head;
-        head = raw->ready_next;
-        raw->ready_next = nullptr;
-        delete raw;
-    }
+    clear();
     head = other.head;
     tail = other.tail;
     count = other.count;
