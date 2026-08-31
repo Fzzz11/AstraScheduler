@@ -8,6 +8,38 @@
 #include <thread>
 #include <vector>
 
+#if defined(__SANITIZE_THREAD__)
+#include <sanitizer/tsan_interface.h>
+#define ASTRA_TSAN_ENABLED 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#include <sanitizer/tsan_interface.h>
+#define ASTRA_TSAN_ENABLED 1
+#endif
+#endif
+
+namespace astra::detail {
+namespace {
+
+inline void tsan_acquire(const void* addr) noexcept {
+#ifdef ASTRA_TSAN_ENABLED
+    __tsan_acquire(const_cast<void*>(addr));
+#else
+    (void)addr;
+#endif
+}
+
+inline void tsan_release(const void* addr) noexcept {
+#ifdef ASTRA_TSAN_ENABLED
+    __tsan_release(const_cast<void*>(addr));
+#else
+    (void)addr;
+#endif
+}
+
+}  // namespace
+}  // namespace astra::detail
+
 // ============================================================================
 // Chase-Lev work-stealing deque —— 本调度器的"本地任务队列"。
 //
@@ -221,6 +253,7 @@ public:
         }
 
         buf->store_cell(b, item, std::memory_order_relaxed);
+        tsan_release(buf);
         std::atomic_thread_fence(std::memory_order_release);
         bottom_.store(b + 1, std::memory_order_relaxed);
         return true;
@@ -238,6 +271,8 @@ public:
         --b;
         bottom_.store(b, std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_seq_cst);
+        tsan_acquire(buf);
+        tsan_release(buf);
         std::uint64_t t = top_.load(std::memory_order_relaxed);
 
         if (t <= b) {
@@ -283,6 +318,7 @@ public:
             T item = buf->load_cell(t, std::memory_order_relaxed);
             if (top_.compare_exchange_strong(
                     t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+                tsan_acquire(buf);
                 out = item;
                 status = DequeResultStatus::Success;
             } else {
@@ -361,6 +397,7 @@ public:
             }
         }
 
+        tsan_release(buf);
         std::atomic_thread_fence(std::memory_order_release);
         top_.store(0, std::memory_order_relaxed);
         bottom_.store(live, std::memory_order_relaxed);

@@ -323,8 +323,9 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
             shutdown_done_cv.notify_all();
         } else {
             // Waiter 等待 Leader 完成 join 并发布 Stopped
-            shutdown_done_cv.wait(s_lock, [this] {
-                return get_status().state == SchedulerState::Stopped;
+            shutdown_done_cv.wait(s_lock, [&status = packed_status] {
+                return unpack(status.load(std::memory_order_acquire)).state ==
+                       SchedulerState::Stopped;
             });
         }
     }
@@ -415,8 +416,9 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
             shutdown_in_progress = false;
             shutdown_done_cv.notify_all();
         } else {
-            shutdown_done_cv.wait(s_lock, [this] {
-                return get_status().state == SchedulerState::Stopped;
+            shutdown_done_cv.wait(s_lock, [&status = packed_status] {
+                return unpack(status.load(std::memory_order_acquire)).state ==
+                       SchedulerState::Stopped;
             });
         }
     }

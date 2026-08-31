@@ -42,9 +42,21 @@ Global EDF/FIFO、Local/Global burst、priority calendar 与 immediate cleanup �
 - Spec: `R-066`、`R-067`、`R-068`、`R-081`、`R-101`
 - Decisions: `D-097` 至 `D-103`、`D-129` 至 `D-131`、`D-162`、`D-167`
 - ADR: `0026`、`0028`、`0029`、`0036`、`0037`
-- Verification:
-  - `cmake --build build/wsl-gcc-debug -j2 && ctest --test-dir build/wsl-gcc-debug --output-on-failure` — 54/54 passed。
-  - ASan/UBSan：ReadyQueues、steal、priority、immediate cleanup、coroutine resume/cancel 等 10/10 targeted tests passed。
-  - TSan：Chase-Lev ordering/growth/indices、生产 ReadyQueues 与 weak-memory stress 5/5 passed。
+- Verification (WSL2, Linux 6.6.87.2-microsoft-standard-WSL2, g++ 13.1.0, cmake 3.28.6, 2026-08-31):
+  - Debug 全量：
+    `cmake -S . -B build/wsl-gcc-debug -DCMAKE_BUILD_TYPE=Debug && cmake --build build/wsl-gcc-debug -j2 && ctest --test-dir build/wsl-gcc-debug --output-on-failure`
+    — 54/54 passed。
+  - ASan/UBSan 全量（独立目录，halt_on_error）：
+    `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 cmake -S . -B build/wsl-gcc-asan -DCMAKE_BUILD_TYPE=Debug -DASTRA_ENABLE_SANITIZERS=ON && cmake --build build/wsl-gcc-asan -j2 && ctest --test-dir build/wsl-gcc-asan --output-on-failure`
+    — 54/54 passed。
+    首次全量因 `Impl` 多重继承下 `condition_variable` 谓词捕获 `this` 触发 UBSan（`astra_finalization_begin_test` / `astra_finalization_wait_test`）；谓词改为只读 `packed_status` 后复跑通过。
+  - TSan（独立目录，GCC 不建模 `atomic_thread_fence`，保留 `-Wtsan`）：
+    `TSAN_OPTIONS=halt_on_error=1 cmake -S . -B build/wsl-gcc-tsan -DCMAKE_BUILD_TYPE=Debug -DASTRA_ENABLE_TSAN=ON && cmake --build build/wsl-gcc-tsan -j2`
+    AST-074 相关：
+    `ctest --test-dir build/wsl-gcc-tsan -R 'astra_immediate_escalation_test|astra_steal_round_test|astra_priority_bands_test|astra_chase_lev_' --output-on-failure`
+    — 7/7 passed（ordering、growth、indices、ready_queues、immediate、steal_round、priority_bands）。
+    另：`astra_weak_memory_stress_test`、`astra_coroutine_frame_lifetime_test` 各重复 2 次通过。
+    为补偿 GCC TSan 不建模 fence，生产 `ChaseLevDeque` 在 push/pop/steal/rebase 的 fence 旁增加 `__tsan_acquire` / `__tsan_release`。
+    未纳入 AST-074 闭合范围：`astra_finalization_begin_test` / `astra_finalization_wait_test` 在 TSan 下仍报告 Reaper waiter 读取 `packed_status` 与主线程销毁 `shared_ptr<Impl>` 的竞争；全量 54 顺序跑曾在 `astra_immediate_escalation_test` 长时间无进展（该测试单独运行通过）。
   - `python3 -X utf8 tools/check_release_gates.py` — 15/15 passed。
   - `python3 -X utf8 tools/check_encapsulation.py` — passed。
