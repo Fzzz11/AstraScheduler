@@ -2,6 +2,7 @@
 #include <astra/scheduler.hpp>
 #include <astra/scheduler_options.hpp>
 
+#include "runtime/admission_controller.hpp"
 #include "runtime/ready_queues.hpp"
 #include "runtime/runtime_metrics.hpp"
 
@@ -35,16 +36,24 @@ constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
         ? astra::LocalDequeBackend::ChaseLevLockFree
         : astra::LocalDequeBackend::Locked;
 
-class TestInvoker final : public astra::detail::TaskInvokerBase {
+class TestInvoker : public astra::detail::TaskInvokerBase {
 public:
     explicit TestInvoker(int identity) : identity_(identity) {}
 
     void execute() override {}
-    void cancel_pre_start() noexcept override {}
+    void cancel_pre_start() noexcept override { cancelled_ = true; }
     [[nodiscard]] int identity() const noexcept { return identity_; }
+    [[nodiscard]] bool cancelled() const noexcept { return cancelled_; }
 
 private:
     int identity_;
+    bool cancelled_{false};
+};
+
+class ResumeInvoker final : public TestInvoker {
+public:
+    using TestInvoker::TestInvoker;
+    [[nodiscard]] bool is_resume_segment() const noexcept override { return true; }
 };
 
 void test_preferred_backend_matches_invoker_cell_atomics() {
@@ -168,6 +177,35 @@ void test_growth_failure_falls_back_to_global_without_loss() {
     }
 }
 
+void test_immediate_cleanup_keeps_resume_on_local() {
+    if (!kExpectedLocalDequeLockFree) {
+        return;
+    }
+
+    astra::detail::RuntimeMetrics metrics;
+    metrics.init(astra::MetricsLevel::Off, 1, astra::RuntimeId{1});
+    astra::detail::ReadyQueues queues(
+        1, metrics, astra::LocalDequeBackend::ChaseLevLockFree);
+    std::atomic<std::uint16_t> packed_status{0};
+    astra::detail::AdmissionController admission(
+        8, astra::ExternalBackpressure::Block, packed_status, metrics);
+
+    queues.publish(std::make_unique<ResumeInvoker>(1), false, true, 0);
+    queues.publish(std::make_unique<TestInvoker>(2), false, true, 0);
+    queues.cancel_unstarted(admission);
+
+    TEST_ASSERT(queues.global_empty());
+    astra::detail::ReadyQueues::QueuedTask task;
+    std::size_t local_calendar = 0;
+    TEST_ASSERT(queues.claim_local(0, local_calendar, task));
+    auto* resume = dynamic_cast<ResumeInvoker*>(task.invoker.get());
+    TEST_ASSERT(resume != nullptr);
+    TEST_ASSERT(resume->identity() == 1);
+    TEST_ASSERT(!resume->cancelled());
+    queues.complete_claim();
+    TEST_ASSERT(!queues.claim_local(0, local_calendar, task));
+}
+
 }  // namespace
 
 int main() {
@@ -177,6 +215,7 @@ int main() {
     test_owner_lifo_and_growth_execute_each_task_once();
     test_thief_claims_owner_local_work();
     test_growth_failure_falls_back_to_global_without_loss();
+    test_immediate_cleanup_keeps_resume_on_local();
     std::printf("All production Chase-Lev ReadyQueues tests passed!\n");
     return 0;
 }

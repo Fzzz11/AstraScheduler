@@ -264,6 +264,7 @@ bool ReadyQueues::LocalQueues::claim_chase_lev(
 void ReadyQueues::LocalQueues::cancel_unstarted(
     std::vector<QueuedTask>& resumes) noexcept {
     if (backend == LocalDequeBackend::ChaseLevLockFree) {
+        std::vector<QueuedTask> retained_resumes;
         for (auto& band : chase_lev_bands) {
             while (true) {
                 TaskInvokerBase* raw = nullptr;
@@ -280,10 +281,16 @@ void ReadyQueues::LocalQueues::cancel_unstarted(
                 raw->ready_next = nullptr;
                 task.invoker.reset(raw);
                 if (task.invoker && task.invoker->is_resume_segment()) {
-                    resumes.push_back(std::move(task));
+                    retained_resumes.push_back(std::move(task));
                 } else if (task.invoker) {
                     task.invoker->cancel_pre_start();
                 }
+            }
+        }
+        for (auto& resume : retained_resumes) {
+            const Priority resume_priority = resume.invoker->priority();
+            if (!push(resume, resume_priority) && resume.invoker) {
+                resumes.push_back(std::move(resume));
             }
         }
         return;
