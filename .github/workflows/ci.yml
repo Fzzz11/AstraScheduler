@@ -55,6 +55,53 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci-${{ matrix.compiler }} --output-on-failure
 
+  tooling-lint:
+    name: Clang format and tidy checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build clang clang-format clang-tidy
+      - name: Configure Clang compilation database
+        run: >-
+          cmake -S . -B build/ci-clang-tools
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Build Clang compilation database
+        run: cmake --build build/ci-clang-tools --parallel 2
+      - name: Select changed C++ sources
+        id: changed-sources
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BASE_SHA"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+          git diff --name-only "$base" "$GITHUB_SHA" -- '*.cpp' '*.hpp' > changed-cpp-files.txt
+          if [ -s changed-cpp-files.txt ]; then
+            echo "has_sources=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_sources=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check changed files with clang-format
+        if: steps.changed-sources.outputs.has_sources == 'true'
+        run: xargs -r clang-format --dry-run --Werror < changed-cpp-files.txt
+      - name: Check changed implementations with clang-tidy
+        if: steps.changed-sources.outputs.has_sources == 'true'
+        run: |
+          mapfile -t sources < <(grep -E '\.cpp$' changed-cpp-files.txt || true)
+          if [ "${#sources[@]}" -gt 0 ]; then
+            clang-tidy -p build/ci-clang-tools --checks='-*,bugprone-*,concurrency-*' "${sources[@]}"
+          fi
+
   sanitizers:
     name: ${{ matrix.name }} sanitizer build and tests
     runs-on: ubuntu-latest

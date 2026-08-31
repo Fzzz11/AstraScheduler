@@ -1,0 +1,8 @@
+Checks: >-
+  -*,
+  bugprone-*,
+  concurrency-*
+WarningsAsErrors: ''
+HeaderFilterRegex: '(^|/)(include/astra|src|tests)/'
+FormatStyle: file
+SystemHeaders: false
