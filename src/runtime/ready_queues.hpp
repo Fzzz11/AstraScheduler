@@ -95,12 +95,23 @@ private:
         bool operator>(const EdfEntry& other) const noexcept;
     };
 
-    struct ChaseNode {
-        explicit ChaseNode(QueuedTask&& queued_task)
-            : task(std::move(queued_task)) {}
+    struct IntrusiveFifo {
+        TaskInvokerBase* head{nullptr};
+        TaskInvokerBase* tail{nullptr};
+        std::size_t count{0};
 
-        QueuedTask task;
-        std::atomic<bool> published{false};
+        IntrusiveFifo() = default;
+        ~IntrusiveFifo();
+        IntrusiveFifo(const IntrusiveFifo&) = delete;
+        IntrusiveFifo& operator=(const IntrusiveFifo&) = delete;
+        IntrusiveFifo(IntrusiveFifo&& other) noexcept;
+        IntrusiveFifo& operator=(IntrusiveFifo&& other) noexcept;
+
+        void push_back(std::unique_ptr<TaskInvokerBase> task, bool is_external) noexcept;
+        bool pop_front(QueuedTask& out) noexcept;
+        [[nodiscard]] bool empty() const noexcept { return head == nullptr; }
+        [[nodiscard]] std::size_t size() const noexcept { return count; }
+        [[nodiscard]] bool any_resume() const noexcept;
     };
 
     struct LocalQueues {
@@ -110,7 +121,7 @@ private:
         LocalDequeBackend backend;
         mutable std::mutex locked_mutex;
         std::array<std::deque<QueuedTask>, 4> locked_bands;
-        std::array<std::unique_ptr<ChaseLevDeque<ChaseNode*>>, 4> chase_lev_bands;
+        std::array<std::unique_ptr<ChaseLevDeque<TaskInvokerBase*>>, 4> chase_lev_bands;
 
         bool push(QueuedTask& task, Priority priority);
         bool claim_back(std::size_t& calendar_index, QueuedTask& out);
@@ -141,7 +152,7 @@ private:
     mutable std::mutex global_mutex_;
     std::atomic<std::uint64_t> global_admission_sequence_{0};
     std::array<std::vector<EdfEntry>, 4> global_edf_heaps_;
-    std::array<std::deque<QueuedTask>, 4> global_fifo_queues_;
+    std::array<IntrusiveFifo, 4> global_fifo_queues_;
     std::vector<std::unique_ptr<LocalQueues>> local_queues_;
     std::atomic<std::size_t> claimed_count_{0};
 };

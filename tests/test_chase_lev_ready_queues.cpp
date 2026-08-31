@@ -47,6 +47,14 @@ private:
     int identity_;
 };
 
+void test_preferred_backend_matches_invoker_cell_atomics() {
+    const auto expected =
+        astra::detail::ChaseLevDeque<astra::detail::TaskInvokerBase*>::is_lock_free()
+            ? astra::LocalDequeBackend::ChaseLevLockFree
+            : astra::LocalDequeBackend::Locked;
+    TEST_ASSERT(astra::detail::ReadyQueues::preferred_local_backend() == expected);
+}
+
 void test_capability_matches_production_backend() {
     astra::Scheduler scheduler;
     const auto capabilities = scheduler.capabilities();
@@ -164,6 +172,7 @@ void test_growth_failure_falls_back_to_global_without_loss() {
 
 int main() {
     std::printf("Running astra_chase_lev_ready_queues_test...\n");
+    test_preferred_backend_matches_invoker_cell_atomics();
     test_capability_matches_production_backend();
     test_owner_lifo_and_growth_execute_each_task_once();
     test_thief_claims_owner_local_work();

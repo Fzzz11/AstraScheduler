@@ -89,6 +89,11 @@ struct TaskInvokerBase {
     [[nodiscard]] virtual bool is_coroutine_node() const noexcept { return false; }
     [[nodiscard]] virtual Priority priority() const noexcept { return Priority::Normal; }
     [[nodiscard]] virtual std::optional<TaskDeadline> deadline() const noexcept { return std::nullopt; }
+
+    // D-100：已接受 Task 的侵入式 Scheduling Reference。Local cell 与
+    // Global Injection fallback 只保存该对象指针，不再额外分配队列节点。
+    TaskInvokerBase* ready_next{nullptr};
+    bool ready_is_external{false};
 };
 
 using TaskRescheduler = std::function<void(std::unique_ptr<TaskInvokerBase>)>;

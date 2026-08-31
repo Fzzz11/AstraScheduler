@@ -7,7 +7,7 @@
 namespace astra::detail {
 
 LocalDequeBackend ReadyQueues::preferred_local_backend() noexcept {
-    return ChaseLevDeque<ChaseNode*>::is_lock_free()
+    return ChaseLevDeque<TaskInvokerBase*>::is_lock_free()
                ? LocalDequeBackend::ChaseLevLockFree
                : LocalDequeBackend::Locked;
 }
@@ -34,9 +34,88 @@ ReadyQueues::LocalQueues::LocalQueues(LocalDequeBackend selected_backend)
     : backend(selected_backend) {
     if (backend == LocalDequeBackend::ChaseLevLockFree) {
         for (auto& band : chase_lev_bands) {
-            band = std::make_unique<ChaseLevDeque<ChaseNode*>>();
+            band = std::make_unique<ChaseLevDeque<TaskInvokerBase*>>();
         }
     }
+}
+
+ReadyQueues::IntrusiveFifo::~IntrusiveFifo() {
+    while (head != nullptr) {
+        TaskInvokerBase* raw = head;
+        head = raw->ready_next;
+        raw->ready_next = nullptr;
+        delete raw;
+    }
+    tail = nullptr;
+    count = 0;
+}
+
+ReadyQueues::IntrusiveFifo::IntrusiveFifo(IntrusiveFifo&& other) noexcept
+    : head(other.head), tail(other.tail), count(other.count) {
+    other.head = nullptr;
+    other.tail = nullptr;
+    other.count = 0;
+}
+
+ReadyQueues::IntrusiveFifo& ReadyQueues::IntrusiveFifo::operator=(
+    IntrusiveFifo&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    while (head != nullptr) {
+        TaskInvokerBase* raw = head;
+        head = raw->ready_next;
+        raw->ready_next = nullptr;
+        delete raw;
+    }
+    head = other.head;
+    tail = other.tail;
+    count = other.count;
+    other.head = nullptr;
+    other.tail = nullptr;
+    other.count = 0;
+    return *this;
+}
+
+void ReadyQueues::IntrusiveFifo::push_back(
+    std::unique_ptr<TaskInvokerBase> task,
+    bool is_external) noexcept {
+    TaskInvokerBase* raw = task.release();
+    raw->ready_next = nullptr;
+    raw->ready_is_external = is_external;
+    if (tail == nullptr) {
+        head = tail = raw;
+    } else {
+        tail->ready_next = raw;
+        tail = raw;
+    }
+    ++count;
+}
+
+bool ReadyQueues::IntrusiveFifo::pop_front(QueuedTask& out) noexcept {
+    if (head == nullptr) {
+        return false;
+    }
+    TaskInvokerBase* raw = head;
+    head = raw->ready_next;
+    if (head == nullptr) {
+        tail = nullptr;
+    }
+    raw->ready_next = nullptr;
+    --count;
+    out.is_external = raw->ready_is_external;
+    raw->ready_is_external = false;
+    out.invoker.reset(raw);
+    return true;
+}
+
+bool ReadyQueues::IntrusiveFifo::any_resume() const noexcept {
+    for (TaskInvokerBase* node = head; node != nullptr; node = node->ready_next) {
+        if (node->is_resume_segment()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 ReadyQueues::LocalQueues::~LocalQueues() {
@@ -44,11 +123,18 @@ ReadyQueues::LocalQueues::~LocalQueues() {
         return;
     }
     for (auto& band : chase_lev_bands) {
-        ChaseNode* node = nullptr;
-        while (band->steal(node) == DequeResultStatus::Success) {
-            (void)node->published.load(std::memory_order_acquire);
-            delete node;
-            node = nullptr;
+        TaskInvokerBase* raw = nullptr;
+        while (true) {
+            const auto status = band->steal(raw);
+            if (status == DequeResultStatus::Retry) {
+                raw = nullptr;
+                continue;
+            }
+            if (status != DequeResultStatus::Success || raw == nullptr) {
+                break;
+            }
+            delete raw;
+            raw = nullptr;
         }
     }
 }
@@ -61,18 +147,13 @@ bool ReadyQueues::LocalQueues::push(QueuedTask& task, Priority priority) {
         return true;
     }
 
-    std::unique_ptr<ChaseNode> node;
-    try {
-        node = std::make_unique<ChaseNode>(std::move(task));
-    } catch (...) {
+    TaskInvokerBase* raw = task.invoker.get();
+    raw->ready_next = nullptr;
+    raw->ready_is_external = task.is_external;
+    if (!chase_lev_bands[band_index]->push(raw)) {
         return false;
     }
-    node->published.store(true, std::memory_order_release);
-    if (!chase_lev_bands[band_index]->push(node.get())) {
-        task = std::move(node->task);
-        return false;
-    }
-    (void)node.release();
+    (void)task.invoker.release();
     return true;
 }
 
@@ -145,7 +226,7 @@ bool ReadyQueues::LocalQueues::claim_chase_lev(
     const Priority target = kPriorityCalendar[calendar_index % kPriorityCalendarLength];
     auto claim = [&](Priority priority) {
         auto& band = *chase_lev_bands[static_cast<std::size_t>(priority)];
-        ChaseNode* raw = nullptr;
+        TaskInvokerBase* raw = nullptr;
         DequeResultStatus status = DequeResultStatus::Empty;
         if (owner) {
             status = band.pop(raw);
@@ -161,9 +242,10 @@ bool ReadyQueues::LocalQueues::claim_chase_lev(
         if (status != DequeResultStatus::Success || raw == nullptr) {
             return false;
         }
-        std::unique_ptr<ChaseNode> node(raw);
-        (void)node->published.load(std::memory_order_acquire);
-        out = std::move(node->task);
+        out.is_external = raw->ready_is_external;
+        raw->ready_is_external = false;
+        raw->ready_next = nullptr;
+        out.invoker.reset(raw);
         calendar_index = (calendar_index + 1) % kPriorityCalendarLength;
         return true;
     };
@@ -184,20 +266,23 @@ void ReadyQueues::LocalQueues::cancel_unstarted(
     if (backend == LocalDequeBackend::ChaseLevLockFree) {
         for (auto& band : chase_lev_bands) {
             while (true) {
-                ChaseNode* raw = nullptr;
+                TaskInvokerBase* raw = nullptr;
                 const auto status = band->steal(raw);
                 if (status == DequeResultStatus::Retry) {
                     continue;
                 }
-                if (status == DequeResultStatus::Empty) {
+                if (status == DequeResultStatus::Empty || raw == nullptr) {
                     break;
                 }
-                std::unique_ptr<ChaseNode> node(raw);
-                (void)node->published.load(std::memory_order_acquire);
-                if (node->task.invoker && node->task.invoker->is_resume_segment()) {
-                    resumes.push_back(std::move(node->task));
-                } else if (node->task.invoker) {
-                    node->task.invoker->cancel_pre_start();
+                QueuedTask task;
+                task.is_external = raw->ready_is_external;
+                raw->ready_is_external = false;
+                raw->ready_next = nullptr;
+                task.invoker.reset(raw);
+                if (task.invoker && task.invoker->is_resume_segment()) {
+                    resumes.push_back(std::move(task));
+                } else if (task.invoker) {
+                    task.invoker->cancel_pre_start();
                 }
             }
         }
@@ -267,7 +352,7 @@ void ReadyQueues::publish(
     }
 
     std::lock_guard<std::mutex> lock(global_mutex_);
-    global_fifo_queues_[band].push_back({std::move(task), is_external});
+    global_fifo_queues_[band].push_back(std::move(task), is_external);
 }
 
 bool ReadyQueues::claim_global_band_locked(
@@ -287,8 +372,7 @@ bool ReadyQueues::claim_global_band_locked(
             edf_heap.pop_back();
             ++deadline_burst;
         } else {
-            out = std::move(fifo_queue.front());
-            fifo_queue.pop_front();
+            (void)fifo_queue.pop_front(out);
             deadline_burst = 0;
         }
     } else if (!edf_heap.empty()) {
@@ -297,8 +381,7 @@ bool ReadyQueues::claim_global_band_locked(
         edf_heap.pop_back();
         ++deadline_burst;
     } else {
-        out = std::move(fifo_queue.front());
-        fifo_queue.pop_front();
+        (void)fifo_queue.pop_front(out);
         deadline_burst = 0;
     }
     return true;
@@ -401,12 +484,11 @@ void ReadyQueues::cancel_unstarted(AdmissionController& admission) noexcept {
         }
 
         for (auto& queue : global_fifo_queues_) {
-            std::deque<QueuedTask> resumes;
-            while (!queue.empty()) {
-                auto task = std::move(queue.front());
-                queue.pop_front();
+            IntrusiveFifo retained;
+            QueuedTask task;
+            while (queue.pop_front(task)) {
                 if (task.invoker && task.invoker->is_resume_segment()) {
-                    resumes.push_back(std::move(task));
+                    retained.push_back(std::move(task.invoker), task.is_external);
                 } else {
                     if (task.invoker) {
                         task.invoker->cancel_pre_start();
@@ -416,7 +498,7 @@ void ReadyQueues::cancel_unstarted(AdmissionController& admission) noexcept {
                     }
                 }
             }
-            queue = std::move(resumes);
+            queue = std::move(retained);
         }
     }
 
@@ -428,7 +510,7 @@ void ReadyQueues::cancel_unstarted(AdmissionController& admission) noexcept {
         std::lock_guard<std::mutex> lock(global_mutex_);
         for (auto& task : local_resumes) {
             const auto band = static_cast<std::size_t>(task.invoker->priority());
-            global_fifo_queues_[band].push_back(std::move(task));
+            global_fifo_queues_[band].push_back(std::move(task.invoker), task.is_external);
         }
     }
 }
@@ -464,10 +546,8 @@ bool ReadyQueues::any_resume_work_after_immediate_cleanup() const {
     {
         std::lock_guard<std::mutex> lock(global_mutex_);
         for (const auto& queue : global_fifo_queues_) {
-            for (const auto& task : queue) {
-                if (task.invoker && task.invoker->is_resume_segment()) {
-                    return true;
-                }
+            if (queue.any_resume()) {
+                return true;
             }
         }
         for (const auto& heap : global_edf_heaps_) {
