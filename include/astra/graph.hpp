@@ -113,6 +113,7 @@ inline std::unique_ptr<TaskInvokerBase> make_graph_node_invoker(
 }  // namespace detail
 
 // 前置节点到达终态后是否投放后继（R-071 / D-109）。
+/** @brief 前置节点完成后是否允许投放后继节点。 */
 enum class EdgePolicy : std::uint8_t {
     // 仅前置 Succeeded 时投放后继；失败/取消则后继被取消。
     RequireSuccess = 1,
@@ -121,6 +122,7 @@ enum class EdgePolicy : std::uint8_t {
 };
 
 // 一条有向依赖边。from/to 必须是同一 TaskGraph 内的 NodeId。
+/** @brief TaskGraph 中的一条有向依赖边。 */
 struct GraphEdge {
     NodeId from{};
     NodeId to{};
@@ -135,6 +137,7 @@ struct GraphEdge {
 // 不可变、单次执行的已校验任务图快照
 // -----------------------------------------------------------------------------
 // 已校验、不可变、仅可移动的任务图。由 TaskGraph::freeze() 产出，交给 Scheduler::run() 消耗。
+/** @brief freeze() 产出的已校验、不可变、仅可移动任务图。 */
 class ASTRA_EXPORT FrozenTaskGraph {
 private:
     struct NodeData {
@@ -192,6 +195,10 @@ private:
 // 任务图构建器，支持移动语义的 Callable 与拓扑验证
 // -----------------------------------------------------------------------------
 // 可变构建器。仅可移动；freeze() 消耗 *this 并校验结构。
+/**
+ * @brief 可变 TaskGraph 构建器。
+ * @note freeze() 会消耗构建器并校验节点、边和环路。
+ */
 class ASTRA_EXPORT TaskGraph {
 public:
     TaskGraph() = default;
@@ -275,6 +282,7 @@ private:
 };
 
 // 一次图执行的聚合终态。任一节点失败则为 Failed；全部取消则为 Cancelled（D-112）。
+/** @brief 一次 GraphRun 的聚合生命周期状态。 */
 enum class GraphRunState : std::uint8_t {
     Running = 1,
     Succeeded = 2,
@@ -283,12 +291,14 @@ enum class GraphRunState : std::uint8_t {
 };
 
 // GraphRun::wait_for 的返回。TimedOut 不取消图（D-113）。
+/** @brief GraphRun::wait_for() 的完成或超时结果。 */
 enum class GraphWaitResult : std::uint8_t {
     Completed = 1,
     TimedOut = 2,
 };
 
 // 一次 GraphRun 的终态报告。failed_node_exceptions 仅含失败节点，不含取消节点。
+/** @brief 一次 GraphRun 的节点计数和失败异常报告。 */
 class GraphReport {
 public:
     GraphRunId run_id{};
@@ -311,6 +321,10 @@ ASTRA_EXPORT GraphRunId current_executing_graph_run_id() noexcept;
 // 任务图执行实例 Handle，支持多副本共享观察与状态等待
 // -----------------------------------------------------------------------------
 // 一次图执行的共享观察句柄。可复制；空/moved-from 的 valid() 为 false。
+/**
+ * @brief 一次任务图执行的共享观察句柄。
+ * @note 句柄可复制；wait/get_report 会观察同一次运行。
+ */
 class ASTRA_EXPORT GraphRun {
 public:
     GraphRun() noexcept = default;

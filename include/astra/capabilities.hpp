@@ -17,6 +17,7 @@
 namespace astra {
 
 // Local Deque 实际后端实现（D-162）。报告 Runtime 实际选用的本地任务队列后端。
+/** @brief 实际启用的本地任务队列后端。 */
 enum class LocalDequeBackend : std::uint8_t {
     // 未启用本地队列（默认构造的空快照）。
     None,
@@ -27,18 +28,22 @@ enum class LocalDequeBackend : std::uint8_t {
 };
 
 // 启动时冻结的能力快照，由 Scheduler::capabilities() 返回。非 aggregate（D-162）。
+/**
+ * @brief Scheduler 启动时冻结的运行期能力快照。
+ * @note 该快照反映实际后端，不会把加锁实现报告为 lock-free。
+ */
 class SchedulerCapabilities {
 public:
     constexpr SchedulerCapabilities() noexcept = default;
     constexpr explicit SchedulerCapabilities(LocalDequeBackend backend) noexcept
         : backend_(backend) {}
 
-    // Runtime 实际选用的本地队列后端，不会为了好看而虚报 lock-free。
+    /** @brief 返回 Runtime 实际选用的本地队列后端。 */
     [[nodiscard]] constexpr LocalDequeBackend local_deque_backend() const noexcept {
         return backend_;
     }
 
-    // 仅当后端为 ChaseLevLockFree 时为 true。
+    /** @brief 返回本地队列是否为 Chase-Lev 无锁后端。 */
     [[nodiscard]] constexpr bool lock_free_local_deque() const noexcept {
         return backend_ == LocalDequeBackend::ChaseLevLockFree;
     }

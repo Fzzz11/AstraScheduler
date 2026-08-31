@@ -22,6 +22,10 @@
 
 namespace astra::detail {
 
+namespace {
+constexpr int kParkSpinIterations = 16;
+}
+
 extern thread_local RuntimeId t_current_worker_runtime_id;
 extern thread_local void* t_current_worker_impl;
 extern thread_local std::size_t t_current_worker_index;
@@ -138,7 +142,7 @@ void run_worker_loop(
         if (!found_task) {
             runtime.process_due_timers();
 
-            for (int spin = 0; spin < 16; ++spin) {
+            for (int spin = 0; spin < kParkSpinIterations; ++spin) {
 #if defined(__x86_64__) || defined(_M_X64)
                 __builtin_ia32_pause();
 #else

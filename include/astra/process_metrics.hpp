@@ -19,6 +19,7 @@
 namespace astra {
 
 // 进程级协调器服务状态（D-148 scope variants）。
+/** @brief 进程级 Reaper 协调服务状态。 */
 enum class ProcessServiceState : std::uint8_t {
     NotStarted = 0,  // Reaper 从未初始化：零事实且查询不得创建线程/注册表
     Active = 1,      // 协调器存活且注册门禁开放
@@ -27,6 +28,7 @@ enum class ProcessServiceState : std::uint8_t {
 };
 
 // 进程级 Finalization 状态（D-148）。
+/** @brief 进程级 Finalization 状态。 */
 enum class ProcessFinalizationState : std::uint8_t {
     NotStarted = 0,  // 尚未 begin_finalization
     Finalizing = 1,
@@ -34,6 +36,7 @@ enum class ProcessFinalizationState : std::uint8_t {
 };
 
 // 固定 process 级累计 counter（R-095 / D-148）。
+/** @brief 进程级累计 metrics counter。 */
 struct ProcessMetricsCounters {
     std::uint64_t runtime_registrations{0};
     std::uint64_t runtime_handoffs{0};
@@ -44,6 +47,7 @@ struct ProcessMetricsCounters {
 };
 
 // 固定 process 级瞬时 gauge（R-095 / D-148）。
+/** @brief 进程级瞬时 metrics gauge。 */
 struct ProcessMetricsGauges {
     std::uint64_t registered_runtimes{0};
     std::uint64_t pending_runtimes{0};
@@ -53,6 +57,7 @@ struct ProcessMetricsGauges {
 // 不可变逐字段 process 快照（R-095）。
 // finalization_elapsed_ns：Finalizing 期间自 begin 起的流逝纳秒，其它阶段为
 // Finalized 终值；finalization_completion_duration_ns 仅在 Finalized 后非零并冻结。
+/** @brief 不可变的进程级 metrics 快照。 */
 struct ProcessMetricsSnapshot {
     std::uint32_t schema_version{1};
     ProcessServiceState service_state{ProcessServiceState::NotStarted};
@@ -70,6 +75,10 @@ struct ProcessMetricsSnapshot {
 // 无参、side-effect-free 的进程级快照入口（R-095 / D-148）。
 // 可在创建任何 Scheduler 或 begin_finalization 之前调用：返回 NotStarted/零，
 // 绝不初始化 Reaper 线程、Runtime 注册或 FinalizationControl。
+/**
+ * @brief 获取无副作用的进程级 metrics 快照。
+ * @return 当前 Reaper/Finalization 生命周期及计数。
+ */
 [[nodiscard]] ASTRA_EXPORT ProcessMetricsSnapshot process_metrics_snapshot() noexcept;
 
 }  // namespace astra

@@ -67,6 +67,7 @@ public:
 
 private:
     static constexpr std::size_t kPriorityCalendarLength = 15;
+    static constexpr std::size_t kEdfDeadlineBurstLimit = 8;
     static constexpr std::array<Priority, kPriorityCalendarLength> kPriorityCalendar = {
         Priority::Critical, Priority::High, Priority::Critical, Priority::Normal,
         Priority::Critical, Priority::High, Priority::Critical, Priority::Low,

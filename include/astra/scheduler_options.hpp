@@ -18,12 +18,14 @@ namespace astra {
 
 // 外部提交队列满时：Reject 让 try_submit 返回 / submit 抛 CapacityExhausted；
 // Block 仅允许非 Worker 的 submit 等待出槽（D-084）。
+/** @brief 外部提交队列达到容量上限时的处理策略。 */
 enum class ExternalBackpressure : std::uint8_t {
     Reject,
     Block
 };
 
 // Off：热路径零开销。Basic：计数。Detailed：另记延迟直方图（D-135）。
+/** @brief Runtime 指标采集详细程度。 */
 enum class MetricsLevel : std::uint8_t {
     Off,
     Basic,
@@ -34,6 +36,10 @@ enum class MetricsLevel : std::uint8_t {
 class TraceCollector;
 
 // 构造时传入并在 startup 冻结。0 或未知枚举会使 Scheduler 构造抛 invalid_argument（D-157）。
+/**
+ * @brief Scheduler 构造期配置；启动后配置被冻结。
+ * @note Supported Configuration 仅为 64-bit Linux。
+ */
 struct SchedulerOptions {
     // Worker 线程数；必须 > 0。默认 recommended_worker_count()。
     std::size_t worker_count = recommended_worker_count();

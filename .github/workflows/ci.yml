@@ -171,3 +171,17 @@ jobs:
         with:
           name: coverage-gcc
           path: coverage.xml
+
+  docs:
+    name: Public API documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes doxygen
+      - name: Build Doxygen documentation
+        working-directory: docs
+        run: doxygen Doxyfile

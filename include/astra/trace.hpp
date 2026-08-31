@@ -29,6 +29,7 @@ namespace detail { struct CollectorAccess; }  // 内部 seam 访问器（AST-045
 
 // Trace category bitmask（D-158）。Default ≠ All：逐次 StealAttempt 与其他
 // 明确标记 Verbose 的高频事件默认关闭，用户可显式加入；category 关闭不算 drop。
+/** @brief Trace 事件分类的 bitmask。 */
 enum class TraceCategory : std::uint64_t {
     None = 0,
     TaskLifecycle = 0x1,
@@ -60,6 +61,7 @@ enum class TraceCategory : std::uint64_t {
 }
 
 // 固定有界默认容量与 category 集（D-158）。capacity 按 event slots 而非 bytes 定义。
+/** @brief 一代 Trace capture 的容量和分类配置。 */
 struct TraceOptions {
     std::size_t events_per_worker = 16'384;
     std::size_t external_control_events = 65'536;
@@ -69,6 +71,7 @@ struct TraceOptions {
 
 // Producer buffer 类别（D-138：per-Worker SPSC ring / 共享 external/control MPMC
 // 入口 / 每 Reaper 独立 producer）。
+/** @brief Trace 事件 producer buffer 的来源类型。 */
 enum class TraceProducerKind : std::uint8_t {
     Worker,
     ExternalControl,
@@ -79,6 +82,7 @@ enum class TraceProducerKind : std::uint8_t {
 // 缺失 identity/枚举使用零值 invalid sentinel；不保存 raw pointer、
 // 用户字符串或异常文本。跨 producer 只按 (timestamp_ns, producer_id,
 // local_sequence) 形成导出确定全序，不声称存在全局线性化顺序。
+/** @brief 固定大小、可复制的版本化 Trace 事件记录。 */
 struct TraceEvent {
     std::uint32_t schema_version{1};
     std::uint16_t category{0};             // TraceCategory raw bit
@@ -104,6 +108,7 @@ struct TraceEvent {
 
 // Versioned EventKind 族（R-087 / D-139）：显式数值，新增向后兼容；
 // 重解释旧值必须升级 major schema。
+/** @brief Trace 事件的稳定、版本化 kind 枚举。 */
 enum class TraceEventKind : std::uint16_t {
     Admission = 1,
     Rejected = 2,
@@ -204,6 +209,10 @@ enum class TraceEventKind : std::uint16_t {
 
 // 不可变、可复制的 capture 结果（D-163）：复制只共享同一只读 backing，
 // 可在 Collector 与 Runtime 销毁后继续离线导出。
+/**
+ * @brief 不可变、可复制的 Trace capture 结果。
+ * @note 复制只共享只读 backing，可在 Collector 销毁后继续导出。
+ */
 class ASTRA_EXPORT TraceSnapshot {
 public:
     struct ProducerReport {
@@ -240,10 +249,18 @@ private:
 
 // 导出确定全序（D-139）：按 (timestamp_ns, producer_id, local_sequence) 排序。
 // (producer_id, local_sequence) 唯一 ⇒ 全序确定，相同 snapshot 重放结果一致。
+/**
+ * @brief 返回按时间戳和 producer 序号确定排序的 Trace 事件副本。
+ * @param snapshot 要排序的 Trace capture 结果。
+ */
 [[nodiscard]] ASTRA_EXPORT std::vector<TraceEvent> trace_ordered_events(const TraceSnapshot& snapshot);
 
 // move-only 活动 capture capability（D-138 / D-163）：显式 stop 提交 Snapshot；
 // 活动析构 noexcept abort 丢弃该代并使 Collector 回到 Stopped。
+/**
+ * @brief 一代活动 Trace capture 的 move-only 控制权。
+ * @note stop() 会提交不可变快照；未 stop 的析构会 abort 当前代。
+ */
 class ASTRA_EXPORT TraceCapture {
 public:
     TraceCapture() noexcept = default;
@@ -275,6 +292,10 @@ private:
 // 一个或多个 Runtime；初始 Stopped，可重复执行单一活动 capture generation。
 // 线程安全共享收集器。以 shared_ptr 挂到 SchedulerOptions::trace_collector。
 // 初始 Stopped，同时只允许一代活动 capture。
+/**
+ * @brief 线程安全共享的 Trace 收集器。
+ * @note 同时只允许一代活动 capture，可附加到多个 Runtime。
+ */
 class ASTRA_EXPORT TraceCollector : public std::enable_shared_from_this<TraceCollector> {
 public:
     TraceCollector();
@@ -282,6 +303,10 @@ public:
     TraceCollector(const TraceCollector&) = delete;
     TraceCollector& operator=(const TraceCollector&) = delete;
 
+    /**
+     * @brief 校验配置并启动一代有界 Trace capture。
+     * @param options capture 容量和事件分类配置。
+     */
     // 校验（状态改变前）→ 预分配全部 registered producer buffer → 发布新 Recording
     // generation 并返回 Capture。零容量/未知 bit 抛 invalid_argument，总 buffer
     // 溢出抛 length_error，分配失败保持 Stopped 并重抛 bad_alloc；已有 Recording

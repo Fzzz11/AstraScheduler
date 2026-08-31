@@ -1,0 +1,19 @@
+# AstraScheduler public API documentation (P2-3)
+PROJECT_NAME           = AstraScheduler
+PROJECT_BRIEF          = "64-bit Linux task scheduler"
+OUTPUT_DIRECTORY       = ../build/doxygen
+INPUT                  = ../include/astra
+FILE_PATTERNS          = *.hpp
+RECURSIVE              = NO
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_AS_ERROR          = NO
+QUIET                  = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+HAVE_DOT               = NO
+JAVADOC_AUTOBRIEF      = YES
+INPUT_ENCODING         = UTF-8

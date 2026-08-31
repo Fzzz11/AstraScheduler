@@ -229,6 +229,11 @@ struct InvocationTraits {
 
 }  // namespace detail
 
+/**
+ * @brief 已提交任务结果的共享观察句柄。
+ * @tparam T 任务结果类型。
+ * @note 复制句柄不会复制任务；多个副本观察同一结果格。
+ */
 template <typename T>
 class TaskHandle {
 public:
@@ -283,6 +288,11 @@ public:
         return cell_->state();
     }
 
+    /**
+     * @brief 阻塞等待并返回任务结果。
+     * @throws task_cancelled 任务被取消。
+     * @throws std::exception 任务体抛出的异常。
+     */
     const T& get() const & {
         if (!cell_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -292,6 +302,7 @@ public:
 
     void get() const && = delete;
 
+    /** @brief 阻塞等待任务到达终态，不读取结果值。 */
     void wait() const {
         if (!cell_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -299,6 +310,10 @@ public:
         cell_->wait();
     }
 
+    /**
+     * @brief 在给定时长内等待任务完成。
+     * @param duration 最大等待时长；超时不会取消任务。
+     */
     template <typename Rep, typename Period>
     [[nodiscard]] WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
         if (!cell_) {
@@ -307,6 +322,7 @@ public:
         return cell_->wait_for(duration);
     }
 
+    /** @brief 发出协作式取消请求，不强制终止正在运行的任务。 */
     void request_cancel() const noexcept {
         if (cell_) {
             cell_->request_cancel();
@@ -444,6 +460,7 @@ private:
     std::shared_ptr<ResultCell> cell_;
 };
 
+/** @brief void 任务结果的共享观察句柄特化。 */
 template <>
 class TaskHandle<void> {
 public:
@@ -495,6 +512,10 @@ public:
         return cell_->state();
     }
 
+    /**
+     * @brief 阻塞等待 void 任务完成并重新抛出任务异常。
+     * @throws task_cancelled 任务被取消。
+     */
     void get() const & {
         if (!cell_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -504,6 +525,7 @@ public:
 
     void get() const && = delete;
 
+    /** @brief 阻塞等待 void 任务到达终态。 */
     void wait() const {
         if (!cell_) {
             throw std::logic_error("operating on empty/moved-from TaskHandle");
@@ -511,6 +533,10 @@ public:
         cell_->wait();
     }
 
+    /**
+     * @brief 在给定时长内等待 void 任务完成。
+     * @param duration 最大等待时长；超时不会取消任务。
+     */
     template <typename Rep, typename Period>
     [[nodiscard]] WaitResult wait_for(const std::chrono::duration<Rep, Period>& duration) const {
         if (!cell_) {
@@ -519,6 +545,7 @@ public:
         return cell_->wait_for(duration);
     }
 
+    /** @brief 发出 void 任务的协作式取消请求。 */
     void request_cancel() const noexcept {
         if (cell_) {
             cell_->request_cancel();

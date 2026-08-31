@@ -22,6 +22,7 @@
 namespace astra {
 
 // 进程内一次 Runtime 的逻辑 ID。默认 0 为无效；无隐式整数转换（D-153）。
+/** @brief 进程内 Runtime 的稳定逻辑标识；零值表示无效。 */
 class RuntimeId {
 public:
     constexpr RuntimeId() noexcept = default;
@@ -40,6 +41,7 @@ private:
 };
 
 // 任务逻辑 ID：所属 Runtime + 该 Runtime 内单调递增且不复用的 sequence（D-153）。
+/** @brief Runtime 内单调递增且不复用的任务逻辑标识。 */
 class TaskId {
 public:
     constexpr TaskId() noexcept = default;
@@ -63,6 +65,7 @@ private:
 };
 
 // 一次 GraphRun 的逻辑 ID：所属 Runtime + 不复用 sequence（D-153）。
+/** @brief 一次任务图运行的稳定逻辑标识。 */
 class GraphRunId {
 public:
     constexpr GraphRunId() noexcept = default;
@@ -86,6 +89,7 @@ private:
 };
 
 // 一张 TaskGraph 内按插入顺序从 1 起分配的节点 ID，跨图不可比较身份（D-161）。
+/** @brief TaskGraph 内按插入顺序分配的节点标识。 */
 class NodeId {
 public:
     constexpr NodeId() noexcept = default;

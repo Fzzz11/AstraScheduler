@@ -25,6 +25,10 @@ namespace astra {
 // Log2Histogram (R-085 / D-137)
 // 固定 64 个 base-2 纳秒 bucket 的饱和直方图
 // -----------------------------------------------------------------------------
+/**
+ * @brief 以 2 的幂为边界的固定大小纳秒延迟直方图。
+ * @note 该类型是快照值类型，不包含原子状态。
+ */
 struct Log2Histogram {
     static constexpr std::size_t kBucketCount = 64;
     std::uint64_t count{0};
@@ -43,6 +47,7 @@ struct Log2Histogram {
 // Runtime Metrics Histograms (R-085 / D-137)
 // Detailed 模式下的延迟直方图
 // -----------------------------------------------------------------------------
+/** @brief Detailed 模式下的 Runtime 延迟直方图集合。 */
 struct RuntimeMetricsHistograms {
     Log2Histogram ready_queue_wait{};
     Log2Histogram execution_segment{};
@@ -62,6 +67,7 @@ struct RuntimeMetricsHistograms {
 // Runtime Metrics Counters (R-084 / D-136)
 // 包含固定低基数生命周期、准入、调度、协程/定时器、图、Deadline 累计 counter
 // -----------------------------------------------------------------------------
+/** @brief Runtime 生命周期、调度和准入的固定低基数计数器。 */
 struct RuntimeMetricsCounters {
     // 准入（Admission）
     std::uint64_t submission_attempts{0};
@@ -123,6 +129,7 @@ struct RuntimeMetricsCounters {
 // Runtime Metrics Gauges (R-084 / D-136)
 // 当前状态投影 gauge 瞬时值
 // -----------------------------------------------------------------------------
+/** @brief Runtime 当前状态的瞬时 gauge 集合。 */
 struct RuntimeMetricsGauges {
     std::uint64_t waiting_tasks{0};
     std::uint64_t ready_tasks{0};
@@ -136,6 +143,10 @@ struct RuntimeMetricsGauges {
 
 // Scheduler::metrics_snapshot() 返回的不可变拷贝。不含 TaskId/字符串标签。
 // Off 时 counters/histograms 为零且 enabled=false。saturated 表示计数触顶（R-084）。
+/**
+ * @brief Scheduler::metrics_snapshot() 返回的不可变快照。
+ * @note MetricsLevel::Off 时 enabled 为 false 且计数与直方图为空。
+ */
 struct RuntimeMetricsSnapshot {
     std::uint32_t schema_version{1};
     RuntimeId runtime_id{};

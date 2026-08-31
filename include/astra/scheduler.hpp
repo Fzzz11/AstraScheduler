@@ -97,7 +97,10 @@ ASTRA_EXPORT std::uint64_t register_timer_on_impl(
 ASTRA_EXPORT void cancel_timer_on_impl(void* impl, std::uint64_t timer_id);
 }
 
-// 调度器共享 Handle：副本关联同一 Runtime；最后一份销毁时请求 Graceful 关停。
+/**
+ * @brief AstraScheduler 的共享 Runtime 句柄。
+ * @note 复制只增加观察句柄；最后一份句柄销毁时请求 Graceful 关停。
+ */
 class ASTRA_EXPORT Scheduler {
 public:
     // 同步校验 options 并启动 Runtime。
@@ -123,21 +126,25 @@ public:
     // 本 Runtime 的逻辑 ID。空 Handle 返回无效 RuntimeId{0}，不抛。
     [[nodiscard]] RuntimeId runtime_id() const noexcept;
 
-    // 非阻塞生命周期快照（state + shutdown_mode）。空 Handle 抛 logic_error（D-160）。
+    /** @brief 返回非阻塞的生命周期与关停模式快照。 */
     [[nodiscard]] SchedulerStatus status() const;
 
-    // 启动时冻结的 Local Deque 能力。空 Handle 抛 logic_error（D-162）。
+    /** @brief 返回启动时冻结的实际本地队列能力。 */
     [[nodiscard]] SchedulerCapabilities capabilities() const;
 
-    // 只读指标快照，不改变调度状态。空 Handle 抛 logic_error（R-084 / R-085）。
+    /** @brief 返回只读 Runtime 指标快照，不改变调度状态。 */
     [[nodiscard]] RuntimeMetricsSnapshot metrics_snapshot() const;
 
-    // Graceful 关停：拒绝新提交，等待已接纳工作排空后返回。
+    /**
+     * @brief 请求 Graceful 关停并等待已接纳工作排空。
+     * @throws std::logic_error 空句柄或由 Runtime worker 发起时。
+     */
     // 空 Handle 抛 logic_error；已 Stopped 立即成功且无副作用。
     // 同 Runtime 的 Worker 调用抛 logic_error（禁止自关停）（R-012 / R-019 / R-108）。
     void shutdown();
 
-    // Immediate 关停：放弃未开始任务并尽快打断。空 Handle / 已 Stopped / 自关停规则同 shutdown()（R-016 / R-019）。
+    /** @brief 请求 Immediate 关停，取消未开始任务并尽快打断运行中的任务。 */
+    // 空 Handle / 已 Stopped / 自关停规则同 shutdown()（R-016 / R-019）。
     void shutdown_now();
 
     // 提交已 freeze 的任务图并消耗 FrozenTaskGraph。
@@ -146,6 +153,11 @@ public:
     GraphRun run(FrozenTaskGraph&& graph);
     GraphRun run(TaskOptions options, FrozenTaskGraph&& graph);
 
+    /**
+     * @brief 提交可调用对象并返回共享结果句柄。
+     * @param f 任务函数，须可按给定参数调用。
+     * @param args 传给任务函数的参数。
+     */
     // 提交可调用对象，成功则返回 TaskHandle。
     // 签名须为 f(args...) 或 f(stop_token, args...)；不得返回裸引用；结果须可移动。
     // 空 Handle 抛 logic_error。外部线程按 external_backpressure 阻塞或拒绝；
@@ -162,6 +174,12 @@ public:
         return submit_impl(options, std::forward<F>(f), std::forward<Args>(args)...);
     }
 
+    /**
+     * @brief 非阻塞尝试提交可调用对象。
+     * @param f 任务函数，须可按给定参数调用。
+     * @param args 传给任务函数的参数。
+     * @return 成功的 TaskHandle 或机器可读的拒绝原因。
+     */
     // 非阻塞尝试提交。admission 失败返回 SubmissionError，不抛 submission_rejected。
     // 空 Handle 仍抛 logic_error。永不按 Block 等待容量（R-061 / D-088）。
     template <typename F, typename... Args>
@@ -175,6 +193,10 @@ public:
         return try_submit_impl(options, std::forward<F>(f), std::forward<Args>(args)...);
     }
 
+    /**
+     * @brief 提交 cold Task 协程并转移其协程帧所有权。
+     * @param task 要提交的 cold 协程。
+     */
     // 提交 cold Task 协程（消耗 Task）。空 Scheduler 或无效 Task 抛 logic_error。
     // admission 与线程约束同 submit()（R-073 / R-061）。
     template <typename T>
@@ -187,6 +209,11 @@ public:
         return spawn_impl(options, std::move(task));
     }
 
+    /**
+     * @brief 非阻塞尝试提交 cold Task 协程。
+     * @param task 要提交的 cold 协程。
+     * @return 成功的 TaskHandle 或机器可读的拒绝原因。
+     */
     // 非阻塞尝试 spawn。admission 失败返回 SubmissionError；空 Scheduler/Task 仍抛 logic_error（R-073 / D-088）。
     template <typename T>
     SubmissionResult<T> try_spawn(Task<T>&& task) {

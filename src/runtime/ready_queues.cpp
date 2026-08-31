@@ -143,7 +143,7 @@ bool ReadyQueues::claim_global_band_locked(
     }
 
     if (!edf_heap.empty() && !fifo_queue.empty()) {
-        if (deadline_burst < 8) {
+        if (deadline_burst < kEdfDeadlineBurstLimit) {
             std::pop_heap(edf_heap.begin(), edf_heap.end(), std::greater<EdfEntry>{});
             out = std::move(edf_heap.back().task);
             edf_heap.pop_back();

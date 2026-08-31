@@ -624,6 +624,10 @@ detail::RuntimeDiagnostics* find_runtime_diagnostics(RuntimeId id) {
 
 namespace detail {
 
+namespace {
+constexpr auto kHelpingPollInterval = std::chrono::milliseconds{2};
+}
+
 thread_local RuntimeId t_current_worker_runtime_id{0};
 thread_local void* t_current_worker_impl{nullptr};
 thread_local std::size_t t_current_worker_index{0};
@@ -911,7 +915,7 @@ void perform_caller_wait(
                     return target.is_completed();
                 });
             } else {
-                target.cv().wait_for(lock, std::chrono::milliseconds(2), [&target] {
+                target.cv().wait_for(lock, kHelpingPollInterval, [&target] {
                     return target.is_completed();
                 });
             }
@@ -1021,7 +1025,7 @@ void perform_graph_caller_wait(
                     return target.run_state.load(std::memory_order_acquire) != GraphRunState::Running;
                 });
             } else {
-                target.cv.wait_for(lock, std::chrono::milliseconds(2), [&target] {
+                target.cv.wait_for(lock, kHelpingPollInterval, [&target] {
                     return target.run_state.load(std::memory_order_acquire) != GraphRunState::Running;
                 });
             }

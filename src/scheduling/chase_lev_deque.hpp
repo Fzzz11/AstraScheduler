@@ -294,7 +294,8 @@ public:
 
     // Quiescent Rebase (R-068 / D-101):
     // 仅在队列静止为空时对高水位索引执行安全归零，不依赖无符号溢出环绕
-    bool maybe_quiescent_rebase(std::int64_t high_watermark = (1LL << 58)) noexcept {
+    bool maybe_quiescent_rebase(
+        std::int64_t high_watermark = kDefaultRebaseHighWatermark) noexcept {
         std::int64_t b = bottom_.load(std::memory_order_relaxed);
         std::int64_t t = top_.load(std::memory_order_relaxed);
         if (b == t && b >= high_watermark) {
@@ -315,6 +316,8 @@ public:
     }
 
 private:
+    static constexpr std::int64_t kDefaultRebaseHighWatermark = (INT64_C(1) << 58);
+
     Buffer* grow(std::int64_t b, std::int64_t t, Buffer* old_buf) {
         if (inject_growth_failure_.load(std::memory_order_relaxed)) {
             return nullptr;

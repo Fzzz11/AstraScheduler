@@ -88,6 +88,7 @@ struct TaskPromiseBase {
 
 }  // namespace detail
 
+/** @brief 非 void Astra 协程的 promise 类型。 */
 template <typename T = void>
 class TaskPromise final : public detail::TaskPromiseBase<T> {
 public:
@@ -104,6 +105,7 @@ public:
     }
 };
 
+/** @brief void Astra 协程的 promise 类型。 */
 template <>
 class TaskPromise<void> final : public detail::TaskPromiseBase<void> {
 public:
@@ -120,6 +122,11 @@ public:
 
 // Cold 协程句柄：函数写 co_return 即得到 Task<T>，须再 spawn/emplace_coroutine 才会执行。
 // 仅可移动；未提交就销毁会销毁协程帧。复制被 delete（R-073 / D-114）。
+/**
+ * @brief 尚未提交执行的 cold 协程句柄。
+ * @tparam T 协程返回值类型。
+ * @note Task 仅可移动；需交给 Scheduler::spawn() 才会开始执行。
+ */
 template <typename T>
 class Task {
 public:

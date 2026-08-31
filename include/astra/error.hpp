@@ -24,10 +24,12 @@
 
 namespace astra {
 
+/** @brief Scheduler 创建失败的机器可读原因。 */
 enum class SchedulerCreationError : std::uint8_t {
     FinalizationStarted = 1,
 };
 
+/** @brief Scheduler 因进程级 Finalization 门禁被拒绝创建。 */
 class ASTRA_EXPORT scheduler_creation_rejected : public std::runtime_error {
 public:
     explicit scheduler_creation_rejected(SchedulerCreationError reason)
@@ -52,6 +54,7 @@ private:
 };
 
 // 任务提交拒绝原因（R-062 / D-087 / D-155）。
+/** @brief 任务提交被拒绝的机器可读原因。 */
 enum class SubmissionError : std::uint8_t {
     Stopping = 1,           // 已请求关停，不再接纳
     Stopped = 2,            // Runtime 已停止
@@ -59,6 +62,7 @@ enum class SubmissionError : std::uint8_t {
 };
 
 // 任务提交拒绝异常（R-062 / D-087）。
+/** @brief 任务提交因生命周期或容量策略被拒绝。 */
 class ASTRA_EXPORT submission_rejected : public std::runtime_error {
 public:
     explicit submission_rejected(SubmissionError reason)
@@ -87,6 +91,7 @@ private:
 };
 
 // 任务取消异常（R-050 / D-057 / D-058）。
+/** @brief 协作式取消信号，在任务取消点抛出。 */
 class ASTRA_EXPORT task_cancelled : public std::exception {
 public:
     task_cancelled() noexcept = default;
@@ -96,6 +101,7 @@ public:
 };
 
 // 帮助等待深度超限异常（R-059 / D-079）。
+/** @brief Worker helping 嵌套深度超过配置上限。 */
 class ASTRA_EXPORT helping_depth_exceeded : public std::runtime_error {
 public:
     helping_depth_exceeded()
@@ -103,6 +109,7 @@ public:
 };
 
 // Graph 结构校验失败原因（R-069 / D-105）。
+/** @brief TaskGraph 结构校验失败的机器可读原因。 */
 enum class GraphValidationError : std::uint8_t {
     ForeignNode = 1,
     SelfEdge = 2,
@@ -111,6 +118,7 @@ enum class GraphValidationError : std::uint8_t {
 };
 
 // Graph 结构校验失败异常（R-069 / D-105）。
+/** @brief TaskGraph 在 freeze() 时发现非法结构。 */
 class ASTRA_EXPORT graph_validation_error : public std::logic_error {
 public:
     explicit graph_validation_error(GraphValidationError reason,

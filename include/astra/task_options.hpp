@@ -18,6 +18,7 @@
 namespace astra {
 
 // 任务优先级。数值越大越优先；未知值在提交时抛 invalid_argument（R-080 / D-129）。
+/** @brief 任务优先级，数值越大越优先。 */
 enum class Priority : std::uint8_t {
     Low = 0,
     Normal = 1,
@@ -25,6 +26,7 @@ enum class Priority : std::uint8_t {
     Critical = 3,
 };
 
+/** @brief 判断 Priority 是否为已知枚举值。 */
 inline constexpr bool is_valid_priority(Priority p) noexcept {
     return static_cast<std::uint8_t>(p) <= static_cast<std::uint8_t>(Priority::Critical);
 }
@@ -37,6 +39,7 @@ inline void validate_priority(Priority p) {
 }
 
 // 首次开始的绝对截止时刻（steady_clock）。默认构造为 min，表示未指定（R-082 / D-132）。
+/** @brief 任务首次开始时刻的绝对 deadline。 */
 class TaskDeadline {
 public:
     TaskDeadline() noexcept : target_(std::chrono::steady_clock::time_point::min()) {}
@@ -86,6 +89,7 @@ private:
 };
 
 // 首次 start 相对 deadline 的结论。无 deadline 为 None。
+/** @brief 任务首次开始相对 deadline 的结论。 */
 enum class DeadlineDisposition : std::uint8_t {
     None = 0,
     Met = 1,
@@ -93,6 +97,7 @@ enum class DeadlineDisposition : std::uint8_t {
 };
 
 // 单次提交的 priority/deadline。值类型，提交时拷入任务，之后不可改（R-080 / R-082）。
+/** @brief 单次提交使用的 priority 与可选 deadline。 */
 struct TaskOptions {
     Priority priority{Priority::Normal};
     std::optional<TaskDeadline> deadline{};
