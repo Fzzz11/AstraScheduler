@@ -123,6 +123,9 @@ private:
         ~LocalQueues();
 
         LocalDequeBackend backend;
+        [[nodiscard]] bool uses_chase_lev() const noexcept {
+            return backend == LocalDequeBackend::ChaseLevLockFree;
+        }
         mutable std::mutex locked_mutex;
         std::array<std::deque<QueuedTask>, 4> locked_bands;
         std::array<std::unique_ptr<ChaseLevDeque<TaskInvokerBase*>>, 4> chase_lev_bands;

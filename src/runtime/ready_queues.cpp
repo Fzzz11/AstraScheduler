@@ -32,7 +32,7 @@ bool ReadyQueues::EdfEntry::operator>(const EdfEntry& other) const noexcept {
 
 ReadyQueues::LocalQueues::LocalQueues(LocalDequeBackend selected_backend)
     : backend(selected_backend) {
-    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+    if (uses_chase_lev()) {
         for (auto& band : chase_lev_bands) {
             band = std::make_unique<ChaseLevDeque<TaskInvokerBase*>>();
         }
@@ -119,7 +119,7 @@ bool ReadyQueues::IntrusiveFifo::any_resume() const noexcept {
 }
 
 ReadyQueues::LocalQueues::~LocalQueues() {
-    if (backend != LocalDequeBackend::ChaseLevLockFree) {
+    if (!uses_chase_lev()) {
         return;
     }
     for (auto& band : chase_lev_bands) {
@@ -141,7 +141,7 @@ ReadyQueues::LocalQueues::~LocalQueues() {
 
 bool ReadyQueues::LocalQueues::push(QueuedTask& task, Priority priority) {
     const auto band_index = static_cast<std::size_t>(priority);
-    if (backend != LocalDequeBackend::ChaseLevLockFree) {
+    if (!uses_chase_lev()) {
         std::lock_guard<std::mutex> lock(locked_mutex);
         locked_bands[band_index].push_back(std::move(task));
         return true;
@@ -192,7 +192,7 @@ bool ReadyQueues::choose_local_band(
 bool ReadyQueues::LocalQueues::claim_back(
     std::size_t& calendar_index,
     QueuedTask& out) {
-    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+    if (uses_chase_lev()) {
         return claim_chase_lev(calendar_index, true, out);
     }
     std::lock_guard<std::mutex> lock(locked_mutex);
@@ -202,7 +202,7 @@ bool ReadyQueues::LocalQueues::claim_back(
 bool ReadyQueues::LocalQueues::steal_front(
     std::size_t& calendar_index,
     QueuedTask& out) {
-    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+    if (uses_chase_lev()) {
         return claim_chase_lev(calendar_index, false, out);
     }
     std::lock_guard<std::mutex> lock(locked_mutex);
@@ -210,7 +210,7 @@ bool ReadyQueues::LocalQueues::steal_front(
 }
 
 bool ReadyQueues::LocalQueues::empty() const {
-    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+    if (uses_chase_lev()) {
         return chase_lev_bands[0]->empty() && chase_lev_bands[1]->empty() &&
                chase_lev_bands[2]->empty() && chase_lev_bands[3]->empty();
     }
@@ -275,7 +275,7 @@ bool ReadyQueues::LocalQueues::claim_chase_lev(
 
 void ReadyQueues::LocalQueues::cancel_unstarted(
     std::vector<QueuedTask>& resumes) noexcept {
-    if (backend == LocalDequeBackend::ChaseLevLockFree) {
+    if (uses_chase_lev()) {
         std::vector<QueuedTask> retained_resumes;
         for (auto& band : chase_lev_bands) {
             while (true) {
@@ -325,7 +325,7 @@ void ReadyQueues::LocalQueues::cancel_unstarted(
 }
 
 void ReadyQueues::LocalQueues::set_growth_failure_for_testing(bool inject) noexcept {
-    if (backend != LocalDequeBackend::ChaseLevLockFree) {
+    if (!uses_chase_lev()) {
         return;
     }
     for (auto& band : chase_lev_bands) {
@@ -336,7 +336,7 @@ void ReadyQueues::LocalQueues::set_growth_failure_for_testing(bool inject) noexc
 void ReadyQueues::LocalQueues::set_band_maintenance_for_testing(
     Priority priority,
     bool enabled) noexcept {
-    if (backend != LocalDequeBackend::ChaseLevLockFree) {
+    if (!uses_chase_lev()) {
         return;
     }
     chase_lev_bands[static_cast<std::size_t>(priority)]->set_maintenance_for_testing(
