@@ -4,6 +4,7 @@
 #include <astra/scheduler_options.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -74,6 +75,51 @@ void test_R068_quiescent_rebase_high_watermark() {
 }
 
 // -----------------------------------------------------------------------------
+// 2b. R-068 / D-103: 空队列在 canonical zero 上 pop 不得 underflow。
+// -----------------------------------------------------------------------------
+void test_R068_empty_pop_at_zero_does_not_underflow() {
+    astra::detail::ChaseLevDeque<int> deque(8);
+    int val = 0;
+    TEST_ASSERT(deque.pop(val) == astra::detail::DequeResultStatus::Empty);
+    TEST_ASSERT(deque.size() == 0);
+    TEST_ASSERT(deque.bottom_for_testing() == 0);
+    TEST_ASSERT(deque.top_for_testing() == 0);
+    TEST_ASSERT(deque.push(3));
+    TEST_ASSERT(deque.pop(val) == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(val == 3);
+}
+
+// -----------------------------------------------------------------------------
+// 2c. R-068 / D-101: owner push 在高水位必须进入生产 rebase，而不是继续累加索引。
+// -----------------------------------------------------------------------------
+void test_R068_owner_push_rebases_high_watermark() {
+    astra::detail::ChaseLevDeque<int> deque(8);
+    constexpr std::uint64_t kHigh = UINT64_C(1) << 58;
+    deque.set_test_indices(kHigh, kHigh);
+    TEST_ASSERT(deque.empty());
+    TEST_ASSERT(deque.push(7));
+    TEST_ASSERT(deque.bottom_for_testing() == 1);
+    TEST_ASSERT(deque.top_for_testing() == 0);
+    int val = 0;
+    TEST_ASSERT(deque.pop(val) == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(val == 7);
+}
+
+// -----------------------------------------------------------------------------
+// 2d. R-068 / D-101 / D-102: rebase maintenance 期间新 steal 返回 Retry，不是 Empty。
+// -----------------------------------------------------------------------------
+void test_R068_steal_retries_during_rebase_maintenance() {
+    astra::detail::ChaseLevDeque<int> deque(8);
+    TEST_ASSERT(deque.push(1));
+    deque.set_maintenance_for_testing(true);
+    int val = 0;
+    TEST_ASSERT(deque.steal(val) == astra::detail::DequeResultStatus::Retry);
+    deque.set_maintenance_for_testing(false);
+    TEST_ASSERT(deque.steal(val) == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(val == 1);
+}
+
+// -----------------------------------------------------------------------------
 // 3. R-101 / D-162 / D-167: capability 精确反映生产 ReadyQueues backend。
 // -----------------------------------------------------------------------------
 void test_R101_scheduler_capabilities_reflect_chase_lev_lock_free() {
@@ -107,6 +153,9 @@ int main() {
     std::printf("Running astra_chase_lev_indices_test...\n");
     test_R068_boundary_states_three_way_result();
     test_R068_quiescent_rebase_high_watermark();
+    test_R068_empty_pop_at_zero_does_not_underflow();
+    test_R068_owner_push_rebases_high_watermark();
+    test_R068_steal_retries_during_rebase_maintenance();
     test_R101_scheduler_capabilities_reflect_chase_lev_lock_free();
     std::printf("All AST-027 Chase-Lev indices & backend truth tests passed successfully!\n");
     return 0;

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <thread>
 #include <vector>
 
 // ============================================================================
@@ -173,11 +174,11 @@ public:
         explicit Buffer(std::size_t cap)
             : capacity(cap), cells(std::make_unique<std::atomic<T>[]>(cap)) {}
 
-        void store_cell(std::int64_t i, T item, std::memory_order order) noexcept {
+        void store_cell(std::uint64_t i, T item, std::memory_order order) noexcept {
             cells[static_cast<std::size_t>(i) & (capacity - 1)].store(item, order);
         }
 
-        T load_cell(std::int64_t i, std::memory_order order) const noexcept {
+        T load_cell(std::uint64_t i, std::memory_order order) const noexcept {
             return cells[static_cast<std::size_t>(i) & (capacity - 1)].load(order);
         }
     };
@@ -194,19 +195,28 @@ public:
     ChaseLevDeque(const ChaseLevDeque&) = delete;
     ChaseLevDeque& operator=(const ChaseLevDeque&) = delete;
 
-    // Owner Bottom Push (D-098 / D-099 / D-100):
-    // relaxed load bottom -> acquire load top -> relaxed store cell -> release fence -> relaxed store bottom
-    // 若需要扩容且分配失败，返回 false，调用方回退至 Global Injection Queue (D-100)
+    // Owner Bottom Push (D-098 / D-099 / D-100 / D-101):
+    // 高水位先 quiescent rebase；relaxed load bottom -> acquire load top ->
+    // relaxed store cell -> release fence -> relaxed store bottom。
+    // 扩容失败返回 false，调用方回退至 Global Injection Queue (D-100)。
     bool push(T item) {
-        std::int64_t b = bottom_.load(std::memory_order_relaxed);
-        std::int64_t t = top_.load(std::memory_order_acquire);
+        std::uint64_t b = bottom_.load(std::memory_order_relaxed);
+        std::uint64_t t = top_.load(std::memory_order_acquire);
+        if (b >= kDefaultRebaseHighWatermark || t >= kDefaultRebaseHighWatermark) {
+            (void)maybe_quiescent_rebase();
+            b = bottom_.load(std::memory_order_relaxed);
+            t = top_.load(std::memory_order_acquire);
+        }
         Buffer* buf = active_buffer_.load(std::memory_order_relaxed);
+        if (buf == nullptr || b < t) {
+            return false;
+        }
 
-        // 始终保留一个空 cell（D-099）
-        if (b - t >= static_cast<std::int64_t>(buf->capacity - 1)) {
+        // 始终保留一个空 cell（D-099 / D-103）
+        if (b - t >= static_cast<std::uint64_t>(buf->capacity - 1)) {
             buf = grow(b, t, buf);
             if (buf == nullptr) {
-                return false; // 扩容失败，触发 fallback 到 Global 队列 (D-100)
+                return false;
             }
         }
 
@@ -216,25 +226,31 @@ public:
         return true;
     }
 
-    // Owner Bottom Pop (D-098):
-    // relaxed store bottom-1 -> seq_cst fence -> relaxed load top -> last-item seq_cst CAS
+    // Owner Bottom Pop (D-098 / D-103):
+    // bottom==0 时不得 unsigned underflow；空结果在高水位触发 rebase。
     DequeResultStatus pop(T& out) {
-        std::int64_t b = bottom_.load(std::memory_order_relaxed) - 1;
+        std::uint64_t b = bottom_.load(std::memory_order_relaxed);
+        if (b == 0) {
+            (void)maybe_quiescent_rebase();
+            return DequeResultStatus::Empty;
+        }
         Buffer* buf = active_buffer_.load(std::memory_order_relaxed);
+        --b;
         bottom_.store(b, std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        std::int64_t t = top_.load(std::memory_order_relaxed);
+        std::uint64_t t = top_.load(std::memory_order_relaxed);
 
         if (t <= b) {
             T item = buf->load_cell(b, std::memory_order_relaxed);
             if (t == b) {
-                // 争抢最后一个元素：以 seq_cst CAS 与并发 thief 决胜，失败 relaxed
-                if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+                if (top_.compare_exchange_strong(
+                        t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
                     bottom_.store(b + 1, std::memory_order_relaxed);
                     out = item;
                     return DequeResultStatus::Success;
                 }
                 bottom_.store(b + 1, std::memory_order_relaxed);
+                (void)maybe_quiescent_rebase();
                 return DequeResultStatus::Empty;
             }
             out = item;
@@ -242,38 +258,50 @@ public:
         }
 
         bottom_.store(b + 1, std::memory_order_relaxed);
+        (void)maybe_quiescent_rebase();
         return DequeResultStatus::Empty;
     }
 
-    // Thief Top Steal (D-098):
-    // acquire load top -> seq_cst fence -> acquire load bottom -> acquire load buffer -> relaxed load cell -> seq_cst CAS
+    // Thief Top Steal (D-098 / D-101 / D-102):
+    // maintenance 期间返回 Retry；active-thief guard 双检后才进入 cell。
     DequeResultStatus steal(T& out) {
-        std::int64_t t = top_.load(std::memory_order_acquire);
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        std::int64_t b = bottom_.load(std::memory_order_acquire);
-
-        if (t < b) {
-            Buffer* buf = active_buffer_.load(std::memory_order_acquire);
-            T item = buf->load_cell(t, std::memory_order_relaxed);
-            if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
-                out = item;
-                return DequeResultStatus::Success;
-            }
+        if (maintenance_.load(std::memory_order_acquire)) {
+            return DequeResultStatus::Retry;
+        }
+        active_thieves_.fetch_add(1, std::memory_order_acq_rel);
+        if (maintenance_.load(std::memory_order_acquire)) {
+            active_thieves_.fetch_sub(1, std::memory_order_release);
             return DequeResultStatus::Retry;
         }
 
-        return DequeResultStatus::Empty;
+        std::uint64_t t = top_.load(std::memory_order_acquire);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        std::uint64_t b = bottom_.load(std::memory_order_acquire);
+        DequeResultStatus status = DequeResultStatus::Empty;
+        if (t < b) {
+            Buffer* buf = active_buffer_.load(std::memory_order_acquire);
+            T item = buf->load_cell(t, std::memory_order_relaxed);
+            if (top_.compare_exchange_strong(
+                    t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+                out = item;
+                status = DequeResultStatus::Success;
+            } else {
+                status = DequeResultStatus::Retry;
+            }
+        }
+        active_thieves_.fetch_sub(1, std::memory_order_release);
+        return status;
     }
 
     bool empty() const noexcept {
-        std::int64_t b = bottom_.load(std::memory_order_relaxed);
-        std::int64_t t = top_.load(std::memory_order_acquire);
+        std::uint64_t b = bottom_.load(std::memory_order_relaxed);
+        std::uint64_t t = top_.load(std::memory_order_acquire);
         return b <= t;
     }
 
     std::size_t size() const noexcept {
-        std::int64_t b = bottom_.load(std::memory_order_relaxed);
-        std::int64_t t = top_.load(std::memory_order_acquire);
+        std::uint64_t b = bottom_.load(std::memory_order_relaxed);
+        std::uint64_t t = top_.load(std::memory_order_acquire);
         return (b > t) ? static_cast<std::size_t>(b - t) : 0;
     }
 
@@ -287,28 +315,74 @@ public:
     }
 
     static constexpr bool is_lock_free() noexcept {
-        return std::atomic<std::int64_t>::is_always_lock_free &&
+        return std::atomic<std::uint64_t>::is_always_lock_free &&
                std::atomic<Buffer*>::is_always_lock_free &&
                std::atomic<T>::is_always_lock_free;
     }
 
     // Quiescent Rebase (R-068 / D-101):
-    // 仅在队列静止为空时对高水位索引执行安全归零，不依赖无符号溢出环绕
+    // 设置 maintenance，等待 active thief 归零后把 live interval 规范化到 0。
     bool maybe_quiescent_rebase(
-        std::int64_t high_watermark = kDefaultRebaseHighWatermark) noexcept {
-        std::int64_t b = bottom_.load(std::memory_order_relaxed);
-        std::int64_t t = top_.load(std::memory_order_relaxed);
-        if (b == t && b >= high_watermark) {
-            top_.store(0, std::memory_order_relaxed);
-            bottom_.store(0, std::memory_order_relaxed);
-            return true;
+        std::uint64_t high_watermark = kDefaultRebaseHighWatermark) noexcept {
+        std::uint64_t b = bottom_.load(std::memory_order_relaxed);
+        std::uint64_t t = top_.load(std::memory_order_relaxed);
+        if (b < high_watermark && t < high_watermark) {
+            return false;
         }
-        return false;
+
+        maintenance_.store(true, std::memory_order_release);
+        while (active_thieves_.load(std::memory_order_acquire) != 0) {
+            std::this_thread::yield();
+        }
+
+        b = bottom_.load(std::memory_order_relaxed);
+        t = top_.load(std::memory_order_acquire);
+        Buffer* buf = active_buffer_.load(std::memory_order_acquire);
+        if (buf == nullptr || b < t) {
+            maintenance_.store(false, std::memory_order_release);
+            return false;
+        }
+
+        const std::uint64_t live = b - t;
+        if (live > 0) {
+            try {
+                std::vector<T> snapshot;
+                snapshot.reserve(static_cast<std::size_t>(live));
+                for (std::uint64_t i = 0; i < live; ++i) {
+                    snapshot.push_back(buf->load_cell(t + i, std::memory_order_relaxed));
+                }
+                for (std::uint64_t i = 0; i < live; ++i) {
+                    buf->store_cell(i, snapshot[static_cast<std::size_t>(i)],
+                                    std::memory_order_relaxed);
+                }
+            } catch (...) {
+                maintenance_.store(false, std::memory_order_release);
+                return false;
+            }
+        }
+
+        std::atomic_thread_fence(std::memory_order_release);
+        top_.store(0, std::memory_order_relaxed);
+        bottom_.store(live, std::memory_order_relaxed);
+        maintenance_.store(false, std::memory_order_release);
+        return true;
     }
 
-    void set_test_indices(std::int64_t t, std::int64_t b) noexcept {
+    void set_test_indices(std::uint64_t t, std::uint64_t b) noexcept {
         top_.store(t, std::memory_order_relaxed);
         bottom_.store(b, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] std::uint64_t top_for_testing() const noexcept {
+        return top_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] std::uint64_t bottom_for_testing() const noexcept {
+        return bottom_.load(std::memory_order_relaxed);
+    }
+
+    void set_maintenance_for_testing(bool enabled) noexcept {
+        maintenance_.store(enabled, std::memory_order_release);
     }
 
     void set_inject_growth_failure(bool inject) noexcept {
@@ -316,20 +390,21 @@ public:
     }
 
 private:
-    static constexpr std::int64_t kDefaultRebaseHighWatermark = (INT64_C(1) << 58);
+    static constexpr std::uint64_t kDefaultRebaseHighWatermark = (UINT64_C(1) << 58);
 
-    Buffer* grow(std::int64_t b, std::int64_t t, Buffer* old_buf) {
+    Buffer* grow(std::uint64_t b, std::uint64_t t, Buffer* old_buf) {
         if (inject_growth_failure_.load(std::memory_order_relaxed)) {
             return nullptr;
         }
         // Checked capacity doubling (R-068 / D-103)
-        if (old_buf->capacity > (static_cast<std::size_t>(-1) / 2)) {
+        if (old_buf->capacity > (static_cast<std::size_t>(-1) / 2) ||
+            old_buf->capacity >= (static_cast<std::size_t>(1) << 62)) {
             return nullptr;
         }
         try {
             std::size_t new_cap = old_buf->capacity * 2;
             auto new_buf = std::make_unique<Buffer>(new_cap);
-            for (std::int64_t i = t; i < b; ++i) {
+            for (std::uint64_t i = t; i < b; ++i) {
                 T val = old_buf->load_cell(i, std::memory_order_relaxed);
                 new_buf->store_cell(i, val, std::memory_order_relaxed);
             }
@@ -342,11 +417,13 @@ private:
         }
     }
 
-    std::atomic<std::int64_t> top_;
-    std::atomic<std::int64_t> bottom_;
+    std::atomic<std::uint64_t> top_;
+    std::atomic<std::uint64_t> bottom_;
     std::atomic<Buffer*> active_buffer_;
     std::vector<std::unique_ptr<Buffer>> history_buffers_;
     std::atomic<bool> inject_growth_failure_{false};
+    std::atomic<bool> maintenance_{false};
+    std::atomic<std::uint32_t> active_thieves_{0};
 };
 
 }  // namespace astra::detail
