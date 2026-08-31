@@ -7,7 +7,7 @@
 namespace astra::detail {
 
 LocalDequeBackend ReadyQueues::preferred_local_backend() noexcept {
-    return ChaseLevDeque<TaskInvokerBase*>::is_lock_free()
+    return ChaseLevDeque<ReadyLinkedInvoker*>::is_lock_free()
                ? LocalDequeBackend::ChaseLevLockFree
                : LocalDequeBackend::Locked;
 }
@@ -34,14 +34,14 @@ ReadyQueues::LocalQueues::LocalQueues(LocalDequeBackend selected_backend)
     : backend(selected_backend) {
     if (uses_chase_lev()) {
         for (auto& band : chase_lev_bands) {
-            band = std::make_unique<ChaseLevDeque<TaskInvokerBase*>>();
+            band = std::make_unique<ChaseLevDeque<ReadyLinkedInvoker*>>();
         }
     }
 }
 
 ReadyQueues::IntrusiveFifo::~IntrusiveFifo() {
     while (head != nullptr) {
-        TaskInvokerBase* raw = head;
+        ReadyLinkedInvoker* raw = head;
         head = raw->ready_next;
         raw->ready_next = nullptr;
         delete raw;
@@ -63,7 +63,7 @@ ReadyQueues::IntrusiveFifo& ReadyQueues::IntrusiveFifo::operator=(
         return *this;
     }
     while (head != nullptr) {
-        TaskInvokerBase* raw = head;
+        ReadyLinkedInvoker* raw = head;
         head = raw->ready_next;
         raw->ready_next = nullptr;
         delete raw;
@@ -80,7 +80,8 @@ ReadyQueues::IntrusiveFifo& ReadyQueues::IntrusiveFifo::operator=(
 void ReadyQueues::IntrusiveFifo::push_back(
     std::unique_ptr<TaskInvokerBase> task,
     bool is_external) noexcept {
-    TaskInvokerBase* raw = task.release();
+    auto linked = adopt_ready_linked(std::move(task));
+    ReadyLinkedInvoker* raw = linked.release();
     raw->ready_next = nullptr;
     raw->ready_is_external = is_external;
     if (tail == nullptr) {
@@ -96,7 +97,7 @@ bool ReadyQueues::IntrusiveFifo::pop_front(QueuedTask& out) noexcept {
     if (head == nullptr) {
         return false;
     }
-    TaskInvokerBase* raw = head;
+    ReadyLinkedInvoker* raw = head;
     head = raw->ready_next;
     if (head == nullptr) {
         tail = nullptr;
@@ -110,7 +111,7 @@ bool ReadyQueues::IntrusiveFifo::pop_front(QueuedTask& out) noexcept {
 }
 
 bool ReadyQueues::IntrusiveFifo::any_resume() const noexcept {
-    for (TaskInvokerBase* node = head; node != nullptr; node = node->ready_next) {
+    for (ReadyLinkedInvoker* node = head; node != nullptr; node = node->ready_next) {
         if (node->is_resume_segment()) {
             return true;
         }
@@ -123,7 +124,7 @@ ReadyQueues::LocalQueues::~LocalQueues() {
         return;
     }
     for (auto& band : chase_lev_bands) {
-        TaskInvokerBase* raw = nullptr;
+        ReadyLinkedInvoker* raw = nullptr;
         while (true) {
             const auto status = band->steal(raw);
             if (status == DequeResultStatus::Retry) {
@@ -147,13 +148,15 @@ bool ReadyQueues::LocalQueues::push(QueuedTask& task, Priority priority) {
         return true;
     }
 
-    TaskInvokerBase* raw = task.invoker.get();
+    auto linked = adopt_ready_linked(std::move(task.invoker));
+    ReadyLinkedInvoker* raw = linked.get();
     raw->ready_next = nullptr;
     raw->ready_is_external = task.is_external;
     if (!chase_lev_bands[band_index]->push(raw)) {
+        task.invoker = std::move(linked);
         return false;
     }
-    (void)task.invoker.release();
+    (void)linked.release();
     return true;
 }
 
@@ -226,7 +229,7 @@ bool ReadyQueues::LocalQueues::claim_chase_lev(
     const Priority target = kPriorityCalendar[calendar_index % kPriorityCalendarLength];
     auto claim = [&](Priority priority) -> DequeResultStatus {
         auto& band = *chase_lev_bands[static_cast<std::size_t>(priority)];
-        TaskInvokerBase* raw = nullptr;
+        ReadyLinkedInvoker* raw = nullptr;
         DequeResultStatus status = DequeResultStatus::Empty;
         if (owner) {
             status = band.pop(raw);
@@ -278,7 +281,7 @@ void ReadyQueues::LocalQueues::cancel_unstarted(
     if (uses_chase_lev()) {
         for (auto& band : chase_lev_bands) {
             while (true) {
-                TaskInvokerBase* raw = nullptr;
+                ReadyLinkedInvoker* raw = nullptr;
                 const auto status = band->steal(raw);
                 if (status == DequeResultStatus::Retry) {
                     continue;

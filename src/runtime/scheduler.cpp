@@ -1039,7 +1039,7 @@ RuntimeId current_worker_runtime_id() noexcept {
 }
 
 namespace {
-class FunctionTaskInvoker : public TaskInvokerBase {
+class FunctionTaskInvoker : public ReadyLinkedInvoker {
 public:
     explicit FunctionTaskInvoker(std::function<void()> fn) : fn_(std::move(fn)) {}
     void execute() override {

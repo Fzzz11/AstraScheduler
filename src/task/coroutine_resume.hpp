@@ -2,6 +2,7 @@
 #define ASTRA_COROUTINE_RESUME_HPP
 
 #include "task_control_block.hpp"
+#include "ready_linked_invoker.hpp"
 
 #include <astra/coroutine.hpp>
 
@@ -10,7 +11,7 @@
 
 namespace astra::detail {
 
-class CoroutineResumeInvoker final : public TaskInvokerBase {
+class CoroutineResumeInvoker final : public ReadyLinkedInvoker {
 public:
     std::coroutine_handle<> coro;
     std::shared_ptr<TaskControlBlock> tcb;

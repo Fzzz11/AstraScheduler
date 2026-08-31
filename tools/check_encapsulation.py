@@ -85,6 +85,14 @@ int main() {
   (void)block;
 }
 """,
+    "ready_queue_link_fields": """
+#include <astra/task_handle.hpp>
+int main() {
+  astra::detail::TaskInvokerBase* invoker = nullptr;
+  invoker->ready_next = nullptr;
+  invoker->ready_is_external = false;
+}
+""",
 }
 
 
@@ -115,6 +123,10 @@ def audit_installed_headers() -> list[str]:
                 problems.append(f"installed header {rel} erases F with std::function")
         if invoker_try_start.search(text):
             problems.append(f"installed header {rel} inlines try_start in TaskInvokerModel::execute")
+        if "ready_next" in text or "ready_is_external" in text:
+            problems.append(
+                f"installed header {rel} exposes Ready Queue intrusive link fields"
+            )
     return problems
 
 

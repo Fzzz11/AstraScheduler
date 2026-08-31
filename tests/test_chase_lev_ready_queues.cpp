@@ -29,7 +29,7 @@
 
 namespace {
 
-class TestInvoker : public astra::detail::TaskInvokerBase {
+class TestInvoker : public astra::detail::ReadyLinkedInvoker {
 public:
     explicit TestInvoker(int identity) : identity_(identity) {}
 
@@ -51,7 +51,7 @@ public:
 
 void test_preferred_backend_matches_invoker_cell_atomics() {
     const auto expected =
-        astra::detail::ChaseLevDeque<astra::detail::TaskInvokerBase*>::is_lock_free()
+        astra::detail::ChaseLevDeque<astra::detail::ReadyLinkedInvoker*>::is_lock_free()
             ? astra::LocalDequeBackend::ChaseLevLockFree
             : astra::LocalDequeBackend::Locked;
     TEST_ASSERT(astra::detail::ReadyQueues::preferred_local_backend() == expected);

@@ -3,6 +3,7 @@
 
 #include "runtime/admission_controller.hpp"
 #include "runtime/runtime_metrics.hpp"
+#include "task/ready_linked_invoker.hpp"
 #include "scheduling/chase_lev_deque.hpp"
 
 #include <astra/capabilities.hpp>
@@ -100,8 +101,8 @@ private:
     };
 
     struct IntrusiveFifo {
-        TaskInvokerBase* head{nullptr};
-        TaskInvokerBase* tail{nullptr};
+        ReadyLinkedInvoker* head{nullptr};
+        ReadyLinkedInvoker* tail{nullptr};
         std::size_t count{0};
 
         IntrusiveFifo() = default;
@@ -128,7 +129,7 @@ private:
         }
         mutable std::mutex locked_mutex;
         std::array<std::deque<QueuedTask>, 4> locked_bands;
-        std::array<std::unique_ptr<ChaseLevDeque<TaskInvokerBase*>>, 4> chase_lev_bands;
+        std::array<std::unique_ptr<ChaseLevDeque<ReadyLinkedInvoker*>>, 4> chase_lev_bands;
 
         bool push(QueuedTask& task, Priority priority);
         bool claim_back(std::size_t& calendar_index, QueuedTask& out);

@@ -2,6 +2,7 @@
 
 #include "graph_runtime_port.hpp"
 #include "graph_shared_state.hpp"
+#include "task/ready_linked_invoker.hpp"
 
 #include <astra/coroutine.hpp>
 #include <astra/error.hpp>
@@ -44,7 +45,7 @@ private:
 
 }  // namespace
 
-struct GraphCoroutineResumeWrapper final : TaskInvokerBase {
+struct GraphCoroutineResumeWrapper final : ReadyLinkedInvoker {
     std::unique_ptr<TaskInvokerBase> inner;
     std::shared_ptr<GraphRunSharedState> graph_state;
     std::shared_ptr<TaskHandle<void>::ResultCell> task_state;

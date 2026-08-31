@@ -2,6 +2,7 @@
 // 值存储在 TaskHandle 的 private nested 结果格中（R-119 / D-173）。
 
 #include "task_control_block.hpp"
+#include "ready_linked_invoker.hpp"
 
 #include <chrono>
 #include <utility>
@@ -330,7 +331,7 @@ void tcb_mark_observed(const TaskControlBlock& tcb) noexcept {
     tcb.mark_observed();
 }
 
-class SubmittedInvokerGate final : public TaskInvokerBase {
+class SubmittedInvokerGate final : public ReadyLinkedInvoker {
 public:
     SubmittedInvokerGate(std::unique_ptr<TaskInvokerBase> inner, std::shared_ptr<TaskControlBlock> tcb)
         : inner_(std::move(inner)), tcb_(std::move(tcb)) {}
