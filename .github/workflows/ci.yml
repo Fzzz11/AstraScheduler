@@ -5,6 +5,9 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   release-rule-gates:
     name: Linux release rule gates (R-004, R-005, R-094, R-112)
@@ -15,7 +18,109 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          # 与本机 WSL 基线一致：WSL 默认 python3 为 3.8.10（仅 python3.8）
           python-version: "3.8"
       - name: Approved-spec and milestone release gate audit
         run: python -X utf8 tools/check_release_gates.py
+
+  debug-tests:
+    name: ${{ matrix.compiler }} Debug build and tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: GCC
+            cxx: g++
+          - compiler: Clang
+            cxx: clang++
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build clang
+      - name: Show compiler and CMake versions
+        run: |
+          ${{ matrix.cxx }} --version
+          cmake --version
+      - name: Configure
+        run: >-
+          cmake -S . -B build/ci-${{ matrix.compiler }}
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+      - name: Build
+        run: cmake --build build/ci-${{ matrix.compiler }} --parallel 2
+      - name: Test
+        run: ctest --test-dir build/ci-${{ matrix.compiler }} --output-on-failure
+
+  sanitizers:
+    name: ${{ matrix.name }} sanitizer build and tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan-UBSan
+            cxx: g++
+            option: -DASTRA_ENABLE_SANITIZERS=ON
+          - name: TSan
+            cxx: g++
+            option: -DASTRA_ENABLE_TSAN=ON
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build g++
+      - name: Configure
+        run: >-
+          cmake -S . -B build/ci-${{ matrix.name }}
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          ${{ matrix.option }}
+      - name: Build
+        run: cmake --build build/ci-${{ matrix.name }} --parallel 2
+      - name: Test
+        run: ctest --test-dir build/ci-${{ matrix.name }} --output-on-failure
+
+  coverage:
+    name: GCC coverage baseline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install toolchain and gcovr
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build g++ gcovr
+      - name: Configure
+        run: >-
+          cmake -S . -B build/ci-coverage
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=g++
+          -DCMAKE_CXX_FLAGS=--coverage
+          -DCMAKE_EXE_LINKER_FLAGS=--coverage
+      - name: Build
+        run: cmake --build build/ci-coverage --parallel 2
+      - name: Test
+        run: ctest --test-dir build/ci-coverage --output-on-failure
+      - name: Generate coverage report
+        run: >-
+          gcovr
+          --root .
+          --object-directory build/ci-coverage
+          --exclude 'build/.*'
+          --exclude 'tests/.*'
+          --exclude 'benchmarks/.*'
+          --xml-pretty
+          --output coverage.xml
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-gcc
+          path: coverage.xml
