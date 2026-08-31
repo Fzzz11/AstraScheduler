@@ -235,7 +235,9 @@ public:
         std::uint64_t b = bottom_.load(std::memory_order_relaxed);
         std::uint64_t t = top_.load(std::memory_order_acquire);
         if (b >= kDefaultRebaseHighWatermark || t >= kDefaultRebaseHighWatermark) {
-            (void)maybe_quiescent_rebase();
+            if (!maybe_quiescent_rebase()) {
+                return false;
+            }
             b = bottom_.load(std::memory_order_relaxed);
             t = top_.load(std::memory_order_acquire);
         }
@@ -365,6 +367,9 @@ public:
         if (b < high_watermark && t < high_watermark) {
             return false;
         }
+        if (inject_rebase_failure_.load(std::memory_order_relaxed)) {
+            return false;
+        }
 
         maintenance_.store(true, std::memory_order_release);
         while (active_thieves_.load(std::memory_order_acquire) != 0) {
@@ -426,6 +431,10 @@ public:
         inject_growth_failure_.store(inject, std::memory_order_relaxed);
     }
 
+    void set_inject_rebase_failure(bool inject) noexcept {
+        inject_rebase_failure_.store(inject, std::memory_order_relaxed);
+    }
+
 private:
     static constexpr std::uint64_t kDefaultRebaseHighWatermark = (UINT64_C(1) << 58);
 
@@ -459,6 +468,7 @@ private:
     std::atomic<Buffer*> active_buffer_;
     std::vector<std::unique_ptr<Buffer>> history_buffers_;
     std::atomic<bool> inject_growth_failure_{false};
+    std::atomic<bool> inject_rebase_failure_{false};
     std::atomic<bool> maintenance_{false};
     std::atomic<std::uint32_t> active_thieves_{0};
 };

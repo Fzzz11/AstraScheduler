@@ -99,6 +99,33 @@ void test_R068_owner_push_rebases_high_watermark() {
 }
 
 // -----------------------------------------------------------------------------
+// 2e. R-068 / D-101: 高水位 rebase 失败时 push 必须返回 false，不得继续累加索引。
+// -----------------------------------------------------------------------------
+void test_R068_owner_push_returns_false_when_rebase_fails() {
+    astra::detail::ChaseLevDeque<int> deque(8);
+    constexpr std::uint64_t kHigh = UINT64_C(1) << 58;
+    deque.set_test_indices(kHigh, kHigh);
+    deque.set_inject_rebase_failure(true);
+    TEST_ASSERT(!deque.push(9));
+    TEST_ASSERT(deque.bottom_for_testing() == kHigh);
+    TEST_ASSERT(deque.top_for_testing() == kHigh);
+    TEST_ASSERT(deque.empty());
+    int ignored = 0;
+    TEST_ASSERT(deque.pop(ignored) == astra::detail::DequeResultStatus::Empty);
+    TEST_ASSERT(deque.steal(ignored) == astra::detail::DequeResultStatus::Empty);
+    TEST_ASSERT(deque.bottom_for_testing() == kHigh);
+    TEST_ASSERT(deque.top_for_testing() == kHigh);
+
+    deque.set_inject_rebase_failure(false);
+    TEST_ASSERT(deque.push(9));
+    TEST_ASSERT(deque.bottom_for_testing() == 1);
+    TEST_ASSERT(deque.top_for_testing() == 0);
+    int val = 0;
+    TEST_ASSERT(deque.pop(val) == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(val == 9);
+}
+
+// -----------------------------------------------------------------------------
 // 2d. R-068 / D-101 / D-102: rebase maintenance 期间新 steal 返回 Retry，不是 Empty。
 // -----------------------------------------------------------------------------
 void test_R068_steal_retries_during_rebase_maintenance() {
@@ -148,6 +175,7 @@ int main() {
     test_R068_quiescent_rebase_high_watermark();
     test_R068_empty_pop_at_zero_does_not_underflow();
     test_R068_owner_push_rebases_high_watermark();
+    test_R068_owner_push_returns_false_when_rebase_fails();
     test_R068_steal_retries_during_rebase_maintenance();
     test_R101_scheduler_capabilities_reflect_chase_lev_lock_free();
     std::printf("All AST-027 Chase-Lev indices & backend truth tests passed successfully!\n");
