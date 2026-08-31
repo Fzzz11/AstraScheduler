@@ -199,11 +199,69 @@ public:
     }
 
 private:
+    struct SubmissionContext {
+        bool is_internal{false};
+        Priority priority{Priority::Normal};
+        std::optional<TaskDeadline> deadline{std::nullopt};
+        detail::AdmissionDecision decision{detail::AdmissionDecision::Success};
+    };
+
+    SubmissionContext prepare_submission(
+        std::optional<TaskOptions> options,
+        bool nonblocking) const;
+    static SubmissionError submission_error_for(detail::AdmissionDecision decision);
+
+    template <typename T, typename InvokerFactory>
+    TaskHandle<T> publish_submission(
+        const SubmissionContext& context,
+        InvokerFactory&& make_invoker) {
+        using Cell = typename TaskHandle<T>::ResultCell;
+        std::shared_ptr<Cell> state;
+        try {
+            const TaskId task_id = allocate_task_id();
+            state = std::make_shared<Cell>(task_id, context.priority, context.deadline);
+            auto invoker = std::forward<InvokerFactory>(make_invoker)(state);
+            post_task_invoker(std::move(invoker), !context.is_internal);
+            return TaskHandle<T>(std::move(state));
+        } catch (...) {
+            if (!context.is_internal) {
+                rollback_external_slot();
+            }
+            throw;
+        }
+    }
+
+    template <typename T>
+    std::unique_ptr<detail::TaskInvokerBase> make_spawn_invoker(
+        Task<T>& task,
+        std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
+        void* const impl = impl_.get();
+        auto rescheduler = [impl](std::unique_ptr<detail::TaskInvokerBase> inv) {
+            detail::post_task_on_impl(impl, std::move(inv), false);
+        };
+        state->set_rescheduler(std::move(rescheduler));
+        state->set_timer_functions(
+            [impl](std::chrono::steady_clock::time_point wt,
+                   std::shared_ptr<detail::AwaitHandshake> hs,
+                   std::function<void()> act) {
+                return detail::register_timer_on_impl(
+                    impl, wt, std::move(hs), std::move(act));
+            },
+            [impl](std::uint64_t timer_id) {
+                detail::cancel_timer_on_impl(impl, timer_id);
+            });
+        task.handle().promise().shared_state = state;
+        auto coroutine_handle = task.release_handle();
+        return detail::wrap_submitted_invoker(
+            std::make_unique<detail::CoroutineTaskInvokerModel<T>>(
+                coroutine_handle, state),
+            state->protocol_token());
+    }
+
     template <typename F, typename... Args>
     auto submit_impl(std::optional<TaskOptions> options, F&& f, Args&&... args)
         -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
         using Traits = detail::InvocationTraits<F, Args...>;
-
         static_assert(Traits::is_valid,
             "Callable must be invocable as f(args...) or f(std::stop_token, args...)");
         static_assert(!Traits::returns_reference,
@@ -212,68 +270,24 @@ private:
             "Task result type must be move-constructible (R-058 / D-075).");
 
         using ResultType = typename Traits::ResultType;
-
-        if (!valid()) {
-            throw std::logic_error("operating on empty/moved-from Scheduler");
+        const auto context = prepare_submission(std::move(options), false);
+        if (context.decision != detail::AdmissionDecision::Success) {
+            throw submission_rejected(submission_error_for(context.decision));
         }
-
-        detail::record_metrics_submission_attempt(runtime_id());
-
-        const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
-        const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
-        const bool can_block = !is_worker; // R-061 / D-085: 仅普通非 Worker 线程可 Block
-
-        Priority resolved_priority = Priority::Normal;
-        if (options.has_value()) {
-            validate_priority(options->priority);
-            resolved_priority = options->priority;
-        } else if (is_internal) {
-            resolved_priority = detail::current_executing_task_priority();
-        } else {
-            resolved_priority = Priority::Normal;
-        }
-
-        const std::optional<TaskDeadline> resolved_deadline =
-            options.has_value() ? options->deadline : std::nullopt;
-
-        const auto decision = acquire_admission(can_block, is_internal);
-        if (decision == detail::AdmissionDecision::Stopping) {
-            throw submission_rejected(SubmissionError::Stopping);
-        }
-        if (decision == detail::AdmissionDecision::Stopped) {
-            throw submission_rejected(SubmissionError::Stopped);
-        }
-        if (decision == detail::AdmissionDecision::CapacityExhausted) {
-            throw submission_rejected(SubmissionError::CapacityExhausted);
-        }
-
-        // 强异常安全事务：构造过程抛出异常则回滚 slot
-        std::shared_ptr<typename TaskHandle<ResultType>::ResultCell> state;
-        std::unique_ptr<detail::TaskInvokerBase> invoker;
-
-        try {
-            const TaskId tid = allocate_task_id();
-            state = std::make_shared<typename TaskHandle<ResultType>::ResultCell>(tid, resolved_priority, resolved_deadline);
-            invoker = detail::wrap_submitted_invoker(
-                TaskHandle<ResultType>::template make_invoker<Traits::is_ordinary_invocable>(
-                    state, std::forward<F>(f), std::forward<Args>(args)...),
-                state->protocol_token());
-        } catch (...) {
-            if (!is_internal) {
-                rollback_external_slot();
-            }
-            throw;
-        }
-
-        post_task_invoker(std::move(invoker), !is_internal);
-        return TaskHandle<ResultType>(std::move(state));
+        return publish_submission<ResultType>(
+            context,
+            [&f, &args...](std::shared_ptr<typename TaskHandle<ResultType>::ResultCell> state) {
+                return detail::wrap_submitted_invoker(
+                    TaskHandle<ResultType>::template make_invoker<Traits::is_ordinary_invocable>(
+                        state, std::forward<F>(f), std::forward<Args>(args)...),
+                    state->protocol_token());
+            });
     }
 
     template <typename F, typename... Args>
     auto try_submit_impl(std::optional<TaskOptions> options, F&& f, Args&&... args)
         -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
         using Traits = detail::InvocationTraits<F, Args...>;
-
         static_assert(Traits::is_valid,
             "Callable must be invocable as f(args...) or f(std::stop_token, args...)");
         static_assert(!Traits::returns_reference,
@@ -282,203 +296,50 @@ private:
             "Task result type must be move-constructible (R-058 / D-075).");
 
         using ResultType = typename Traits::ResultType;
-
-        if (!valid()) {
-            throw std::logic_error("operating on empty/moved-from Scheduler");
+        const auto context = prepare_submission(std::move(options), true);
+        if (context.decision != detail::AdmissionDecision::Success) {
+            return SubmissionResult<ResultType>(submission_error_for(context.decision));
         }
-
-        detail::record_metrics_submission_attempt(runtime_id());
-
-        const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
-
-        Priority resolved_priority = Priority::Normal;
-        if (options.has_value()) {
-            validate_priority(options->priority);
-            resolved_priority = options->priority;
-        } else if (is_internal) {
-            resolved_priority = detail::current_executing_task_priority();
-        } else {
-            resolved_priority = Priority::Normal;
-        }
-        const std::optional<TaskDeadline> resolved_deadline =
-            options.has_value() ? options->deadline : std::nullopt;
-
-        // try_submit 永不等待 capacity（R-061 / D-088）
-        const auto decision = acquire_admission(false /* no block */, is_internal);
-        if (decision == detail::AdmissionDecision::Stopping) {
-            return SubmissionResult<ResultType>(SubmissionError::Stopping);
-        }
-        if (decision == detail::AdmissionDecision::Stopped) {
-            return SubmissionResult<ResultType>(SubmissionError::Stopped);
-        }
-        if (decision == detail::AdmissionDecision::CapacityExhausted) {
-            return SubmissionResult<ResultType>(SubmissionError::CapacityExhausted);
-        }
-
-        // 强异常安全事务：构造过程抛出异常则回滚 slot
-        std::shared_ptr<typename TaskHandle<ResultType>::ResultCell> state;
-        std::unique_ptr<detail::TaskInvokerBase> invoker;
-
-        try {
-            const TaskId tid = allocate_task_id();
-            state = std::make_shared<typename TaskHandle<ResultType>::ResultCell>(tid, resolved_priority, resolved_deadline);
-            invoker = detail::wrap_submitted_invoker(
-                TaskHandle<ResultType>::template make_invoker<Traits::is_ordinary_invocable>(
-                    state, std::forward<F>(f), std::forward<Args>(args)...),
-                state->protocol_token());
-        } catch (...) {
-            if (!is_internal) {
-                rollback_external_slot();
-            }
-            throw;
-        }
-
-        post_task_invoker(std::move(invoker), !is_internal);
-        return SubmissionResult<ResultType>(TaskHandle<ResultType>(std::move(state)));
+        return SubmissionResult<ResultType>(publish_submission<ResultType>(
+            context,
+            [&f, &args...](std::shared_ptr<typename TaskHandle<ResultType>::ResultCell> state) {
+                return detail::wrap_submitted_invoker(
+                    TaskHandle<ResultType>::template make_invoker<Traits::is_ordinary_invocable>(
+                        state, std::forward<F>(f), std::forward<Args>(args)...),
+                    state->protocol_token());
+            }));
     }
 
     template <typename T>
     TaskHandle<T> spawn_impl(std::optional<TaskOptions> options, Task<T>&& task) {
-        if (!valid()) {
-            throw std::logic_error("operating on empty/moved-from Scheduler");
-        }
         if (!task.valid()) {
             throw std::logic_error("cannot spawn empty/invalid Task");
         }
-
-        detail::record_metrics_submission_attempt(runtime_id());
-
-        const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
-        const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
-        const bool can_block = !is_worker;
-
-        Priority resolved_priority = Priority::Normal;
-        if (options.has_value()) {
-            validate_priority(options->priority);
-            resolved_priority = options->priority;
-        } else if (is_internal) {
-            resolved_priority = detail::current_executing_task_priority();
-        } else {
-            resolved_priority = Priority::Normal;
+        const auto context = prepare_submission(std::move(options), false);
+        if (context.decision != detail::AdmissionDecision::Success) {
+            throw submission_rejected(submission_error_for(context.decision));
         }
-        const std::optional<TaskDeadline> resolved_deadline =
-            options.has_value() ? options->deadline : std::nullopt;
-
-        const auto decision = acquire_admission(can_block, is_internal);
-        if (decision == detail::AdmissionDecision::Stopping) {
-            throw submission_rejected(SubmissionError::Stopping);
-        }
-        if (decision == detail::AdmissionDecision::Stopped) {
-            throw submission_rejected(SubmissionError::Stopped);
-        }
-        if (decision == detail::AdmissionDecision::CapacityExhausted) {
-            throw submission_rejected(SubmissionError::CapacityExhausted);
-        }
-
-        std::shared_ptr<typename TaskHandle<T>::ResultCell> state;
-        std::unique_ptr<detail::TaskInvokerBase> invoker;
-
-        try {
-            const TaskId tid = allocate_task_id();
-            state = std::make_shared<typename TaskHandle<T>::ResultCell>(tid, resolved_priority, resolved_deadline);
-            void* const impl = impl_.get();
-            auto rescheduler = [impl](std::unique_ptr<detail::TaskInvokerBase> inv) {
-                detail::post_task_on_impl(impl, std::move(inv), false);
-            };
-            state->set_rescheduler(std::move(rescheduler));
-            state->set_timer_functions(
-                [impl](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
-                    return detail::register_timer_on_impl(impl, wt, std::move(hs), std::move(act));
-                },
-                [impl](std::uint64_t tid) {
-                    detail::cancel_timer_on_impl(impl, tid);
-                }
-            );
-            task.handle().promise().shared_state = state;
-            auto coro_h = task.release_handle();
-            invoker = detail::wrap_submitted_invoker(
-                std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state),
-                state->protocol_token());
-        } catch (...) {
-            if (!is_internal) {
-                rollback_external_slot();
-            }
-            throw;
-        }
-
-        post_task_invoker(std::move(invoker), !is_internal);
-        return TaskHandle<T>(std::move(state));
+        return publish_submission<T>(
+            context,
+            [this, &task](std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
+                return make_spawn_invoker(task, std::move(state));
+            });
     }
 
     template <typename T>
     SubmissionResult<T> try_spawn_impl(std::optional<TaskOptions> options, Task<T>&& task) {
-        if (!valid()) {
-            throw std::logic_error("operating on empty/moved-from Scheduler");
-        }
         if (!task.valid()) {
             throw std::logic_error("cannot spawn empty/invalid Task");
         }
-
-        detail::record_metrics_submission_attempt(runtime_id());
-
-        const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
-
-        Priority resolved_priority = Priority::Normal;
-        if (options.has_value()) {
-            validate_priority(options->priority);
-            resolved_priority = options->priority;
-        } else if (is_internal) {
-            resolved_priority = detail::current_executing_task_priority();
-        } else {
-            resolved_priority = Priority::Normal;
+        const auto context = prepare_submission(std::move(options), true);
+        if (context.decision != detail::AdmissionDecision::Success) {
+            return SubmissionResult<T>(submission_error_for(context.decision));
         }
-        const std::optional<TaskDeadline> resolved_deadline =
-            options.has_value() ? options->deadline : std::nullopt;
-
-        const auto decision = acquire_admission(false /* no block */, is_internal);
-        if (decision == detail::AdmissionDecision::Stopping) {
-            return SubmissionResult<T>(SubmissionError::Stopping);
-        }
-        if (decision == detail::AdmissionDecision::Stopped) {
-            return SubmissionResult<T>(SubmissionError::Stopped);
-        }
-        if (decision == detail::AdmissionDecision::CapacityExhausted) {
-            return SubmissionResult<T>(SubmissionError::CapacityExhausted);
-        }
-
-        std::shared_ptr<typename TaskHandle<T>::ResultCell> state;
-        std::unique_ptr<detail::TaskInvokerBase> invoker;
-
-        try {
-            const TaskId tid = allocate_task_id();
-            state = std::make_shared<typename TaskHandle<T>::ResultCell>(tid, resolved_priority, resolved_deadline);
-            void* const impl = impl_.get();
-            auto rescheduler = [impl](std::unique_ptr<detail::TaskInvokerBase> inv) {
-                detail::post_task_on_impl(impl, std::move(inv), false);
-            };
-            state->set_rescheduler(std::move(rescheduler));
-            state->set_timer_functions(
-                [impl](std::chrono::steady_clock::time_point wt, std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
-                    return detail::register_timer_on_impl(impl, wt, std::move(hs), std::move(act));
-                },
-                [impl](std::uint64_t tid) {
-                    detail::cancel_timer_on_impl(impl, tid);
-                }
-            );
-            task.handle().promise().shared_state = state;
-            auto coro_h = task.release_handle();
-            invoker = detail::wrap_submitted_invoker(
-                std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coro_h, state),
-                state->protocol_token());
-        } catch (...) {
-            if (!is_internal) {
-                rollback_external_slot();
-            }
-            throw;
-        }
-
-        post_task_invoker(std::move(invoker), !is_internal);
-        return SubmissionResult<T>(TaskHandle<T>(std::move(state)));
+        return SubmissionResult<T>(publish_submission<T>(
+            context,
+            [this, &task](std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
+                return make_spawn_invoker(task, std::move(state));
+            }));
     }
 
 public:

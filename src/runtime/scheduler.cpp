@@ -269,6 +269,29 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
         }
     }
 
+    void join_workers_and_publish_stopped(bool unregister_reaper) noexcept {
+        const auto t_join_start = std::chrono::steady_clock::now();
+        for (auto& t : worker_threads) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+        worker_threads.clear();
+        const auto t_join_end = std::chrono::steady_clock::now();
+        if (metrics.level == MetricsLevel::Detailed && t_join_end >= t_join_start) {
+            metrics.shard_for_current().runtime_join_latency.record(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    t_join_end - t_join_start).count());
+        }
+
+        const auto current_mode = get_status().shutdown_mode;
+        packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
+        admission.wake_all();
+        if (unregister_reaper) {
+            detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
+        }
+    }
+
     // 同步关闭并在全部 Worker 退出并 join 后发布 Stopped（R-010 / R-012 / R-016 / R-019）
     void shutdown_sync(ShutdownMode mode) {
         if (get_status().state == SchedulerState::Stopped) {
@@ -292,24 +315,8 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
             shutdown_in_progress = true;
             s_lock.unlock();
 
-            const auto t_join_start = std::chrono::steady_clock::now();
-            // Leader 负责 join 全部 worker 线程（恰好 join 一次）
-            for (auto& t : worker_threads) {
-                if (t.joinable()) {
-                    t.join();
-                }
-            }
-            worker_threads.clear();
-            const auto t_join_end = std::chrono::steady_clock::now();
-            if (metrics.level == MetricsLevel::Detailed && t_join_end >= t_join_start) {
-                metrics.shard_for_current().runtime_join_latency.record(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_join_end - t_join_start).count());
-            }
-
-            const auto current_mode = get_status().shutdown_mode;
-            packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
-            admission.wake_all();
-            detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
+            // Leader 负责 join 全部 worker 线程（恰好 join 一次）。
+            join_workers_and_publish_stopped(true);
 
             s_lock.lock();
             shutdown_in_progress = false;
@@ -402,22 +409,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
             shutdown_in_progress = true;
             s_lock.unlock();
 
-            const auto t_join_start = std::chrono::steady_clock::now();
-            for (auto& t : worker_threads) {
-                if (t.joinable()) {
-                    t.join();
-                }
-            }
-            worker_threads.clear();
-            const auto t_join_end = std::chrono::steady_clock::now();
-            if (metrics.level == MetricsLevel::Detailed && t_join_end >= t_join_start) {
-                metrics.shard_for_current().runtime_join_latency.record(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(t_join_end - t_join_start).count());
-            }
-
-            const auto current_mode = get_status().shutdown_mode;
-            packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
-            admission.wake_all();
+            join_workers_and_publish_stopped(false);
 
             s_lock.lock();
             shutdown_in_progress = false;
@@ -720,6 +712,84 @@ void generate_steal_victims(
     }
 }
 
+template <typename CompletionPredicate, typename WaitForTarget>
+void perform_helping_loop(
+    Scheduler::Impl& impl,
+    std::optional<std::chrono::steady_clock::time_point> deadline,
+    CompletionPredicate&& is_complete,
+    std::size_t& local_calendar,
+    std::size_t& global_calendar,
+    std::size_t& steal_calendar,
+    std::array<std::size_t, 4>& deadline_bursts,
+    std::uint64_t& rng_state,
+    WaitForTarget&& wait_for_target) {
+    while (!is_complete()) {
+        if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
+            break;
+        }
+
+        ReadyQueues::QueuedTask task;
+        bool found_task = false;
+
+        if (impl.ready_queues.claim_local(
+                t_current_worker_index, local_calendar, task)) {
+            found_task = true;
+        }
+
+        if (!found_task) {
+            std::unique_lock<std::mutex> lock(impl.lifecycle_mutex);
+            const auto st = Scheduler::Impl::unpack(
+                impl.packed_status.load(std::memory_order_acquire));
+            // R-059 / D-080: Immediate 模式下不得 first-start 新 Task。
+            if (st.state != SchedulerState::Stopped &&
+                st.shutdown_mode != ShutdownMode::Immediate &&
+                impl.ready_queues.claim_global(
+                    global_calendar, deadline_bursts, task)) {
+                found_task = true;
+                if (task.is_external) {
+                    impl.admission.release(1);
+                }
+            }
+        }
+
+        if (!found_task) {
+            std::vector<std::size_t> victims;
+            generate_steal_victims(
+                t_current_worker_index,
+                impl.options.worker_count,
+                impl.options.steal_probe_limit,
+                rng_state,
+                victims);
+            for (std::size_t victim : victims) {
+                if (impl.metrics.level != MetricsLevel::Off) {
+                    detail::RuntimeMetrics::saturating_inc(
+                        impl.metrics.shard_for_current().steal_attempts);
+                }
+                if (impl.ready_queues.steal(victim, steal_calendar, task)) {
+                    if (impl.metrics.level != MetricsLevel::Off) {
+                        detail::RuntimeMetrics::saturating_inc(
+                            impl.metrics.shard_for_current().steal_successes);
+                    }
+                    found_task = true;
+                    break;
+                }
+                if (impl.metrics.level != MetricsLevel::Off) {
+                    detail::RuntimeMetrics::saturating_inc(
+                        impl.metrics.shard_for_current().steal_failures);
+                }
+            }
+        }
+
+        if (found_task && task.invoker) {
+            task.invoker->execute();
+            impl.ready_queues.complete_claim();
+            impl.work_cv.notify_all();
+        } else {
+            wait_for_target();
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 等待一个任务完成（TaskHandle::wait/wait_for/get 的公共底层）。
 //
@@ -824,67 +894,21 @@ void perform_caller_wait(
     thread_local std::size_t t_help_global_cal = 0;
     thread_local std::size_t t_help_steal_cal = 0;
     thread_local std::array<std::size_t, 4> t_help_deadline_bursts{0, 0, 0, 0};
+    static thread_local std::uint64_t s_help_rng = 0x854329415849ULL;
 
-    while (!target.is_completed()) {
-        if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
-            break;
-        }
-
-        ReadyQueues::QueuedTask task;
-        bool found_task = false;
-
-        if (impl->ready_queues.claim_local(
-                t_current_worker_index, t_help_local_cal, task)) {
-            found_task = true;
-        }
-
-        if (!found_task) {
-            std::unique_lock<std::mutex> lock(impl->lifecycle_mutex);
-            const auto st = Scheduler::Impl::unpack(impl->packed_status.load(std::memory_order_acquire));
-            // R-059 / D-080: Immediate 模式下不得 first-start 新 Task
-            if (st.state != SchedulerState::Stopped &&
-                st.shutdown_mode != ShutdownMode::Immediate &&
-                impl->ready_queues.claim_global(
-                    t_help_global_cal, t_help_deadline_bursts, task)) {
-                found_task = true;
-                if (task.is_external) {
-                    impl->admission.release(1);
-                }
-            }
-        }
-
-        // 尝试从其他 Worker 的 Local Deque 执行 bounded non-repeating Steal Round (R-064)
-        if (!found_task) {
-            std::vector<std::size_t> victims;
-            static thread_local std::uint64_t s_help_rng = 0x854329415849ULL;
-            generate_steal_victims(t_current_worker_index, impl->options.worker_count, impl->options.steal_probe_limit, s_help_rng, victims);
-            for (std::size_t v : victims) {
-                if (impl->metrics.level != MetricsLevel::Off) {
-                    detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_attempts);
-                }
-                if (impl->ready_queues.steal(v, t_help_steal_cal, task)) {
-                    if (impl->metrics.level != MetricsLevel::Off) {
-                        detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_successes);
-                    }
-                    found_task = true;
-                    break;
-                } else {
-                    if (impl->metrics.level != MetricsLevel::Off) {
-                        detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_failures);
-                    }
-                }
-            }
-        }
-
-        if (found_task && task.invoker) {
-            task.invoker->execute();
-            impl->ready_queues.complete_claim();
-            impl->work_cv.notify_all();
-        } else {
-            // 没有可窃取/帮助的任务，等待目标完成通知
+    perform_helping_loop(
+        *impl,
+        deadline,
+        [&target] { return target.is_completed(); },
+        t_help_local_cal,
+        t_help_global_cal,
+        t_help_steal_cal,
+        t_help_deadline_bursts,
+        s_help_rng,
+        [&target, deadline] {
             std::unique_lock<std::mutex> lock(target.mutex());
             if (target.is_completed()) {
-                break;
+                return;
             }
             if (deadline.has_value()) {
                 target.cv().wait_until(lock, *deadline, [&target] {
@@ -895,8 +919,7 @@ void perform_caller_wait(
                     return target.is_completed();
                 });
             }
-        }
-    }
+        });
 }
 
 void perform_graph_caller_wait(
@@ -979,64 +1002,23 @@ void perform_graph_caller_wait(
     thread_local std::size_t t_graph_help_global_cal = 0;
     thread_local std::size_t t_graph_help_steal_cal = 0;
     thread_local std::array<std::size_t, 4> t_graph_help_deadline_bursts{0, 0, 0, 0};
+    static thread_local std::uint64_t s_graph_help_rng = 0x854329415849ULL;
 
-    while (target.run_state.load(std::memory_order_acquire) == GraphRunState::Running) {
-        if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
-            break;
-        }
-
-        ReadyQueues::QueuedTask task;
-        bool found_task = false;
-
-        if (impl->ready_queues.claim_local(
-                t_current_worker_index, t_graph_help_local_cal, task)) {
-            found_task = true;
-        }
-
-        if (!found_task) {
-            std::unique_lock<std::mutex> lock(impl->lifecycle_mutex);
-            const auto st = Scheduler::Impl::unpack(impl->packed_status.load(std::memory_order_acquire));
-            if (st.state != SchedulerState::Stopped &&
-                st.shutdown_mode != ShutdownMode::Immediate &&
-                impl->ready_queues.claim_global(
-                    t_graph_help_global_cal, t_graph_help_deadline_bursts, task)) {
-                found_task = true;
-                if (task.is_external) {
-                    impl->admission.release(1);
-                }
-            }
-        }
-
-        if (!found_task) {
-            std::vector<std::size_t> victims;
-            static thread_local std::uint64_t s_help_rng = 0x854329415849ULL;
-            generate_steal_victims(t_current_worker_index, impl->options.worker_count, impl->options.steal_probe_limit, s_help_rng, victims);
-            for (std::size_t v : victims) {
-                if (impl->metrics.level != MetricsLevel::Off) {
-                    detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_attempts);
-                }
-                if (impl->ready_queues.steal(v, t_graph_help_steal_cal, task)) {
-                    if (impl->metrics.level != MetricsLevel::Off) {
-                        detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_successes);
-                    }
-                    found_task = true;
-                    break;
-                } else {
-                    if (impl->metrics.level != MetricsLevel::Off) {
-                        detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_failures);
-                    }
-                }
-            }
-        }
-
-        if (found_task && task.invoker) {
-            task.invoker->execute();
-            impl->ready_queues.complete_claim();
-            impl->work_cv.notify_all();
-        } else {
+    perform_helping_loop(
+        *impl,
+        deadline,
+        [&target] {
+            return target.run_state.load(std::memory_order_acquire) != GraphRunState::Running;
+        },
+        t_graph_help_local_cal,
+        t_graph_help_global_cal,
+        t_graph_help_steal_cal,
+        t_graph_help_deadline_bursts,
+        s_graph_help_rng,
+        [&target, deadline] {
             std::unique_lock<std::mutex> lock(target.mutex);
             if (target.run_state.load(std::memory_order_acquire) != GraphRunState::Running) {
-                break;
+                return;
             }
             if (deadline.has_value()) {
                 target.cv.wait_until(lock, *deadline, [&target] {
@@ -1047,8 +1029,7 @@ void perform_graph_caller_wait(
                     return target.run_state.load(std::memory_order_acquire) != GraphRunState::Running;
                 });
             }
-        }
-    }
+        });
 }
 
 RuntimeId current_worker_runtime_id() noexcept {
@@ -1110,6 +1091,48 @@ std::uint64_t SchedulerTestAccess::current_work_epoch(const Scheduler& s) {
 
 }  // namespace detail
 
+
+Scheduler::SubmissionContext Scheduler::prepare_submission(
+    std::optional<TaskOptions> options,
+    bool nonblocking) const {
+    if (!valid()) {
+        throw std::logic_error("operating on empty/moved-from Scheduler");
+    }
+
+    detail::record_metrics_submission_attempt(runtime_id());
+
+    const bool is_internal = (detail::current_worker_runtime_id() == runtime_id());
+    const bool is_worker = (detail::current_worker_runtime_id() != RuntimeId{0});
+    const bool can_block = !nonblocking && !is_worker;
+
+    Priority resolved_priority = Priority::Normal;
+    if (options.has_value()) {
+        validate_priority(options->priority);
+        resolved_priority = options->priority;
+    } else if (is_internal) {
+        resolved_priority = detail::current_executing_task_priority();
+    }
+
+    return SubmissionContext{
+        is_internal,
+        resolved_priority,
+        options.has_value() ? options->deadline : std::nullopt,
+        acquire_admission(can_block, is_internal)};
+}
+
+SubmissionError Scheduler::submission_error_for(detail::AdmissionDecision decision) {
+    switch (decision) {
+    case detail::AdmissionDecision::Stopping:
+        return SubmissionError::Stopping;
+    case detail::AdmissionDecision::Stopped:
+        return SubmissionError::Stopped;
+    case detail::AdmissionDecision::CapacityExhausted:
+        return SubmissionError::CapacityExhausted;
+    case detail::AdmissionDecision::Success:
+        break;
+    }
+    throw std::logic_error("cannot map successful admission to submission error");
+}
 
 detail::AdmissionDecision Scheduler::acquire_admission(bool block, bool is_internal) const {
     if (!impl_) {

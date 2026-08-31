@@ -276,17 +276,7 @@ void ReaperRegistry::wait_finalization() {
         }
 
         if (coordinator_exited_ && registered_ids_.empty() && slots_.empty()) {
-            if (!coordinator_join_in_progress_) {
-                coordinator_join_in_progress_ = true;
-                auto t = std::move(coordinator_thread_);
-                lock.unlock();
-                if (t && t->joinable()) {
-                    t->join();
-                }
-                lock.lock();
-                mark_finalized_locked();
-                coordinator_join_in_progress_ = false;
-                finalization_cv_.notify_all();
+            if (try_join_exited_coordinator_locked(lock)) {
                 return;
             } else {
                 finalization_cv_.wait(lock, [this] {
@@ -330,17 +320,7 @@ FinalizationWaitResult ReaperRegistry::wait_finalization_for_impl(std::chrono::n
 
     if (timeout_ns <= std::chrono::nanoseconds::zero()) {
         if (coordinator_exited_ && registered_ids_.empty() && slots_.empty()) {
-            if (!coordinator_join_in_progress_) {
-                coordinator_join_in_progress_ = true;
-                auto t = std::move(coordinator_thread_);
-                lock.unlock();
-                if (t && t->joinable()) {
-                    t->join();
-                }
-                lock.lock();
-                mark_finalized_locked();
-                coordinator_join_in_progress_ = false;
-                finalization_cv_.notify_all();
+            if (try_join_exited_coordinator_locked(lock)) {
                 return FinalizationWaitResult::Completed;
             }
         }
@@ -351,17 +331,7 @@ FinalizationWaitResult ReaperRegistry::wait_finalization_for_impl(std::chrono::n
 
     while (state_ != RegistrationState::Finalized) {
         if (coordinator_exited_ && registered_ids_.empty() && slots_.empty()) {
-            if (!coordinator_join_in_progress_) {
-                coordinator_join_in_progress_ = true;
-                auto t = std::move(coordinator_thread_);
-                lock.unlock();
-                if (t && t->joinable()) {
-                    t->join();
-                }
-                lock.lock();
-                mark_finalized_locked();
-                coordinator_join_in_progress_ = false;
-                finalization_cv_.notify_all();
+            if (try_join_exited_coordinator_locked(lock)) {
                 return FinalizationWaitResult::Completed;
             } else {
                 finalization_cv_.wait_until(lock, deadline, [this] {
@@ -380,17 +350,7 @@ FinalizationWaitResult ReaperRegistry::wait_finalization_for_impl(std::chrono::n
                    (coordinator_exited_ && registered_ids_.empty() && slots_.empty());
         })) {
             if (coordinator_exited_ && registered_ids_.empty() && slots_.empty()) {
-                if (!coordinator_join_in_progress_) {
-                    coordinator_join_in_progress_ = true;
-                    auto t = std::move(coordinator_thread_);
-                    lock.unlock();
-                    if (t && t->joinable()) {
-                        t->join();
-                    }
-                    lock.lock();
-                    mark_finalized_locked();
-                    coordinator_join_in_progress_ = false;
-                    finalization_cv_.notify_all();
+                if (try_join_exited_coordinator_locked(lock)) {
                     return FinalizationWaitResult::Completed;
                 } else {
                     finalization_cv_.wait_until(lock, deadline, [this] {
@@ -404,6 +364,28 @@ FinalizationWaitResult ReaperRegistry::wait_finalization_for_impl(std::chrono::n
     }
 
     return FinalizationWaitResult::Completed;
+}
+
+bool ReaperRegistry::try_join_exited_coordinator_locked(std::unique_lock<std::mutex>& lock) {
+    if (state_ == RegistrationState::Finalized ||
+        !coordinator_exited_ ||
+        !registered_ids_.empty() ||
+        !slots_.empty() ||
+        coordinator_join_in_progress_) {
+        return false;
+    }
+
+    coordinator_join_in_progress_ = true;
+    auto coordinator = std::move(coordinator_thread_);
+    lock.unlock();
+    if (coordinator && coordinator->joinable()) {
+        coordinator->join();
+    }
+    lock.lock();
+    mark_finalized_locked();
+    coordinator_join_in_progress_ = false;
+    finalization_cv_.notify_all();
+    return true;
 }
 
 std::size_t ReaperRegistry::coordinator_thread_count() const noexcept {

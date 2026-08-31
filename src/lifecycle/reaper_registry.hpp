@@ -130,6 +130,7 @@ private:
     void ensure_coordinator_started_locked();
     void coordinator_loop() noexcept;
     bool has_join_ready_slot_locked() const noexcept;
+    bool try_join_exited_coordinator_locked(std::unique_lock<std::mutex>& lock);
 
     mutable std::mutex mutex_;
     std::condition_variable coordinator_cv_;
