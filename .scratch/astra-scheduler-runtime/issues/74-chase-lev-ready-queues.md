@@ -60,3 +60,26 @@ Global EDF/FIFO、Local/Global burst、priority calendar 与 immediate cleanup �
     未纳入 AST-074 闭合范围：`astra_finalization_begin_test` / `astra_finalization_wait_test` 在 TSan 下仍报告 Reaper waiter 读取 `packed_status` 与主线程销毁 `shared_ptr<Impl>` 的竞争；全量 54 顺序跑曾在 `astra_immediate_escalation_test` 长时间无进展（该测试单独运行通过）。
   - `python3 -X utf8 tools/check_release_gates.py` — 15/15 passed。
   - `python3 -X utf8 tools/check_encapsulation.py` — passed。
+
+- Follow-up repair（`docs/Chase-LevReadyQueues后续缺口与修复计划.md` A–E，HEAD `1e3d6da`，WSL2, Linux 6.6.87.2-microsoft-standard-WSL2, g++ 13.1.0, cmake 3.28.6, 2026-08-31）：
+  - A：Immediate cleanup 不再写 Chase-Lev Local bottom，resume 进 Global FIFO（`2b97f26`）。
+  - B：高水位 rebase 失败时 `push()` 返回 false（`b6e71d4`）。
+  - C：maintenance / active_thieves seq_cst 握手，`is_lock_free` 计入 `atomic<bool>` 与 `atomic<uint32_t>`（`a534e16`）。
+  - D：`ready_next` / `ready_is_external` 迁出安装头到 `ReadyLinkedInvoker`（`c3b087f`）；encapsulation 13 个负向探针。
+  - E：`IntrusiveFifo::clear()`（`1e3d6da`）。
+  - Debug 全量：
+    `cmake --build build/wsl-gcc-debug -j2 && ctest --test-dir build/wsl-gcc-debug --output-on-failure`
+    — 54/54 passed。
+  - ASan/UBSan 全量（独立目录，halt_on_error）：
+    `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 cmake --build build/wsl-gcc-asan -j2 && ctest --test-dir build/wsl-gcc-asan --output-on-failure`
+    — 54/54 passed。
+  - TSan 相关子集（独立目录，halt_on_error）：
+    `TSAN_OPTIONS=halt_on_error=1 cmake --build build/wsl-gcc-tsan -j2`
+    `ctest --test-dir build/wsl-gcc-tsan -R astra_chase_lev_`
+    `ctest --test-dir build/wsl-gcc-tsan -R astra_immediate_escalation`
+    `ctest --test-dir build/wsl-gcc-tsan -R astra_steal_round`
+    `ctest --test-dir build/wsl-gcc-tsan -R astra_priority_bands`
+    `ctest --test-dir build/wsl-gcc-tsan -R astra_weak_memory_stress`
+    `ctest --test-dir build/wsl-gcc-tsan -R astra_coroutine_frame_lifetime`
+    — 9/9 passed（ordering、growth、indices、ready_queues、immediate、steal_round、priority_bands、weak_memory、coroutine_frame）。
+    未纳入本批：Reaper waiter 与 `shared_ptr<Impl>` 析构的 TSan 报告；TSan 全量 54。
