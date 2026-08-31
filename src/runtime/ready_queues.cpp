@@ -224,7 +224,7 @@ bool ReadyQueues::LocalQueues::claim_chase_lev(
     bool owner,
     QueuedTask& out) {
     const Priority target = kPriorityCalendar[calendar_index % kPriorityCalendarLength];
-    auto claim = [&](Priority priority) {
+    auto claim = [&](Priority priority) -> DequeResultStatus {
         auto& band = *chase_lev_bands[static_cast<std::size_t>(priority)];
         TaskInvokerBase* raw = nullptr;
         DequeResultStatus status = DequeResultStatus::Empty;
@@ -240,22 +240,34 @@ bool ReadyQueues::LocalQueues::claim_chase_lev(
             }
         }
         if (status != DequeResultStatus::Success || raw == nullptr) {
-            return false;
+            return status == DequeResultStatus::Success ? DequeResultStatus::Empty
+                                                        : status;
         }
         out.is_external = raw->ready_is_external;
         raw->ready_is_external = false;
         raw->ready_next = nullptr;
         out.invoker.reset(raw);
         calendar_index = (calendar_index + 1) % kPriorityCalendarLength;
-        return true;
+        return DequeResultStatus::Success;
     };
 
-    if (claim(target)) {
+    const auto target_status = claim(target);
+    if (target_status == DequeResultStatus::Success) {
         return true;
     }
+    if (!owner && target_status == DequeResultStatus::Retry) {
+        return false;
+    }
     for (Priority priority : kFallbackPriorityOrder) {
-        if (priority != target && claim(priority)) {
+        if (priority == target) {
+            continue;
+        }
+        const auto status = claim(priority);
+        if (status == DequeResultStatus::Success) {
             return true;
+        }
+        if (!owner && status == DequeResultStatus::Retry) {
+            return false;
         }
     }
     return false;
@@ -319,6 +331,16 @@ void ReadyQueues::LocalQueues::set_growth_failure_for_testing(bool inject) noexc
     for (auto& band : chase_lev_bands) {
         band->set_inject_growth_failure(inject);
     }
+}
+
+void ReadyQueues::LocalQueues::set_band_maintenance_for_testing(
+    Priority priority,
+    bool enabled) noexcept {
+    if (backend != LocalDequeBackend::ChaseLevLockFree) {
+        return;
+    }
+    chase_lev_bands[static_cast<std::size_t>(priority)]->set_maintenance_for_testing(
+        enabled);
 }
 
 void ReadyQueues::publish(
@@ -587,6 +609,16 @@ void ReadyQueues::set_local_growth_failure_for_testing(
     bool inject) noexcept {
     if (worker_index < local_queues_.size()) {
         local_queues_[worker_index]->set_growth_failure_for_testing(inject);
+    }
+}
+
+void ReadyQueues::set_local_band_maintenance_for_testing(
+    std::size_t worker_index,
+    Priority priority,
+    bool enabled) noexcept {
+    if (worker_index < local_queues_.size()) {
+        local_queues_[worker_index]->set_band_maintenance_for_testing(
+            priority, enabled);
     }
 }
 

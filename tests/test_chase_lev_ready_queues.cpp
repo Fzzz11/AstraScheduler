@@ -177,6 +177,80 @@ void test_growth_failure_falls_back_to_global_without_loss() {
     }
 }
 
+class PriorityInvoker final : public TestInvoker {
+public:
+    PriorityInvoker(int identity, astra::Priority priority)
+        : TestInvoker(identity), priority_(priority) {}
+
+    [[nodiscard]] astra::Priority priority() const noexcept override {
+        return priority_;
+    }
+
+private:
+    astra::Priority priority_;
+};
+
+void test_steal_oldest_from_owner_local_band() {
+    if (!kExpectedLocalDequeLockFree) {
+        return;
+    }
+
+    astra::detail::RuntimeMetrics metrics;
+    metrics.init(astra::MetricsLevel::Off, 1, astra::RuntimeId{1});
+    astra::detail::ReadyQueues queues(
+        1, metrics, astra::LocalDequeBackend::ChaseLevLockFree);
+
+    queues.publish(std::make_unique<TestInvoker>(1), false, true, 0);
+    queues.publish(std::make_unique<TestInvoker>(2), false, true, 0);
+
+    astra::detail::ReadyQueues::QueuedTask task;
+    std::size_t calendar = 0;
+    TEST_ASSERT(queues.steal(0, calendar, task));
+    auto* first = dynamic_cast<TestInvoker*>(task.invoker.get());
+    TEST_ASSERT(first != nullptr);
+    TEST_ASSERT(first->identity() == 1);
+    queues.complete_claim();
+    TEST_ASSERT(queues.steal(0, calendar, task));
+    auto* second = dynamic_cast<TestInvoker*>(task.invoker.get());
+    TEST_ASSERT(second != nullptr);
+    TEST_ASSERT(second->identity() == 2);
+    queues.complete_claim();
+}
+
+void test_steal_retry_does_not_claim_lower_priority_band() {
+    if (!kExpectedLocalDequeLockFree) {
+        return;
+    }
+
+    astra::detail::RuntimeMetrics metrics;
+    metrics.init(astra::MetricsLevel::Off, 1, astra::RuntimeId{1});
+    astra::detail::ReadyQueues queues(
+        1, metrics, astra::LocalDequeBackend::ChaseLevLockFree);
+
+    queues.publish(
+        std::make_unique<PriorityInvoker>(10, astra::Priority::High),
+        false,
+        true,
+        0);
+    queues.publish(
+        std::make_unique<PriorityInvoker>(20, astra::Priority::Low),
+        false,
+        true,
+        0);
+    queues.set_local_band_maintenance_for_testing(0, astra::Priority::High, true);
+
+    astra::detail::ReadyQueues::QueuedTask task;
+    std::size_t calendar = 1;  // kPriorityCalendar[1] == High
+    TEST_ASSERT(!queues.steal(0, calendar, task));
+    TEST_ASSERT(calendar == 1);
+
+    queues.set_local_band_maintenance_for_testing(0, astra::Priority::High, false);
+    TEST_ASSERT(queues.steal(0, calendar, task));
+    auto* high = dynamic_cast<PriorityInvoker*>(task.invoker.get());
+    TEST_ASSERT(high != nullptr);
+    TEST_ASSERT(high->identity() == 10);
+}
+
 void test_immediate_cleanup_keeps_resume_on_local() {
     if (!kExpectedLocalDequeLockFree) {
         return;
@@ -215,6 +289,8 @@ int main() {
     test_owner_lifo_and_growth_execute_each_task_once();
     test_thief_claims_owner_local_work();
     test_growth_failure_falls_back_to_global_without_loss();
+    test_steal_oldest_from_owner_local_band();
+    test_steal_retry_does_not_claim_lower_priority_band();
     test_immediate_cleanup_keeps_resume_on_local();
     std::printf("All production Chase-Lev ReadyQueues tests passed!\n");
     return 0;

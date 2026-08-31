@@ -75,6 +75,10 @@ public:
     void set_local_growth_failure_for_testing(
         std::size_t worker_index,
         bool inject) noexcept;
+    void set_local_band_maintenance_for_testing(
+        std::size_t worker_index,
+        Priority priority,
+        bool enabled) noexcept;
 
 private:
     static constexpr std::size_t kPriorityCalendarLength = 15;
@@ -129,6 +133,7 @@ private:
         [[nodiscard]] bool empty() const;
         void cancel_unstarted(std::vector<QueuedTask>& resumes) noexcept;
         void set_growth_failure_for_testing(bool inject) noexcept;
+        void set_band_maintenance_for_testing(Priority priority, bool enabled) noexcept;
 
     private:
         bool claim_chase_lev(
