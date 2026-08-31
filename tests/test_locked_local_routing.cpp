@@ -2,6 +2,7 @@
 #include <astra/error.hpp>
 #include <astra/scheduler.hpp>
 #include <astra/scheduler_options.hpp>
+#include "expected_local_backend.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -21,14 +22,6 @@
     } while (false)
 
 namespace {
-
-constexpr bool kExpectedLocalDequeLockFree =
-    std::atomic<std::int64_t>::is_always_lock_free &&
-    std::atomic<void*>::is_always_lock_free;
-constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
-    kExpectedLocalDequeLockFree
-        ? astra::LocalDequeBackend::ChaseLevLockFree
-        : astra::LocalDequeBackend::Locked;
 
 // -----------------------------------------------------------------------------
 // R-101: capabilities() 精确报告生产 Local Deque backend。

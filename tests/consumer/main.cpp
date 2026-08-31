@@ -32,7 +32,7 @@ static_assert(noexcept(astra::library_version_string()), "library_version_string
 static_assert(std::is_trivially_copyable_v<astra::Version>, "Version must be trivially copyable");
 constexpr astra::Version kHeaderVersion = astra::header_version();
 constexpr bool kExpectedLocalDequeLockFree =
-    std::atomic<std::int64_t>::is_always_lock_free &&
+    std::atomic<std::uint64_t>::is_always_lock_free &&
     std::atomic<void*>::is_always_lock_free;
 constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
     kExpectedLocalDequeLockFree

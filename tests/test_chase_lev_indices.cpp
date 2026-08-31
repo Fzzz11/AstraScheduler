@@ -2,6 +2,7 @@
 #include <astra/capabilities.hpp>
 #include <astra/scheduler.hpp>
 #include <astra/scheduler_options.hpp>
+#include "expected_local_backend.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -19,14 +20,6 @@
     } while (false)
 
 namespace {
-
-constexpr bool kExpectedLocalDequeLockFree =
-    std::atomic<std::int64_t>::is_always_lock_free &&
-    std::atomic<void*>::is_always_lock_free;
-constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
-    kExpectedLocalDequeLockFree
-        ? astra::LocalDequeBackend::ChaseLevLockFree
-        : astra::LocalDequeBackend::Locked;
 
 // -----------------------------------------------------------------------------
 // 1. R-068 / D-102: 三态结果区分（Success / Empty / Retry）与边界算术

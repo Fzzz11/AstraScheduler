@@ -6,6 +6,7 @@
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
 #include <astra/version.hpp>
+#include "expected_local_backend.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -36,13 +37,6 @@ static_assert(noexcept(std::declval<astra::scheduler_creation_rejected>().reason
 
 namespace {
 constexpr astra::Version kExpectedHeader{ASTRA_VERSION_MAJOR, ASTRA_VERSION_MINOR, ASTRA_VERSION_PATCH};
-constexpr bool kExpectedLocalDequeLockFree =
-    std::atomic<std::int64_t>::is_always_lock_free &&
-    std::atomic<void*>::is_always_lock_free;
-constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
-    kExpectedLocalDequeLockFree
-        ? astra::LocalDequeBackend::ChaseLevLockFree
-        : astra::LocalDequeBackend::Locked;
 }  // namespace
 
 int main() {

@@ -2,6 +2,7 @@
 #include <astra/scheduler.hpp>
 #include <astra/scheduler_options.hpp>
 
+#include "expected_local_backend.hpp"
 #include "runtime/admission_controller.hpp"
 #include "runtime/ready_queues.hpp"
 #include "runtime/runtime_metrics.hpp"
@@ -27,14 +28,6 @@
     } while (false)
 
 namespace {
-
-constexpr bool kExpectedLocalDequeLockFree =
-    std::atomic<std::int64_t>::is_always_lock_free &&
-    std::atomic<void*>::is_always_lock_free;
-constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
-    kExpectedLocalDequeLockFree
-        ? astra::LocalDequeBackend::ChaseLevLockFree
-        : astra::LocalDequeBackend::Locked;
 
 class TestInvoker : public astra::detail::TaskInvokerBase {
 public:

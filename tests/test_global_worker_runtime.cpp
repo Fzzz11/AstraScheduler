@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
+#include "expected_local_backend.hpp"
 #include "testing/test_seam.hpp"
 
 // AST-008 测试套件：交付 Global-only Worker Runtime 基线
@@ -41,14 +42,6 @@ std::size_t global_injection_queue_size(const Scheduler& s);
 }
 
 namespace {
-
-constexpr bool kExpectedLocalDequeLockFree =
-    std::atomic<std::int64_t>::is_always_lock_free &&
-    std::atomic<void*>::is_always_lock_free;
-constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
-    kExpectedLocalDequeLockFree
-        ? astra::LocalDequeBackend::ChaseLevLockFree
-        : astra::LocalDequeBackend::Locked;
 
 // -----------------------------------------------------------------------------
 // R-001: 全局注入队列 FIFO 调度与并发提交正确性

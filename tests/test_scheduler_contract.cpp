@@ -5,6 +5,7 @@
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
 #include <astra/version.hpp>
+#include "expected_local_backend.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -24,14 +25,6 @@
 // =============================================================================
 // Compile-time assertions: Invariants for R-098, R-099, R-100, R-101
 // =============================================================================
-
-constexpr bool kExpectedLocalDequeLockFree =
-    std::atomic<std::int64_t>::is_always_lock_free &&
-    std::atomic<void*>::is_always_lock_free;
-constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
-    kExpectedLocalDequeLockFree
-        ? astra::LocalDequeBackend::ChaseLevLockFree
-        : astra::LocalDequeBackend::Locked;
 
 // R-098: recommended_worker_count() must be noexcept
 static_assert(noexcept(astra::recommended_worker_count()),
