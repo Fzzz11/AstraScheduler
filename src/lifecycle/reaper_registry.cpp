@@ -164,6 +164,18 @@ void ReaperRegistry::execute_worker_handoff(
     coordinator_cv_.notify_one();
 }
 
+void ReaperRegistry::replace_cleanup_fn(
+    RuntimeId id,
+    std::function<void()> cleanup_fn) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& s : slots_) {
+        if (s->runtime_id == id) {
+            s->cleanup_fn = std::move(cleanup_fn);
+            break;
+        }
+    }
+}
+
 void ReaperRegistry::notify_join_ready(RuntimeId id) noexcept {
     {
         std::lock_guard<std::mutex> lock(mutex_);

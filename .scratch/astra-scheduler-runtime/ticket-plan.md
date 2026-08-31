@@ -844,6 +844,7 @@ AST-066 <- AST-065
 | AST-072 | v1.2.0 | [72-ready-queues.md](issues/72-ready-queues.md) | done | AST-070 |
 | AST-073 | v1.2.0 | [73-runtime-state.md](issues/73-runtime-state.md) | done | AST-072 |
 | AST-074 | v1.2.0 | [74-chase-lev-ready-queues.md](issues/74-chase-lev-ready-queues.md) | done | AST-025, AST-026, AST-027, AST-039, AST-072, AST-073 |
+| AST-075 | v1.2.0 | [75-reaper-shutdown-completion-lifetime.md](issues/75-reaper-shutdown-completion-lifetime.md) | done | AST-006, AST-007, AST-017 |
 
 ## Approval
 
@@ -854,4 +855,4 @@ Revision approved by: project owner（user）
 Revision approved at: 2026-08-30（v1.1 encapsulation revision；v1.2.0 compiled TCB increment）
 Latest revision approved at: 2026-08-31（D-177 / AST-067..070 internal modularization increment；AST-071 diagnostics follow-up 与 AST-074 Chase-Lev 生产接线由 project owner 请求）
 
-本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-074 承载。
+本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-074 承载。AST-075 为 Reaper Shutdown Completion Waiter 与 Runtime State 析构竞争的 hotfix（R-020/R-026），由 project owner 请求第 1 点（a）进入拆票。

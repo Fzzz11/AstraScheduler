@@ -95,6 +95,10 @@ public:
     // 通知 Reaper 某个 Runtime 的全部 Worker 已退出循环，单调进入 Join Ready 状态（R-026）。
     void notify_join_ready(RuntimeId id) noexcept;
 
+    // 在 make_shared 完成后把裸 this cleanup 换成 weak_ptr 锁，
+    // 使 Finalization Waiter 在调用期间托住 Runtime State（R-020）。
+    void replace_cleanup_fn(RuntimeId id, std::function<void()> cleanup_fn) noexcept;
+
     // 获取当前 Reaper coordinator 线程数（R-107：恰好为 1，或未启动时为 0）。
     [[nodiscard]] std::size_t coordinator_thread_count() const noexcept;
 

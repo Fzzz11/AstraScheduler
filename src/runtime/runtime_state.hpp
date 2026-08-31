@@ -24,6 +24,15 @@
 
 namespace astra::detail {
 
+// Shutdown Completion 的同步对象必须能比 RuntimeState/Impl 活得更久：
+// Reaper Waiter 可能在 Leader 已 delete Impl 之后仍位于 condition_variable 谓词中（R-020）。
+struct ShutdownCompletion {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool in_progress{false};
+    std::atomic<bool> stopped{false};
+};
+
 // 单个 Runtime 的唯一组合状态所有者（R-130）。Scheduler::Impl 只负责
 // shared ownership 与 facade/Graph port 适配，不再重复拥有运行时状态。
 struct RuntimeState {
@@ -79,9 +88,8 @@ struct RuntimeState {
     std::atomic<std::uint64_t> work_epoch{0};
     std::vector<std::thread> worker_threads;
 
-    std::mutex shutdown_mutex;
-    std::condition_variable shutdown_done_cv;
-    bool shutdown_in_progress{false};
+    std::shared_ptr<ShutdownCompletion> shutdown_completion{
+        std::make_shared<ShutdownCompletion>()};
 };
 
 }  // namespace astra::detail

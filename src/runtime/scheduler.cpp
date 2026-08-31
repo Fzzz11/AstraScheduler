@@ -286,6 +286,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
 
         const auto current_mode = get_status().shutdown_mode;
         packed_status.store(pack(SchedulerState::Stopped, current_mode), std::memory_order_release);
+        shutdown_completion->stopped.store(true, std::memory_order_release);
         admission.wake_all();
         if (unregister_reaper) {
             detail::ReaperRegistry::instance().unregister_runtime(runtime_id);
@@ -305,27 +306,28 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
         }
         work_cv.notify_all();
 
-        // 共享 Shutdown Completion（R-016 / D-013）：Leader-Waiter 模式
-        std::unique_lock<std::mutex> s_lock(shutdown_mutex);
-        if (get_status().state == SchedulerState::Stopped) {
+        // 共享 Shutdown Completion（R-016 / D-013）：Leader-Waiter 模式。
+        // 本地持有 completion，避免 Waiter 在 Impl 析构后仍读 packed_status。
+        auto gate = shutdown_completion;
+        std::unique_lock<std::mutex> s_lock(gate->mutex);
+        if (gate->stopped.load(std::memory_order_acquire) ||
+            get_status().state == SchedulerState::Stopped) {
             return;
         }
 
-        if (!shutdown_in_progress) {
-            shutdown_in_progress = true;
+        if (!gate->in_progress) {
+            gate->in_progress = true;
             s_lock.unlock();
 
             // Leader 负责 join 全部 worker 线程（恰好 join 一次）。
             join_workers_and_publish_stopped(true);
 
             s_lock.lock();
-            shutdown_in_progress = false;
-            shutdown_done_cv.notify_all();
+            gate->in_progress = false;
+            gate->cv.notify_all();
         } else {
-            // Waiter 等待 Leader 完成 join 并发布 Stopped
-            shutdown_done_cv.wait(s_lock, [&status = packed_status] {
-                return unpack(status.load(std::memory_order_acquire)).state ==
-                       SchedulerState::Stopped;
+            gate->cv.wait(s_lock, [gate] {
+                return gate->stopped.load(std::memory_order_acquire);
             });
         }
     }
@@ -401,24 +403,25 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
 
     // 由 Reaper 线程（非目标 Worker 线程）执行最终 join 与清理
     void reaper_cleanup_and_join() noexcept {
-        std::unique_lock<std::mutex> s_lock(shutdown_mutex);
-        if (get_status().state == SchedulerState::Stopped) {
+        auto gate = shutdown_completion;
+        std::unique_lock<std::mutex> s_lock(gate->mutex);
+        if (gate->stopped.load(std::memory_order_acquire) ||
+            get_status().state == SchedulerState::Stopped) {
             return;
         }
 
-        if (!shutdown_in_progress) {
-            shutdown_in_progress = true;
+        if (!gate->in_progress) {
+            gate->in_progress = true;
             s_lock.unlock();
 
             join_workers_and_publish_stopped(false);
 
             s_lock.lock();
-            shutdown_in_progress = false;
-            shutdown_done_cv.notify_all();
+            gate->in_progress = false;
+            gate->cv.notify_all();
         } else {
-            shutdown_done_cv.wait(s_lock, [&status = packed_status] {
-                return unpack(status.load(std::memory_order_acquire)).state ==
-                       SchedulerState::Stopped;
+            gate->cv.wait(s_lock, [gate] {
+                return gate->stopped.load(std::memory_order_acquire);
             });
         }
     }
@@ -1210,6 +1213,13 @@ Scheduler::Scheduler(SchedulerOptions options) {
     const auto backend = detail::ReadyQueues::preferred_local_backend();
     const SchedulerCapabilities caps{backend};
     impl_ = std::make_shared<Impl>(id, std::move(options), caps);
+    detail::ReaperRegistry::instance().replace_cleanup_fn(
+        impl_->runtime_id,
+        [weak = std::weak_ptr<Impl>(impl_)] {
+            if (auto self = weak.lock()) {
+                self->reaper_cleanup_and_join();
+            }
+        });
 }
 
 Scheduler::~Scheduler() noexcept {

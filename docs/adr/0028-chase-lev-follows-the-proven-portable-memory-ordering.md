@@ -12,4 +12,6 @@ Deque 内部区分 Success/Empty/Retry，只有成功 CAS/owner claim 转移 Sch
 
 固定宽度翻译额外使用 checked arithmetic：空 canonical state 在 unsigned decrement 前返回 Empty，`size >= capacity - 1` 即 grow 以保留一个 cell，doubling 失败走 Global fallback；不能把语言层 defined unsigned wrap 当作算法正确性。
 
+GCC TSan 不建模 `atomic_thread_fence`。生产 `ChaseLevDeque` 在 fence 旁的 `__tsan_acquire` / `__tsan_release` 只改检测器 happens-before，不生成 CPU 屏障，也不改变 C++ memory order。TSan 相关测试通过不能当成弱内存（含 native AArch64）证明；弱内存证据仍是本 ADR 对照的 portable 序与 Tier-2 复核。
+
 决策细节见 [D-097、D-098 与 D-101 至 D-103](../../.scratch/astra-scheduler-runtime/decision-log.md)。

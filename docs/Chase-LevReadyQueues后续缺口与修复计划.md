@@ -136,6 +136,8 @@ TSAN_OPTIONS=halt_on_error=1 \
 
 ## 6. 明确不做
 
+本批 A–E 仍不包含下列四项。分流、问题描述与后续入口见 [`docs/AST-074闭合后剩余四项分流.md`](AST-074闭合后剩余四项分流.md)。
+
 - 不让控制线程“代 owner 写 bottom”。
 - 不把 Global FIFO/EDF 改成 lock-free。
 - 不在本批修复 Reaper waiter 与 `shared_ptr<Impl>` 析构的 TSan 报告。
