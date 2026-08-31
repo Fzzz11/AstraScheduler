@@ -185,6 +185,8 @@ void GraphExecution::materialize(FrozenTaskGraph& graph) {
 
         auto& entry = state_->node_entries[index];
         entry.id = node_data.id;
+        // 普通节点和协程节点共享同一 Runtime TaskId 分配协议。
+        entry.task_id = runtime_.allocate_graph_task_id();
         entry.invoker = std::move(node_data.invoker);
         entry.priority = node_priority;
         entry.deadline = node_deadline;
@@ -192,7 +194,7 @@ void GraphExecution::materialize(FrozenTaskGraph& graph) {
         if (entry.invoker && entry.invoker->is_coroutine_node()) {
             auto* coroutine_node =
                 static_cast<GraphCoroutineNodeInvoker*>(entry.invoker.get());
-            const TaskId task_id = runtime_.allocate_graph_task_id();
+            const TaskId task_id = entry.task_id;
             auto task_state = std::make_shared<TaskHandle<void>::ResultCell>(
                 task_id, node_priority, node_deadline);
             task_state->set_timer_functions(
@@ -307,7 +309,8 @@ void GraphExecution::post_node(NodeId node_id) {
         }
 
         GraphNodeExecutionContextGuard node_guard(self->state_->id, node_priority);
-        const TaskId metric_id{self->runtime_.runtime_identity(), index};
+        TaskExecutionContextGuard task_guard(node_entry.task_id, node_priority);
+        const TaskId metric_id = node_entry.task_id;
 
         if (node_entry.deadline.has_value() &&
             node_entry.deadline_disposition == DeadlineDisposition::None) {

@@ -30,6 +30,9 @@ class GraphRunSharedState : public std::enable_shared_from_this<GraphRunSharedSt
 public:
     struct NodeEntry {
         NodeId id{};
+        // 每次 GraphRun 为每个节点分配的稳定 Runtime TaskId（R-072 / R-115）。
+        // NodeId 只在 FrozenTaskGraph 内局部有效，不能替代运行期身份。
+        TaskId task_id{};
         std::unique_ptr<TaskInvokerBase> invoker{nullptr};
         Priority priority{Priority::Normal};
         std::optional<TaskDeadline> deadline{std::nullopt};

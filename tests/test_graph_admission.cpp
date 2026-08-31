@@ -1,10 +1,12 @@
 #include <astra/graph.hpp>
 #include <astra/scheduler.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -192,6 +194,42 @@ void test_R070_multi_predecessor_race_stress() {
     }
 }
 
+// -----------------------------------------------------------------------------
+// 6. R-072 / R-115: 普通图节点也必须获得 Runtime 分配的稳定 TaskId
+// -----------------------------------------------------------------------------
+void test_R115_graph_nodes_have_runtime_task_ids() {
+    astra::Scheduler scheduler;
+    astra::TaskGraph graph;
+    std::mutex mutex;
+    std::vector<astra::TaskId> observed_ids;
+
+    graph.emplace([&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        observed_ids.push_back(astra::detail::current_executing_task_id());
+    });
+    graph.emplace([&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        observed_ids.push_back(astra::detail::current_executing_task_id());
+    });
+
+    auto run = scheduler.run(std::move(graph).freeze());
+    run.wait();
+
+    TEST_ASSERT(observed_ids.size() == 2);
+    TEST_ASSERT(observed_ids[0].valid());
+    TEST_ASSERT(observed_ids[1].valid());
+    TEST_ASSERT(observed_ids[0] != observed_ids[1]);
+
+    std::sort(observed_ids.begin(), observed_ids.end());
+    TEST_ASSERT(observed_ids[0].sequence() == 1);
+    TEST_ASSERT(observed_ids[1].sequence() == 2);
+
+    // Graph 节点消耗的身份必须纳入同一 Runtime 序列，后续普通提交不能复用。
+    auto next_task = scheduler.submit([] {});
+    TEST_ASSERT(next_task.task_id().sequence() == 3);
+    next_task.get();
+}
+
 }  // namespace
 
 int main() {
@@ -201,6 +239,7 @@ int main() {
     test_R070_internal_graph_exempt_from_slots();
     test_R070_dag_execution_order_and_countdown_arbitration();
     test_R070_multi_predecessor_race_stress();
+    test_R115_graph_nodes_have_runtime_task_ids();
     std::printf("All AST-029 GraphRun admission and dependency release tests passed successfully!\n");
     return 0;
 }
