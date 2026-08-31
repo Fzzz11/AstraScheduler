@@ -49,8 +49,8 @@ int main() {
     if (s.status().state != astra::SchedulerState::Running) {
         return 1;
     }
-    if (s.capabilities().local_deque_backend() != astra::LocalDequeBackend::ChaseLevLockFree ||
-        !s.capabilities().lock_free_local_deque()) {
+    if (s.capabilities().local_deque_backend() != astra::LocalDequeBackend::Locked ||
+        s.capabilities().lock_free_local_deque()) {
         return 1;
     }
 

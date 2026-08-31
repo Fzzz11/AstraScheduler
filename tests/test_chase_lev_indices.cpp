@@ -66,15 +66,15 @@ void test_R068_quiescent_rebase_high_watermark() {
 }
 
 // -----------------------------------------------------------------------------
-// 3. R-101 / D-162 / D-167: v0.3 正式启用 ChaseLevLockFree 能力报告
+// 3. R-101 / D-162 / D-167: 生产 ReadyQueues 当前使用 Locked 能力报告；
+//    Chase-Lev 仅作为独立算法资产验证，尚未接入生产队列。
 // -----------------------------------------------------------------------------
 void test_R101_scheduler_capabilities_reflect_chase_lev_lock_free() {
     astra::Scheduler s;
     const auto caps = s.capabilities();
 
-    // v0.3.0 在 64-bit Linux 平台上已真实启用 Chase-Lev 无锁双端队列
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::ChaseLevLockFree);
-    TEST_ASSERT(caps.lock_free_local_deque() == true);
+    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
+    TEST_ASSERT(caps.lock_free_local_deque() == false);
 
     // 关停后能力快照依然保留且不可变
     s.shutdown();
@@ -90,7 +90,7 @@ void test_R101_scheduler_capabilities_reflect_chase_lev_lock_free() {
         // Expected
     }
 
-    TEST_ASSERT(s_moved.capabilities().lock_free_local_deque() == true);
+    TEST_ASSERT(s_moved.capabilities().lock_free_local_deque() == false);
 }
 
 }  // namespace

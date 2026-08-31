@@ -158,10 +158,10 @@ void test_R002_exclude_local_queues_and_work_stealing() {
     opt.worker_count = 4;
     astra::Scheduler s(opt);
 
-    // 验证能力报告：v0.3.0 在 64-bit Linux 上为 ChaseLevLockFree（R-101）
+    // 验证能力报告：当前生产 ReadyQueues 使用 Locked（R-101）
     const auto caps = s.capabilities();
-    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::ChaseLevLockFree);
-    TEST_ASSERT(caps.lock_free_local_deque());
+    TEST_ASSERT(caps.local_deque_backend() == astra::LocalDequeBackend::Locked);
+    TEST_ASSERT(!caps.lock_free_local_deque());
 }
 
 }  // namespace
