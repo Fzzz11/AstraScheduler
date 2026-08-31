@@ -7,9 +7,12 @@
 #include <cstdint>
 
 // 与生产 ChaseLevDeque<TaskInvokerBase*>::is_lock_free() 对齐的测试期望值。
+// 探针包含 index、cell 指针、cell 元素，以及 maintenance / active-thief guard。
 constexpr bool kExpectedLocalDequeLockFree =
     std::atomic<std::uint64_t>::is_always_lock_free &&
-    std::atomic<void*>::is_always_lock_free;
+    std::atomic<void*>::is_always_lock_free &&
+    std::atomic<bool>::is_always_lock_free &&
+    std::atomic<std::uint32_t>::is_always_lock_free;
 constexpr astra::LocalDequeBackend kExpectedLocalDequeBackend =
     kExpectedLocalDequeLockFree
         ? astra::LocalDequeBackend::ChaseLevLockFree

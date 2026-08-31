@@ -302,12 +302,12 @@ public:
     // Thief Top Steal (D-098 / D-101 / D-102):
     // maintenance 期间返回 Retry；active-thief guard 双检后才进入 cell。
     DequeResultStatus steal(T& out) {
-        if (maintenance_.load(std::memory_order_acquire)) {
+        if (maintenance_.load(std::memory_order_seq_cst)) {
             return DequeResultStatus::Retry;
         }
-        active_thieves_.fetch_add(1, std::memory_order_acq_rel);
-        if (maintenance_.load(std::memory_order_acquire)) {
-            active_thieves_.fetch_sub(1, std::memory_order_release);
+        active_thieves_.fetch_add(1, std::memory_order_seq_cst);
+        if (maintenance_.load(std::memory_order_seq_cst)) {
+            active_thieves_.fetch_sub(1, std::memory_order_seq_cst);
             return DequeResultStatus::Retry;
         }
 
@@ -327,7 +327,7 @@ public:
                 status = DequeResultStatus::Retry;
             }
         }
-        active_thieves_.fetch_sub(1, std::memory_order_release);
+        active_thieves_.fetch_sub(1, std::memory_order_seq_cst);
         return status;
     }
 
@@ -355,7 +355,9 @@ public:
     static constexpr bool is_lock_free() noexcept {
         return std::atomic<std::uint64_t>::is_always_lock_free &&
                std::atomic<Buffer*>::is_always_lock_free &&
-               std::atomic<T>::is_always_lock_free;
+               std::atomic<T>::is_always_lock_free &&
+               std::atomic<bool>::is_always_lock_free &&
+               std::atomic<std::uint32_t>::is_always_lock_free;
     }
 
     // Quiescent Rebase (R-068 / D-101):
@@ -371,8 +373,8 @@ public:
             return false;
         }
 
-        maintenance_.store(true, std::memory_order_release);
-        while (active_thieves_.load(std::memory_order_acquire) != 0) {
+        maintenance_.store(true, std::memory_order_seq_cst);
+        while (active_thieves_.load(std::memory_order_seq_cst) != 0) {
             std::this_thread::yield();
         }
 
@@ -380,7 +382,7 @@ public:
         t = top_.load(std::memory_order_acquire);
         Buffer* buf = active_buffer_.load(std::memory_order_acquire);
         if (buf == nullptr || b < t) {
-            maintenance_.store(false, std::memory_order_release);
+            maintenance_.store(false, std::memory_order_seq_cst);
             return false;
         }
 
@@ -397,7 +399,7 @@ public:
                                     std::memory_order_relaxed);
                 }
             } catch (...) {
-                maintenance_.store(false, std::memory_order_release);
+                maintenance_.store(false, std::memory_order_seq_cst);
                 return false;
             }
         }
@@ -406,7 +408,7 @@ public:
         std::atomic_thread_fence(std::memory_order_release);
         top_.store(0, std::memory_order_relaxed);
         bottom_.store(live, std::memory_order_relaxed);
-        maintenance_.store(false, std::memory_order_release);
+        maintenance_.store(false, std::memory_order_seq_cst);
         return true;
     }
 
@@ -424,7 +426,7 @@ public:
     }
 
     void set_maintenance_for_testing(bool enabled) noexcept {
-        maintenance_.store(enabled, std::memory_order_release);
+        maintenance_.store(enabled, std::memory_order_seq_cst);
     }
 
     void set_inject_growth_failure(bool inject) noexcept {
