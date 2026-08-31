@@ -47,9 +47,11 @@
 #include "lifecycle/reaper_registry.hpp"
 #include "observability/trace_collector.hpp"
 #include "runtime/admission_controller.hpp"
+#include "runtime/ready_queues.hpp"
 #include "runtime/runtime_identity.hpp"
 #include "runtime/runtime_metrics.hpp"
 #include "runtime/runtime_registry.hpp"
+#include "runtime/runtime_state.hpp"
 #include "runtime/timer_queue.hpp"
 #include "runtime/worker_loop.hpp"
 #include "scheduling/chase_lev_deque.hpp"
@@ -128,7 +130,7 @@ RuntimeId allocate_runtime_id() {
 namespace {
 void register_runtime_impl(Scheduler::Impl* impl);
 void unregister_runtime_impl(Scheduler::Impl* impl);
-Scheduler::Impl* find_runtime_impl(RuntimeId id);
+detail::RuntimeDiagnostics* find_runtime_diagnostics(RuntimeId id);
 }  // namespace
 
 namespace detail {
@@ -143,252 +145,12 @@ extern thread_local TaskId t_deferred_self_resume_owner;
 void flush_deferred_self_resume();
 }  // namespace detail
 
-struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Scheduler::Impl>,
+struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
+                                         public std::enable_shared_from_this<Scheduler::Impl>,
                                          public detail::GraphRuntimePort {
-    RuntimeId runtime_id;
-    detail::RuntimeIdentityAllocator identities;
-    SchedulerOptions options;
-    SchedulerCapabilities capabilities;
-    // 单字原子状态，保证 status() 线性化读取成对快照，不发生跨维度撕裂（D-160）。
-    std::atomic<std::uint16_t> packed_status;
-
-    // 运行时指标、准入与定时器（R-084 / R-124 / D-176）：模块拥有自身状态，Impl 只做组合。
-    detail::RuntimeMetrics metrics;
-    detail::AdmissionController admission;
-    detail::TimerQueue timers;
-
-    // Worker 同步与生命周期控制
-    std::mutex lifecycle_mutex;
-    std::condition_variable startup_cv;
-    std::condition_variable work_cv;
-    bool startup_done{false};
-    bool startup_failed{false};
-    bool stop_requested{false};
-    std::atomic<bool> handoff_dispatched{false};
-
-    // Trace 附加上下文（AST-048 / R-096）：wait/await 诊断事件的 producer 槽位。
-    std::shared_ptr<TraceCollector> trace_collector;
-    std::vector<TraceSlot*> trace_worker_slots;
-    TraceSlot* trace_external_slot{nullptr};
-    std::size_t workers_ready{0};
-    std::size_t active_task_count{0};
-    std::atomic<std::size_t> active_workers{0};
-    std::atomic<std::size_t> parked_workers{0};
-    std::atomic<std::uint64_t> work_epoch{0};
-    std::vector<std::thread> worker_threads;
-
-    static constexpr std::size_t kPriorityCalendarLength = 15;
-    static constexpr std::array<Priority, kPriorityCalendarLength> kPriorityCalendar = {
-        Priority::Critical, // 0
-        Priority::High,     // 1
-        Priority::Critical, // 2
-        Priority::Normal,   // 3
-        Priority::Critical, // 4
-        Priority::High,     // 5
-        Priority::Critical, // 6
-        Priority::Low,      // 7
-        Priority::Critical, // 8
-        Priority::High,     // 9
-        Priority::Critical, // 10
-        Priority::Normal,   // 11
-        Priority::Critical, // 12
-        Priority::High,     // 13
-        Priority::Critical  // 14
-    };
-
-    static constexpr std::array<Priority, 4> kFallbackPriorityOrder = {
-        Priority::Critical, Priority::High, Priority::Normal, Priority::Low
-    };
-
-    struct QueuedTask {
-        std::unique_ptr<detail::TaskInvokerBase> invoker;
-        bool is_external{false};
-    };
-
-    struct EdfEntry {
-        TaskDeadline deadline;
-        std::uint64_t admission_seq{0};
-        QueuedTask task;
-
-        bool operator>(const EdfEntry& other) const noexcept {
-            if (deadline != other.deadline) {
-                return deadline > other.deadline;
-            }
-            return admission_seq > other.admission_seq;
-        }
-
-        bool operator<(const EdfEntry& other) const noexcept {
-            if (deadline != other.deadline) {
-                return deadline < other.deadline;
-            }
-            return admission_seq < other.admission_seq;
-        }
-    };
-
-    std::atomic<std::uint64_t> global_admission_seq{0};
-    std::array<std::vector<EdfEntry>, 4> global_edf_heaps;
-    std::array<std::deque<QueuedTask>, 4> global_injection_queues;
-
-    bool pop_from_global_band_locked(std::size_t band_idx, std::size_t& deadline_burst, QueuedTask& out) {
-        auto& edf_heap = global_edf_heaps[band_idx];
-        auto& fifo_queue = global_injection_queues[band_idx];
-
-        if (edf_heap.empty() && fifo_queue.empty()) {
-            return false;
-        }
-
-        if (metrics.level != MetricsLevel::Off) {
-            detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().global_claims);
-        }
-
-        if (!edf_heap.empty() && !fifo_queue.empty()) {
-            if (deadline_burst < 8) {
-                std::pop_heap(edf_heap.begin(), edf_heap.end(), std::greater<EdfEntry>{});
-                out = std::move(edf_heap.back().task);
-                edf_heap.pop_back();
-                ++deadline_burst;
-                return true;
-            } else {
-                out = std::move(fifo_queue.front());
-                fifo_queue.pop_front();
-                deadline_burst = 0;
-                return true;
-            }
-        } else if (!edf_heap.empty()) {
-            std::pop_heap(edf_heap.begin(), edf_heap.end(), std::greater<EdfEntry>{});
-            out = std::move(edf_heap.back().task);
-            edf_heap.pop_back();
-            ++deadline_burst;
-            return true;
-        } else {
-            out = std::move(fifo_queue.front());
-            fifo_queue.pop_front();
-            deadline_burst = 0;
-            return true;
-        }
-    }
-
-    bool pop_global_weighted(std::size_t& calendar_idx, std::array<std::size_t, 4>& deadline_bursts, QueuedTask& out) {
-        const Priority target_p = kPriorityCalendar[calendar_idx % kPriorityCalendarLength];
-        const std::size_t target_idx = static_cast<std::size_t>(target_p);
-
-        if (pop_from_global_band_locked(target_idx, deadline_bursts[target_idx], out)) {
-            calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
-            return true;
-        }
-
-        for (Priority p : kFallbackPriorityOrder) {
-            if (p == target_p) continue;
-            const std::size_t p_idx = static_cast<std::size_t>(p);
-            if (pop_from_global_band_locked(p_idx, deadline_bursts[p_idx], out)) {
-                calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool global_queues_empty() const noexcept {
-        for (std::size_t i = 0; i < 4; ++i) {
-            if (!global_edf_heaps[i].empty() || !global_injection_queues[i].empty()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    struct LockedLocalDeque {
-        mutable std::mutex mutex;
-        std::array<std::deque<QueuedTask>, 4> bands;
-        Impl* impl_ptr{nullptr};
-
-        void push_back(QueuedTask task, Priority priority) {
-            std::lock_guard<std::mutex> lock(mutex);
-            bands[static_cast<std::size_t>(priority)].push_back(std::move(task));
-        }
-
-        bool pop_back_weighted(std::size_t& calendar_idx, QueuedTask& out) {
-            std::lock_guard<std::mutex> lock(mutex);
-            const Priority target_p = kPriorityCalendar[calendar_idx % kPriorityCalendarLength];
-            auto& target_q = bands[static_cast<std::size_t>(target_p)];
-            if (!target_q.empty()) {
-                out = std::move(target_q.back());
-                target_q.pop_back();
-                calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
-                if (impl_ptr && impl_ptr->metrics.level != MetricsLevel::Off) {
-                    detail::RuntimeMetrics::saturating_inc(impl_ptr->metrics.shard_for_current().local_claims);
-                }
-                return true;
-            }
-
-            for (Priority p : kFallbackPriorityOrder) {
-                if (p == target_p) continue;
-                auto& q = bands[static_cast<std::size_t>(p)];
-                if (!q.empty()) {
-                    out = std::move(q.back());
-                    q.pop_back();
-                    calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
-                    if (impl_ptr && impl_ptr->metrics.level != MetricsLevel::Off) {
-                        detail::RuntimeMetrics::saturating_inc(impl_ptr->metrics.shard_for_current().local_claims);
-                    }
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        bool steal_front_weighted(std::size_t& calendar_idx, QueuedTask& out) {
-            std::lock_guard<std::mutex> lock(mutex);
-            const Priority target_p = kPriorityCalendar[calendar_idx % kPriorityCalendarLength];
-            auto& target_q = bands[static_cast<std::size_t>(target_p)];
-            if (!target_q.empty()) {
-                out = std::move(target_q.front());
-                target_q.pop_front();
-                calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
-                return true;
-            }
-
-            for (Priority p : kFallbackPriorityOrder) {
-                if (p == target_p) continue;
-                auto& q = bands[static_cast<std::size_t>(p)];
-                if (!q.empty()) {
-                    out = std::move(q.front());
-                    q.pop_front();
-                    calendar_idx = (calendar_idx + 1) % kPriorityCalendarLength;
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        bool empty() const {
-            std::lock_guard<std::mutex> lock(mutex);
-            return bands[0].empty() && bands[1].empty() && bands[2].empty() && bands[3].empty();
-        }
-
-        std::size_t size() const {
-            std::lock_guard<std::mutex> lock(mutex);
-            return bands[0].size() + bands[1].size() + bands[2].size() + bands[3].size();
-        }
-    };
-    std::vector<std::unique_ptr<LockedLocalDeque>> local_deques;
-
     Impl(RuntimeId id, SchedulerOptions opts, SchedulerCapabilities caps)
-        : runtime_id(id),
-          options(std::move(opts)),
-          capabilities(caps),
-          packed_status(pack(SchedulerState::Running, ShutdownMode::None)),
-          admission(options.external_pending_capacity, options.external_backpressure, packed_status, metrics),
-          timers(metrics) {
-        metrics.init(options.metrics_level, options.worker_count);
+        : detail::RuntimeState(id, std::move(opts), caps) {
         register_runtime_impl(this);
-
-        local_deques.reserve(options.worker_count);
-        for (std::size_t i = 0; i < options.worker_count; ++i) {
-            auto deque = std::make_unique<LockedLocalDeque>();
-            deque->impl_ptr = this;
-            local_deques.push_back(std::move(deque));
-        }
         
         // 1. Reaper 注册与能力预留（R-023, R-024, R-097）
         auto& registry = detail::ReaperRegistry::instance();
@@ -430,9 +192,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         //    全部 producer buffer 预分配；Recording 中分配失败抛出 → startup rollback，
         //    不允许无 buffer 的部分 Runtime。
         if (options.trace_collector) {
-            trace_collector = options.trace_collector;
-            detail::trace_attach_runtime(options.trace_collector, runtime_id, options.worker_count,
-                                         &trace_worker_slots, &trace_external_slot);
+            diagnostics.attach(options.trace_collector, options.worker_count);
         }
 
         // 3. 创建 Worker 并通过启动栅栏进行同步强事务管理（R-097, D-155）
@@ -509,10 +269,6 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
         }
     }
 
-    std::mutex shutdown_mutex;
-    std::condition_variable shutdown_done_cv;
-    bool shutdown_in_progress{false};
-
     // 同步关闭并在全部 Worker 退出并 join 后发布 Stopped（R-010 / R-012 / R-016 / R-019）
     void shutdown_sync(ShutdownMode mode) {
         if (get_status().state == SchedulerState::Stopped) {
@@ -567,64 +323,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     }
 
     void cancel_all_unstarted_tasks_locked() noexcept {
-        for (auto& heap : global_edf_heaps) {
-            std::vector<EdfEntry> remaining_edf;
-            for (auto& entry : heap) {
-                if (entry.task.invoker && entry.task.invoker->is_resume_segment()) {
-                    remaining_edf.push_back(std::move(entry));
-                } else {
-                    if (entry.task.invoker) {
-                        entry.task.invoker->cancel_pre_start();
-                    }
-                    if (entry.task.is_external) {
-                        admission.release(1);
-                    }
-                }
-            }
-            heap = std::move(remaining_edf);
-            std::make_heap(heap.begin(), heap.end(), std::greater<EdfEntry>{});
-        }
-
-        for (auto& q : global_injection_queues) {
-            std::deque<QueuedTask> remaining_global;
-            while (!q.empty()) {
-                auto task = std::move(q.front());
-                q.pop_front();
-                if (task.invoker && task.invoker->is_resume_segment()) {
-                    // R-075 / D-154: 保留已启动的 resume segment，允许其恢复执行合作取消或自然完成
-                    remaining_global.push_back(std::move(task));
-                } else {
-                    if (task.invoker) {
-                        task.invoker->cancel_pre_start();
-                    }
-                    if (task.is_external) {
-                        admission.release(1);
-                    }
-                }
-            }
-            q = std::move(remaining_global);
-        }
-
-        for (auto& d : local_deques) {
-            if (d) {
-                std::lock_guard<std::mutex> lk(d->mutex);
-                for (auto& q : d->bands) {
-                    std::deque<QueuedTask> remaining_local;
-                    while (!q.empty()) {
-                        auto task = std::move(q.front());
-                        q.pop_front();
-                        if (task.invoker && task.invoker->is_resume_segment()) {
-                            remaining_local.push_back(std::move(task));
-                        } else {
-                            if (task.invoker) {
-                                task.invoker->cancel_pre_start();
-                            }
-                        }
-                    }
-                    q = std::move(remaining_local);
-                }
-            }
-        }
+        ready_queues.cancel_unstarted(admission);
     }
 
     // 状态转换与模式保持（R-014 / R-015 / R-022）
@@ -837,39 +536,12 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
             detail::t_deferred_self_resume_owner = detail::t_current_executing_task_id;
             return;
         }
-        const Priority p = task->priority();
-        const auto dl = task->deadline();
-        const bool is_resume = task->is_resume_segment();
-        const std::size_t band_idx = static_cast<std::size_t>(p);
-
-        // R-083 / D-133: 带 Deadline 且从未 Running 的任务进入对应 Priority band 的 Global EDF min-heap
-        if (dl.has_value() && !is_resume) {
-            if (metrics.level != MetricsLevel::Off) {
-                detail::RuntimeMetrics::saturating_inc(metrics.shard_for_current().deadline_admitted);
-            }
-            {
-                std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                const std::uint64_t seq = ++global_admission_seq;
-                global_edf_heaps[band_idx].push_back(EdfEntry{*dl, seq, {std::move(task), is_external}});
-                std::push_heap(global_edf_heaps[band_idx].begin(),
-                               global_edf_heaps[band_idx].end(),
-                               std::greater<EdfEntry>{});
-            }
-            work_epoch.fetch_add(1, std::memory_order_release);
-            work_cv.notify_one();
-            return;
-        }
-
-        if (!is_external && detail::t_current_worker_impl == this &&
+        const bool use_local_queue =
+            !is_external && detail::t_current_worker_impl == this &&
             detail::t_current_worker_runtime_id == runtime_id &&
-            detail::t_current_worker_index < local_deques.size()) {
-            local_deques[detail::t_current_worker_index]->push_back({std::move(task), false}, p);
-        } else {
-            {
-                std::lock_guard<std::mutex> lock(lifecycle_mutex);
-                global_injection_queues[band_idx].push_back({std::move(task), is_external});
-            }
-        }
+            detail::t_current_worker_index < ready_queues.worker_count();
+        ready_queues.publish(
+            std::move(task), is_external, use_local_queue, detail::t_current_worker_index);
         work_epoch.fetch_add(1, std::memory_order_release);
         work_cv.notify_one();
     }
@@ -938,7 +610,8 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
     static void worker_thread_entry(void* arg, std::size_t index) noexcept {
         try {
             if (arg != nullptr) {
-                detail::run_worker_loop(*static_cast<Impl*>(arg), index);
+                auto* impl = static_cast<Impl*>(arg);
+                detail::run_worker_loop(*impl, impl, index);
             }
         } catch (...) {
         }
@@ -947,15 +620,15 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public std::enable_shared_from_this<Sch
 
 namespace {
 void register_runtime_impl(Scheduler::Impl* impl) {
-    detail::register_runtime_instance(impl->runtime_id, impl);
+    detail::register_runtime_instance(impl->runtime_id, &impl->diagnostics);
 }
 
 void unregister_runtime_impl(Scheduler::Impl* impl) {
     detail::unregister_runtime_instance(impl->runtime_id);
 }
 
-Scheduler::Impl* find_runtime_impl(RuntimeId id) {
-    return static_cast<Scheduler::Impl*>(detail::find_runtime_instance(id));
+detail::RuntimeDiagnostics* find_runtime_diagnostics(RuntimeId id) {
+    return detail::find_runtime_instance(id);
 }
 }  // namespace
 
@@ -984,327 +657,6 @@ void flush_deferred_self_resume() {
     if (impl) {
         impl->post_task_internal(std::move(inv), false);
     }
-}
-
-void record_metrics_submission_attempt(RuntimeId id) noexcept {
-    auto* impl = find_runtime_impl(id);
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().submission_attempts);
-}
-
-void record_metrics_first_start(TaskId id, std::optional<DeadlineDisposition> dl_disp) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    detail::RuntimeMetrics::saturating_inc(shard.first_starts);
-    if (impl->metrics.ready_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.ready_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
-    impl->metrics.running_tasks.fetch_add(1, std::memory_order_relaxed);
-    if (dl_disp.has_value()) {
-        if (*dl_disp == DeadlineDisposition::Met) {
-            detail::RuntimeMetrics::saturating_inc(shard.deadline_met);
-        } else if (*dl_disp == DeadlineDisposition::Missed) {
-            detail::RuntimeMetrics::saturating_inc(shard.deadline_missed);
-        }
-    }
-}
-
-void record_metrics_succeeded(TaskId id) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    detail::RuntimeMetrics::saturating_inc(shard.succeeded);
-    if (impl->metrics.running_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.running_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
-}
-
-void record_metrics_failed(TaskId id) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    detail::RuntimeMetrics::saturating_inc(shard.failed);
-    if (impl->metrics.running_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.running_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
-}
-
-void record_metrics_cancelled_cooperative(TaskId id) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    detail::RuntimeMetrics::saturating_inc(shard.cancelled_cooperative);
-    if (impl->metrics.running_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.running_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
-}
-
-void record_metrics_cancelled_before_start(TaskId id, bool has_deadline) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    detail::RuntimeMetrics::saturating_inc(shard.cancelled_before_start);
-    if (impl->metrics.ready_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.ready_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
-    if (has_deadline) {
-        detail::RuntimeMetrics::saturating_inc(shard.deadline_cancelled_before_start);
-    }
-}
-
-// ============================================================================
-// Wait/Await 诊断辅助（AST-048 / R-096 / D-149）。
-// 全部 noexcept、无分配；Metrics Off / Trace 未附加时为零成本 fast path。
-// ============================================================================
-
-TraceSlot* wait_diagnostic_trace_slot(Scheduler::Impl& impl) noexcept {
-    if (!impl.trace_collector) {
-        return nullptr;
-    }
-    if (t_current_worker_impl == &impl &&
-        t_current_worker_index < impl.trace_worker_slots.size()) {
-        return impl.trace_worker_slots[t_current_worker_index];
-    }
-    return impl.trace_external_slot;
-}
-
-// wait/await 诊断 trace 事件：source 侧取当前 worker runtime（external caller
-// 归属 target runtime 的 external/control lane），target 侧携带逻辑 identity。
-void emit_wait_trace_event(Scheduler::Impl* impl, TraceEventKind kind, TaskId source,
-                           TaskId target, GraphRunId graph_target,
-                           std::uint16_t reason) noexcept {
-    if (!impl || !impl->trace_collector) {
-        return;
-    }
-    TraceSlot* slot = wait_diagnostic_trace_slot(*impl);
-    if (!slot) {
-        return;
-    }
-    detail::TraceEmitDesc d{};
-    d.kind = kind;
-    d.runtime_id = impl->runtime_id;
-    d.task_sequence = source.valid() ? source.sequence() : 0;
-    d.target_runtime_id = target.valid() ? RuntimeId{target.runtime_id().value()} : RuntimeId{};
-    d.target_task_sequence = target.valid() ? target.sequence() : 0;
-    d.graph_run_sequence = graph_target.valid() ? graph_target.sequence() : 0;
-    d.reason = reason;
-    detail::trace_emit_desc(*impl->trace_collector, slot, d);
-}
-
-// WaitEnd 的 scope-exit 配对：duration histogram、timeout 计数与 trace 配对。
-struct WaitDiagnosticsGuard {
-    Scheduler::Impl* impl;
-    TaskId source;
-    TaskId target;
-    GraphRunId graph_target;
-    std::chrono::steady_clock::time_point begin;
-    const std::optional<std::chrono::steady_clock::time_point>& deadline;
-    const TaskControlBlock* task_state;
-    const GraphRunSharedState* graph_state;
-    bool helping;
-
-    ~WaitDiagnosticsGuard() noexcept {
-        const bool completed =
-            task_state ? task_state->is_completed()
-                       : graph_state->run_state.load(std::memory_order_acquire) != GraphRunState::Running;
-        const auto now = std::chrono::steady_clock::now();
-        const bool timed_out = !completed && deadline.has_value() && now >= *deadline;
-        const auto dur_ns = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - begin).count());
-        if (impl && impl->metrics.level != MetricsLevel::Off) {
-            auto& shard = impl->metrics.shard_for_current();
-            if (impl->metrics.level == MetricsLevel::Detailed) {
-                if (helping) {
-                    shard.helping_wait_duration.record(dur_ns);
-                } else {
-                    shard.thread_wait_duration.record(dur_ns);
-                }
-            }
-            if (timed_out) {
-                detail::RuntimeMetrics::saturating_inc(shard.wait_for_timeouts);
-            }
-        }
-        emit_wait_trace_event(impl, TraceEventKind::WaitEnd, source, target, graph_target,
-                              completed ? 1u : (timed_out ? 2u : 0u));
-    }
-};
-
-void record_metrics_unobserved_failure(TaskId id) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    detail::RuntimeMetrics::saturating_inc(shard.unobserved_failures);
-    // R-060：仅在活动 Trace 可用时尽力发出 unobserved failure 诊断事件。
-    emit_wait_trace_event(impl, TraceEventKind::UnobservedFailure, id, TaskId{}, GraphRunId{}, 0);
-}
-
-// --- Coroutine await 诊断入口（TaskHandleAwaiter 调用，R-096 / D-149）---
-
-void record_wait_call(TaskId target, bool timed_out) noexcept {
-    Scheduler::Impl* impl = t_current_worker_impl
-                                ? static_cast<Scheduler::Impl*>(t_current_worker_impl)
-                                : find_runtime_impl(target.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    const bool worker = t_current_worker_impl != nullptr;
-    if (worker) {
-        if (target.runtime_id() == impl->runtime_id) {
-            detail::RuntimeMetrics::saturating_inc(shard.same_runtime_helping_waits);
-        } else {
-            detail::RuntimeMetrics::saturating_inc(shard.cross_runtime_helping_waits);
-        }
-    } else {
-        detail::RuntimeMetrics::saturating_inc(shard.task_wait_calls);
-    }
-    if (timed_out) {
-        detail::RuntimeMetrics::saturating_inc(shard.wait_for_timeouts);
-    }
-    // 即时已完成等待记录零/最小 bucket（D-149）
-    if (impl->metrics.level == MetricsLevel::Detailed) {
-        (worker ? shard.helping_wait_duration : shard.thread_wait_duration).record(0);
-    }
-}
-
-void record_self_wait_rejection(TaskId target) noexcept {
-    if (auto* impl = find_runtime_impl(target.runtime_id());
-        impl && impl->metrics.level != MetricsLevel::Off) {
-        detail::RuntimeMetrics::saturating_inc(
-            impl->metrics.shard_for_current().direct_self_wait_rejections);
-    }
-}
-
-void record_await_registration(TaskId source, TaskId target) noexcept {
-    if (auto* impl = find_runtime_impl(target.runtime_id());
-        impl && impl->metrics.level != MetricsLevel::Off) {
-        detail::RuntimeMetrics::saturating_inc(
-            impl->metrics.shard_for_current().coroutine_await_registrations);
-    }
-    Scheduler::Impl* src_impl = t_current_worker_impl
-                                    ? static_cast<Scheduler::Impl*>(t_current_worker_impl)
-                                    : find_runtime_impl(target.runtime_id());
-    emit_wait_trace_event(src_impl, TraceEventKind::AwaitArmed, source, target, GraphRunId{}, 0);
-}
-
-void record_await_triggered(TaskId source, TaskId target, bool cancelled) noexcept {
-    Scheduler::Impl* src_impl = t_current_worker_impl
-                                    ? static_cast<Scheduler::Impl*>(t_current_worker_impl)
-                                    : find_runtime_impl(target.runtime_id());
-    emit_wait_trace_event(src_impl, TraceEventKind::AwaitTriggered, source, target, GraphRunId{},
-                          cancelled ? 2u : 1u);
-}
-
-void record_await_resumed(TaskId source, TaskId target, std::uint64_t duration_ns) noexcept {
-    if (auto* impl = find_runtime_impl(target.runtime_id());
-        impl && impl->metrics.level == MetricsLevel::Detailed) {
-        impl->metrics.shard_for_current().coroutine_await_duration.record(duration_ns);
-    }
-    Scheduler::Impl* src_impl = t_current_worker_impl
-                                    ? static_cast<Scheduler::Impl*>(t_current_worker_impl)
-                                    : find_runtime_impl(target.runtime_id());
-    emit_wait_trace_event(src_impl, TraceEventKind::AwaitResumed, source, target, GraphRunId{}, 0);
-}
-
-void record_metrics_suspended(TaskId id) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    detail::RuntimeMetrics::saturating_inc(shard.coroutine_suspends);
-    if (impl->metrics.running_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.running_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
-    impl->metrics.suspended_tasks.fetch_add(1, std::memory_order_relaxed);
-}
-
-void record_metrics_resumed(TaskId id) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    if (impl->metrics.suspended_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.suspended_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
-    impl->metrics.ready_tasks.fetch_add(1, std::memory_order_relaxed);
-}
-
-void record_metrics_resume_segment(TaskId id) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    auto& shard = impl->metrics.shard_for_current();
-    detail::RuntimeMetrics::saturating_inc(shard.resume_segments);
-    if (impl->metrics.ready_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.ready_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
-    impl->metrics.running_tasks.fetch_add(1, std::memory_order_relaxed);
-}
-
-void record_metrics_explicit_yield() noexcept {
-    if (t_current_worker_impl != nullptr) {
-        auto* impl = static_cast<Scheduler::Impl*>(t_current_worker_impl);
-        if (impl->metrics.level != MetricsLevel::Off) {
-            detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().explicit_yields);
-        }
-    }
-}
-
-void record_metrics_graph_node_terminal(RuntimeId id) noexcept {
-    auto* impl = find_runtime_impl(id);
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().graph_nodes_terminal);
-}
-
-void record_metrics_graph_run_completed(RuntimeId id) noexcept {
-    auto* impl = find_runtime_impl(id);
-    if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    if (impl->metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
-    }
-}
-
-void record_metrics_ready_queue_wait(TaskId id, std::uint64_t duration_ns) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
-    impl->metrics.shard_for_current().ready_queue_wait.record(duration_ns);
-}
-
-void record_metrics_execution_segment(TaskId id, std::uint64_t duration_ns) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
-    impl->metrics.shard_for_current().execution_segment.record(duration_ns);
-}
-
-void record_metrics_task_wall_time(TaskId id, std::uint64_t duration_ns) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
-    impl->metrics.shard_for_current().task_wall_time.record(duration_ns);
-}
-
-void record_metrics_blocking_admission_wait(RuntimeId id, std::uint64_t duration_ns) noexcept {
-    auto* impl = find_runtime_impl(id);
-    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
-    impl->metrics.shard_for_current().blocking_admission_wait.record(duration_ns);
-}
-
-void record_metrics_timer_wake_lateness(RuntimeId id, std::uint64_t duration_ns) noexcept {
-    auto* impl = find_runtime_impl(id);
-    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
-    impl->metrics.shard_for_current().timer_wake_lateness.record(duration_ns);
-}
-
-void record_metrics_deadline_start_lateness(TaskId id, std::uint64_t duration_ns) noexcept {
-    auto* impl = find_runtime_impl(id.runtime_id());
-    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
-    impl->metrics.shard_for_current().deadline_start_lateness.record(duration_ns);
-}
-
-void record_metrics_worker_park_duration(RuntimeId id, std::uint64_t duration_ns) noexcept {
-    auto* impl = find_runtime_impl(id);
-    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
-    impl->metrics.shard_for_current().worker_park_duration.record(duration_ns);
-}
-
-void record_metrics_runtime_join_latency(RuntimeId id, std::uint64_t duration_ns) noexcept {
-    auto* impl = find_runtime_impl(id);
-    if (!impl || impl->metrics.level != MetricsLevel::Detailed) return;
-    impl->metrics.shard_for_current().runtime_join_latency.record(duration_ns);
 }
 
 TaskExecutionContextGuard::TaskExecutionContextGuard(TaskId new_id, Priority new_priority) noexcept
@@ -1388,7 +740,7 @@ void perform_caller_wait(
         t_current_executing_task_id != TaskId{} &&
         t_current_executing_task_id == target.id()) {
         // R-096 / D-149：self rejection 计数（不改变语义）
-        if (auto* impl = find_runtime_impl(target.id().runtime_id());
+        if (auto* impl = find_runtime_diagnostics(target.id().runtime_id());
             impl && impl->metrics.level != MetricsLevel::Off) {
             detail::RuntimeMetrics::saturating_inc(
                 impl->metrics.shard_for_current().direct_self_wait_rejections);
@@ -1397,13 +749,13 @@ void perform_caller_wait(
     }
 
     // --- Wait/Await 诊断（R-096 / D-149）：入口计数 + WaitBegin，scope-exit 配对 ---
-    Scheduler::Impl* diag_impl = nullptr;
+    RuntimeDiagnostics* diag_impl = nullptr;
     bool diag_helping = false;
     if (t_current_worker_impl != nullptr) {
-        diag_impl = static_cast<Scheduler::Impl*>(t_current_worker_impl);
+        diag_impl = current_worker_diagnostics();
         diag_helping = true;
     } else {
-        diag_impl = find_runtime_impl(target.id().runtime_id());
+        diag_impl = find_runtime_diagnostics(target.id().runtime_id());
     }
     if (diag_impl && diag_impl->metrics.level != MetricsLevel::Off) {
         auto& shard = diag_impl->metrics.shard_for_current();
@@ -1478,15 +830,12 @@ void perform_caller_wait(
             break;
         }
 
-        Scheduler::Impl::QueuedTask task;
+        ReadyQueues::QueuedTask task;
         bool found_task = false;
 
-        if (t_current_worker_index < impl->local_deques.size()) {
-            if (impl->local_deques[t_current_worker_index]->pop_back_weighted(t_help_local_cal, task)) {
-                found_task = true;
-                std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
-                ++impl->active_task_count;
-            }
+        if (impl->ready_queues.claim_local(
+                t_current_worker_index, t_help_local_cal, task)) {
+            found_task = true;
         }
 
         if (!found_task) {
@@ -1495,8 +844,8 @@ void perform_caller_wait(
             // R-059 / D-080: Immediate 模式下不得 first-start 新 Task
             if (st.state != SchedulerState::Stopped &&
                 st.shutdown_mode != ShutdownMode::Immediate &&
-                impl->pop_global_weighted(t_help_global_cal, t_help_deadline_bursts, task)) {
-                ++impl->active_task_count;
+                impl->ready_queues.claim_global(
+                    t_help_global_cal, t_help_deadline_bursts, task)) {
                 found_task = true;
                 if (task.is_external) {
                     impl->admission.release(1);
@@ -1513,13 +862,11 @@ void perform_caller_wait(
                 if (impl->metrics.level != MetricsLevel::Off) {
                     detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_attempts);
                 }
-                if (v < impl->local_deques.size() && impl->local_deques[v]->steal_front_weighted(t_help_steal_cal, task)) {
+                if (impl->ready_queues.steal(v, t_help_steal_cal, task)) {
                     if (impl->metrics.level != MetricsLevel::Off) {
                         detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_successes);
                     }
                     found_task = true;
-                    std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
-                    ++impl->active_task_count;
                     break;
                 } else {
                     if (impl->metrics.level != MetricsLevel::Off) {
@@ -1531,10 +878,7 @@ void perform_caller_wait(
 
         if (found_task && task.invoker) {
             task.invoker->execute();
-            {
-                std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
-                --impl->active_task_count;
-            }
+            impl->ready_queues.complete_claim();
             impl->work_cv.notify_all();
         } else {
             // 没有可窃取/帮助的任务，等待目标完成通知
@@ -1566,13 +910,13 @@ void perform_graph_caller_wait(
     }
 
     // --- Wait 诊断（R-096 / D-149）：graph_wait_calls + WaitBegin/End 配对 ---
-    Scheduler::Impl* diag_impl = nullptr;
+    RuntimeDiagnostics* diag_impl = nullptr;
     bool diag_helping = false;
     if (t_current_worker_impl != nullptr) {
-        diag_impl = static_cast<Scheduler::Impl*>(t_current_worker_impl);
+        diag_impl = current_worker_diagnostics();
         diag_helping = true;
     } else {
-        diag_impl = find_runtime_impl(target.id.runtime_id());
+        diag_impl = find_runtime_diagnostics(target.id.runtime_id());
     }
     if (diag_impl && diag_impl->metrics.level != MetricsLevel::Off) {
         auto& shard = diag_impl->metrics.shard_for_current();
@@ -1641,15 +985,12 @@ void perform_graph_caller_wait(
             break;
         }
 
-        Scheduler::Impl::QueuedTask task;
+        ReadyQueues::QueuedTask task;
         bool found_task = false;
 
-        if (t_current_worker_index < impl->local_deques.size()) {
-            if (impl->local_deques[t_current_worker_index]->pop_back_weighted(t_graph_help_local_cal, task)) {
-                found_task = true;
-                std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
-                ++impl->active_task_count;
-            }
+        if (impl->ready_queues.claim_local(
+                t_current_worker_index, t_graph_help_local_cal, task)) {
+            found_task = true;
         }
 
         if (!found_task) {
@@ -1657,8 +998,8 @@ void perform_graph_caller_wait(
             const auto st = Scheduler::Impl::unpack(impl->packed_status.load(std::memory_order_acquire));
             if (st.state != SchedulerState::Stopped &&
                 st.shutdown_mode != ShutdownMode::Immediate &&
-                impl->pop_global_weighted(t_graph_help_global_cal, t_graph_help_deadline_bursts, task)) {
-                ++impl->active_task_count;
+                impl->ready_queues.claim_global(
+                    t_graph_help_global_cal, t_graph_help_deadline_bursts, task)) {
                 found_task = true;
                 if (task.is_external) {
                     impl->admission.release(1);
@@ -1674,13 +1015,11 @@ void perform_graph_caller_wait(
                 if (impl->metrics.level != MetricsLevel::Off) {
                     detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_attempts);
                 }
-                if (v < impl->local_deques.size() && impl->local_deques[v]->steal_front_weighted(t_graph_help_steal_cal, task)) {
+                if (impl->ready_queues.steal(v, t_graph_help_steal_cal, task)) {
                     if (impl->metrics.level != MetricsLevel::Off) {
                         detail::RuntimeMetrics::saturating_inc(impl->metrics.shard_for_current().steal_successes);
                     }
                     found_task = true;
-                    std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
-                    ++impl->active_task_count;
                     break;
                 } else {
                     if (impl->metrics.level != MetricsLevel::Off) {
@@ -1692,10 +1031,7 @@ void perform_graph_caller_wait(
 
         if (found_task && task.invoker) {
             task.invoker->execute();
-            {
-                std::lock_guard<std::mutex> lock(impl->lifecycle_mutex);
-                --impl->active_task_count;
-            }
+            impl->ready_queues.complete_claim();
             impl->work_cv.notify_all();
         } else {
             std::unique_lock<std::mutex> lock(target.mutex);
@@ -1735,19 +1071,18 @@ private:
 }  // namespace
 
 void SchedulerTestAccess::run_task_on_worker(Scheduler& s, std::function<void()> task) {
-    if (s.impl_) {
-        s.impl_->post_task_internal(std::make_unique<FunctionTaskInvoker>(std::move(task)), false /* not external */);
+    // 测试会让该任务在 worker 上销毁最后一个 Scheduler handle；调用期间持有
+    // 临时强引用，确保 publish/notify 返回前 Runtime 不会被 Reaper 回收。
+    auto runtime = s.impl_;
+    if (runtime) {
+        runtime->post_task_internal(
+            std::make_unique<FunctionTaskInvoker>(std::move(task)), false /* not external */);
     }
 }
 
 std::size_t SchedulerTestAccess::global_queue_size(const Scheduler& s) {
     if (s.impl_) {
-        std::lock_guard<std::mutex> lock(s.impl_->lifecycle_mutex);
-        std::size_t total = 0;
-        for (const auto& q : s.impl_->global_injection_queues) {
-            total += q.size();
-        }
-        return total;
+        return s.impl_->ready_queues.global_size();
     }
     return 0;
 }

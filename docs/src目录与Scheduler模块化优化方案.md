@@ -1,6 +1,6 @@
 # AstraScheduler `src` 目录与 Scheduler 模块化优化方案
 
-状态：核心重构已按 D-177、R-125～R-128、AST-067～070 实施；`RuntimeState` 进一步独立为后续深化项
+状态：已按 D-177/D-178、R-125～R-130、AST-067～073 完成核心重构与 `RuntimeState/ReadyQueues/diagnostics` 深层拆分
 日期：2026-08-31
 适用范围：AstraScheduler 1.2.x 之后的纯内部重构
 
@@ -211,7 +211,7 @@ return detail::GraphExecution::start(
 
 ### 6.1 `runtime_state`
 
-本轮保留在 `Scheduler::Impl` 的 Runtime 总装配中，避免把大型 Impl 字段布局扩散到共享头；Graph、Worker 与 Registry 已先通过窄 seam/模板协议迁出。后续若 ReadyQueues 形成稳定深模块，再单独提取 RuntimeState。
+已提取到 `src/runtime/runtime_state.{hpp,cpp}`，作为单个 Runtime 的唯一组合状态所有者；`Scheduler::Impl` 通过内部继承复用该状态，只保留 shared ownership、Reaper handoff 与 Graph port 适配，不再复制字段。
 
 拥有 Runtime 组合状态和生命周期转换：
 
@@ -219,7 +219,7 @@ return detail::GraphExecution::start(
 - packed SchedulerStatus；
 - AdmissionController、TimerQueue、RuntimeMetrics、RuntimeIdentityAllocator；
 - Worker thread 集合与 startup/shutdown/join 协议；
-- ready queues 和 work epoch。
+- ReadyQueues、RuntimeDiagnostics 和 work epoch。
 
 该模块提供完整操作，不为其他模块暴露可写字段。
 
@@ -234,15 +234,23 @@ return detail::GraphExecution::start(
 - helping wait 的 Worker 执行部分；
 - Worker execution context 安装与恢复。
 
-建议入口保持窄：
+入口已改为独立 `.cpp` 编译的稳定 seam，不再以模板读取 `Scheduler::Impl` 字段：
 
 ```cpp
-void run_worker(RuntimeState&, std::size_t worker_index) noexcept;
+void run_worker_loop(RuntimeState&, void* owner_impl, std::size_t worker_index);
 ```
 
 ### 6.3 `runtime_registry`
 
-拥有进程内 RuntimeId 到 RuntimeState 的 non-owning lookup，以及 Metrics/Trace wait diagnostics 所需的安全查询。它不得取得 Runtime 生命周期所有权；Scheduler/Reaper 仍按现有规则拥有和移交 Runtime State。
+拥有进程内 RuntimeId 到 `RuntimeDiagnostics` 的 non-owning lookup。Registry 不再保存无类型 `void*`，也不得取得 Runtime 生命周期所有权；Scheduler/Reaper 仍按现有规则拥有和移交 Runtime State。
+
+### 6.4 `ready_queues`
+
+`src/runtime/ready_queues.{hpp,cpp}` 独占 Global EDF/FIFO bands、每 Worker local queues、weighted claim、bounded steal、Immediate cancel cleanup 与 claimed 计数。它只依赖 Metrics 和 AdmissionController，不保存 `Scheduler::Impl*` 或 lifecycle 状态。
+
+### 6.5 `runtime_diagnostics`
+
+`src/runtime/runtime_diagnostics.{hpp,cpp}` 独占 Metrics/Trace 路由、Trace producer attachment、WaitDiagnosticsGuard 以及 wait/await/unobserved-failure hooks。`scheduler.cpp` 只保留等待和 helping 协议入口，通过窄 diagnostics 对象发射事件。
 
 ### 6.4 `scheduler.cpp`
 
@@ -263,7 +271,10 @@ src/
 ├── runtime/
 │   ├── scheduler.cpp
 │   ├── runtime_registry.{hpp,cpp}
-│   ├── worker_loop.hpp
+│   ├── runtime_state.{hpp,cpp}
+│   ├── ready_queues.{hpp,cpp}
+│   ├── runtime_diagnostics.{hpp,cpp}
+│   ├── worker_loop.{hpp,cpp}
 │   ├── admission_controller.{hpp,cpp}
 │   ├── timer_queue.{hpp,cpp}
 │   ├── runtime_metrics.{hpp,cpp}

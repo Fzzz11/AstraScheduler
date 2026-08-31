@@ -181,6 +181,42 @@ def audit_internal_module_boundaries() -> list[str]:
         ):
             if forbidden in scheduler_text:
                 problems.append(f"scheduler.cpp still owns {forbidden} (R-126/R-127)")
+        for forbidden in (
+            "struct QueuedTask",
+            "struct EdfEntry",
+            "struct WaitDiagnosticsGuard",
+            "void record_metrics_submission_attempt",
+        ):
+            if forbidden in scheduler_text:
+                problems.append(f"scheduler.cpp still owns {forbidden} (R-129/R-130)")
+
+    deep_runtime_files = {
+        "src/runtime/ready_queues.hpp": ("global_edf_heaps_", "local_queues_", "claimed_count_"),
+        "src/runtime/runtime_state.hpp": ("ReadyQueues ready_queues", "worker_threads", "RuntimeDiagnostics diagnostics"),
+        "src/runtime/runtime_diagnostics.hpp": ("RuntimeDiagnostics final", "WaitDiagnosticsGuard"),
+        "src/runtime/worker_loop.cpp": ("void run_worker_loop",),
+    }
+    for rel, owned_markers in deep_runtime_files.items():
+        path = ROOT / rel
+        if not path.is_file():
+            problems.append(f"R-129/R-130 module missing: {rel}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if IMPL_PTR_RE.search(text):
+            problems.append(f"{rel} depends on Scheduler::Impl* (R-129/R-130)")
+        for marker in owned_markers:
+            if marker not in text:
+                problems.append(f"{rel} missing owned marker {marker} (R-129/R-130)")
+
+    worker_header = ROOT / "src" / "runtime" / "worker_loop.hpp"
+    if worker_header.is_file() and "template <" in worker_header.read_text(encoding="utf-8"):
+        problems.append("worker_loop.hpp still template-instantiates Scheduler internals (R-130)")
+
+    registry = ROOT / "src" / "runtime" / "runtime_registry.hpp"
+    if registry.is_file():
+        registry_text = registry.read_text(encoding="utf-8")
+        if "void*" in registry_text or "RuntimeDiagnostics*" not in registry_text:
+            problems.append("runtime registry is not a narrow RuntimeDiagnostics registry (R-130)")
 
     allowed_root_files = {"version.cpp"}
     for path in (ROOT / "src").iterdir():
@@ -242,7 +278,7 @@ def main() -> int:
         return 1
     print(
         f"Encapsulation gate OK: public tests isolated; {len(NEGATIVE_PROBES)} internal probes rejected; "
-        "R-124 modules own state; R-125..R-128 Graph/Worker/layout boundaries hold."
+        "R-124 modules own state; R-125..R-130 Graph/Worker/ReadyQueues/RuntimeState/diagnostics boundaries hold."
     )
     return 0
 

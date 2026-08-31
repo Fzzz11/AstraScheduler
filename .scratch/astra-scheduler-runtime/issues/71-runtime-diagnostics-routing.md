@@ -3,9 +3,9 @@
 Parent: [AstraScheduler Ticket Plan](../ticket-plan.md)
 Spec: [AstraScheduler Runtime Spec](../spec.md) (approved; R-127, R-096)
 Milestone: v1.2.0
-Blocked by: AST-069, AST-070
-Status: ready-for-agent
-Claimed by: None
+Blocked by: AST-073
+Status: done
+Claimed by: agent
 
 ## Rules and decisions
 
@@ -21,7 +21,7 @@ public Scheduler facade 与 observability 逻辑之间的隐式耦合。
 
 ## What to build
 
-在 `src/observability/runtime_diagnostics.{hpp,cpp}` 建立非安装 diagnostics 模块：
+在 `src/runtime/runtime_diagnostics.{hpp,cpp}` 建立非安装 diagnostics 模块：
 
 - 通过窄的、non-owning Runtime diagnostics port 或 registry handle 读取 metrics/trace 能力；
 - 迁移 WaitBegin/WaitEnd、AwaitArmed/Triggered/Resumed、unobserved failure 路由和 scope guard；
@@ -37,10 +37,10 @@ public Scheduler facade 与 observability 逻辑之间的隐式耦合。
 
 ## Acceptance criteria
 
-- [ ] `WaitDiagnosticsGuard`、wait Trace event 路由和 diagnostics Metrics hooks 不再定义在 `src/runtime/scheduler.cpp`。
-- [ ] 新模块通过窄 seam 获取 Runtime 能力，不持有 `Scheduler::Impl*`；新增静态审计覆盖该边界。
-- [ ] `tests/test_wait_await_diagnostics.cpp`、GraphRun wait、Coroutine await、unobserved failure 行为不变。
-- [ ] Debug、ASan/UBSan、TSan、package/encapsulation gates 通过，public API 与安装清单无变化。
+- [x] `WaitDiagnosticsGuard`、wait Trace event 路由和 diagnostics Metrics hooks 不再定义在 `src/runtime/scheduler.cpp`。
+- [x] 新模块通过窄 seam 获取 Runtime 能力，不持有 `Scheduler::Impl*`；新增静态审计覆盖该边界。
+- [x] `tests/test_wait_await_diagnostics.cpp`、GraphRun wait、Coroutine await、unobserved failure 行为不变。
+- [x] Debug、ASan/UBSan、TSan、package/encapsulation gates 通过，public API 与安装清单无变化。
 
 ## Out of scope
 
@@ -52,4 +52,4 @@ public Scheduler facade 与 observability 逻辑之间的隐式耦合。
 
 - Spec: [`.scratch/astra-scheduler-runtime/spec.md`](../spec.md) — R-127, R-096
 - Decision: [`.scratch/astra-scheduler-runtime/decision-log.md`](../decision-log.md) — D-177, D-050, D-051, D-149
-- Verification: pending；实现后补充 WSL Debug/ASan/TSan、package 与 encapsulation evidence。
+- Verification: WSL Debug 53/53；ASan/UBSan 12/12 targeted；TSan 7/7 targeted；package efficiency 与 encapsulation gates passed。

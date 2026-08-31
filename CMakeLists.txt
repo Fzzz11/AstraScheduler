@@ -57,6 +57,10 @@ set(ASTRA_SCHEDULER_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/task/task_control_block.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/task/await_protocol.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/runtime_metrics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/ready_queues.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/runtime_diagnostics.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/runtime_state.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/worker_loop.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/runtime_registry.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/timer_queue.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/admission_controller.cpp

@@ -13034,11 +13034,71 @@ Scheduler 内部进一步抽出 Worker loop 与 non-owning Runtime registry/diag
 - Tickets: AST-067 through AST-071
 - Tests: Graph/admission/coroutine suites、Debug/ASan/TSan、semantic API、encapsulation、package consumer
 
+## D-178 — RuntimeState 与 ReadyQueues 按状态所有权深化
+
+Status: accepted
+
+Date: 2026-08-31
+
+Supersedes: None
+
+Superseded by: None
+
+### Context
+
+D-177 已迁出 GraphExecution、Worker loop 与 non-owning Runtime registry，但 `Scheduler::Impl` 仍直接拥有 lifecycle、global/local ready queues、worker counters、timer/admission/metrics 组合和 diagnostics producer context。`worker_loop.hpp` 仍以模板访问这些字段，`scheduler.cpp` 因而仍接近 2000 行，Runtime State 与 ready-work ownership 没有形成可删除、可单测的内部边界。项目 owner 现明确要求继续完成 `RuntimeState/ReadyQueues/diagnostics` 深层拆分。
+
+### Decision
+
+新增非安装 `ReadyQueues` 深模块，完整拥有 Global EDF/FIFO bands、per-Worker local queues、weighted claim、bounded steal、immediate cancel cleanup 与 queue inspection；它可以通过显式 `RuntimeMetrics&` 记录队列指标，但不得持有 `Scheduler::Impl*` 或生命周期字段。
+
+新增非安装 `RuntimeState`，作为一个 Scheduler Runtime 的身份、resolved options、status、AdmissionController、TimerQueue、RuntimeMetrics、ReadyQueues、worker synchronization/thread collection 与 Trace producer attachment 的唯一组合所有者。`Scheduler::Impl` 收敛为共享所有权外壳与 GraphRuntimePort adapter，不再复制 Runtime 状态。
+
+AST-071 的 diagnostics 拆分在 RuntimeState seam 稳定后实施：registry 保存 non-owning diagnostics port，`runtime_diagnostics` 负责 wait/await Metrics 与 Trace 路由，不得读取 `Scheduler::Impl` 字段。Worker loop 改为针对 RuntimeState 的非模板实现单元。
+
+### Invariants
+
+- Ready Task Ownership 从 publication 到 claim/cancel 仍恰好一个 owner；queue move/resize 不复制逻辑所有权。
+- Global EDF、priority calendar、local LIFO、steal FIFO、local burst limit 与 external slot release 时点不变。
+- Runtime State 生命周期仍由 `shared_ptr<Scheduler::Impl>`、Worker handoff 与 Reaper 协议控制；内部模块不得延长该生命周期。
+- startup transaction、shutdown escalation、Drain Work Closure、Join Ready 与 packed status memory ordering 不变。
+- diagnostics registry/port 是 non-owning；Runtime 注销后 lookup 必须安全失败为 no-op。
+- 不改变 public API、Metrics/Trace schema、安装清单或 Supported Configuration。
+
+### Rationale
+
+先让 ReadyQueues 拥有完整队列不变量，再把生命周期组合收进 RuntimeState，可以避免创建只转发字段的 façade，也避免把原始 `Scheduler::Impl` 整体搬进共享头。diagnostics 最后依赖稳定 port，可消除二次适配。
+
+### Rejected alternatives
+
+- 仅把 `Scheduler::Impl` 文本剪切到 `runtime_state.hpp`：字段耦合与重编译面不变，不构成深模块。
+- ReadyQueues 保存 `Impl*` 并转发原方法：无法通过 deletion test。
+- RuntimeState 自行取得 shared ownership：会与现有 Scheduler Handle/Reaper ownership 重叠。
+- 同时改变 queue 算法或调度权重：扩大 weak-memory 与性能语义风险。
+
+### Consequences
+
+- 新增 `src/runtime/ready_queues.{hpp,cpp}` 与 `src/runtime/runtime_state.{hpp,cpp}`。
+- `worker_loop` 成为针对 RuntimeState 的 compiled implementation，而非字段 duck-typing 模板。
+- `scheduler.cpp` 只保留 Scheduler façade、Impl ownership adapter 与等待/helping入口；diagnostics 路由迁入 observability。
+- AST-072、AST-073 先于 AST-071 完成。
+
+### Evidence
+
+- Confirmation authority: project owner（user）
+- Confirmation summary: owner 明确要求进行更深层的 `RuntimeState/ReadyQueues/diagnostics` 拆分。
+- Code or data evidence: `src/runtime/scheduler.cpp` 约 1985 行；队列字段与 lifecycle/diagnostics 仍同处 `Scheduler::Impl`。
+
+### Traceability
+
+- Spec destinations: R-129, R-130；R-127 由 AST-071 完成剩余 diagnostics 范围
+- Tickets: AST-072, AST-073, AST-071
+- Tests: queue ordering/steal/park/helping/shutdown/wait diagnostics；Debug/ASan/TSan/package/encapsulation
+
 ## Open Questions
 
 - 无（本轮 1A grilling 已关闭：D-170..D-175）。
 - 2026-08-26 全项目功能覆盖审计已完成。后续新需求或实现证据若改变语义，必须新增/取代决策而不得静默修改已接受规则。
-
 
 
 

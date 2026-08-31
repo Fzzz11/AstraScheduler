@@ -230,6 +230,7 @@ AstraScheduler 面向 Linux-only 的现代 C++20 任务调度场景，最终范�
 | D-175 | R-123 |
 | D-176 | R-124 |
 | D-177 | R-125, R-126, R-127, R-128 |
+| D-178 | R-129, R-130 |
 
 ## Normative Rules
 
@@ -1897,6 +1898,32 @@ Code evidence: `src/{runtime,task,graph,lifecycle,observability,scheduling,testi
 Disposition: implementation
 Observable result: package/install清单只含include/astra；CMake和public/internal test边界通过；无脆弱跨目录相对include。
 
+### R-129 — ReadyQueues 拥有完整 Ready work 队列协议
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: ReadyQueues必须拥有Global EDF/FIFO priority bands、per-Worker Local Queue、weighted claim、bounded steal、immediate cancel cleanup与queue inspection；不得持有Scheduler::Impl*或Runtime lifecycle字段。publication到claim/cancel的Ready Task Ownership、priority calendar、local LIFO、steal FIFO、deadline burst与external slot释放时点必须保持。
+Applies to: v1.2.0之后的内部Ready work存储与领取。
+Exceptions: park/wake epoch、active-task计数与shutdown状态由RuntimeState协调；ReadyQueues可通过显式RuntimeMetrics依赖记录队列指标。
+Source decisions: D-178
+Source support: D-178 => 按Ready Task Ownership完整抽取队列状态与算法，拒绝Impl*浅转发。
+Code evidence: None
+Disposition: implementation
+Observable result: Scheduler::Impl/RuntimeState不再定义global/local queue容器；queue与steal测试保持；静态审计拒绝ReadyQueues持有Impl*。
+
+### R-130 — RuntimeState 是单个 Scheduler Runtime 的唯一组合状态
+Status: active
+Supersedes: None
+Superseded by: None
+Statement: RuntimeState必须唯一拥有Runtime identity、resolved options/capabilities、packed status、AdmissionController、TimerQueue、RuntimeMetrics、ReadyQueues、worker synchronization/thread collection与Trace producer attachment；Scheduler::Impl只保留共享所有权外壳和窄port adapter，不得复制这些状态。Worker loop必须针对RuntimeState的compiled seam执行，不得以模板读取Scheduler::Impl字段。
+Applies to: v1.2.0之后的Scheduler内部对象模型。
+Exceptions: Scheduler::Impl继续作为public header声明的隐藏shared ownership类型，并负责与Reaper handoff的shared_ptr类型衔接；RuntimeState本身不取得shared ownership。
+Source decisions: D-178
+Source support: D-178 => 收拢Runtime State身份与生命周期组合，保留现有Handle/Reaper ownership。
+Code evidence: None
+Disposition: implementation
+Observable result: scheduler.cpp中的Impl定义收敛为ownership/adapter；runtime_state模块可独立删除Scheduler字段知识；startup/shutdown/handoff测试保持。
+
 ## State and Lifecycle
 
 | Scope | Transition / stage | Governing rules |
@@ -2121,6 +2148,8 @@ Observable result: package/install清单只含include/astra；CMake和public/int
 | R-126 | D-177 | Graph execution ownership and behaviour tests | AST-068 |
 | R-127 | D-177 | Worker/registry/diagnostic split plus scheduler ownership audit | AST-069, AST-071 |
 | R-128 | D-177 | source-layout, install and package audits | AST-070 |
+| R-129 | D-178 | ReadyQueues ownership/order/steal/cancel tests | AST-072 |
+| R-130 | D-178 | RuntimeState lifecycle/handoff/worker tests | AST-073 |
 
 ## Open Questions
 
@@ -2138,3 +2167,4 @@ None。已确认范围内没有未决语义；明确排除项保留在 Non-goals
 - 本次按完整不变量拆Scheduler::Impl（D-176，R-124，架构审查第4点A）已由项目owner于2026-08-30确认；不深化GraphExecution，不抽ReadyQueues/steal/park。
 - D-177是D-176之后的新批准增量：深化GraphExecution、抽出Worker/registry并重组src；不回改D-176的历史范围。
 - AST-071继续承载D-177中尚未完成的 wait/await diagnostics 路由拆分；该 Ticket 不改变 R-096 的观测语义。
+- D-178由项目owner于2026-08-31批准，按AST-072 ReadyQueues、AST-073 RuntimeState、AST-071 diagnostics顺序完成深层拆分。

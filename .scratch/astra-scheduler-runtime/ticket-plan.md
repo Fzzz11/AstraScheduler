@@ -762,9 +762,9 @@ AST-066 <- AST-065
 
 - Tracker: local Markdown (`.scratch/astra-scheduler-runtime/issues/`).
 - Published at: 2026-08-30.
-- Published Tickets: 71 (`AST-001` through `AST-071`)。
-- Status: 本轮 `AST-067` through `AST-070` 为 `done`，`AST-071` 为 `ready-for-agent`；历史状态以表格与各 Ticket 为准。
-- Frontier: v1.2.0 Graph/Worker/Registry 模块化与 private src 重组已实现；wait/await diagnostics 路由拆分由 AST-071 跟踪。
+- Published Tickets: 73 (`AST-001` through `AST-073`)。
+- Status: `AST-071`、`AST-072`、`AST-073` 均已完成；历史状态以表格与各 Ticket 为准。
+- Frontier: v1.2.0 深层拆分已完成 ReadyQueues、RuntimeState 与 diagnostics 三条边界。
 - Unpublished or failed items: None.
 - Traceability inventory: 以校验器输出为准（R-118至R-123由AST-058至AST-063覆盖；R-124由AST-064至AST-066覆盖）。
 
@@ -840,7 +840,9 @@ AST-066 <- AST-065
 | AST-068 | v1.2.0 | [68-graph-execution-unit.md](issues/68-graph-execution-unit.md) | done | AST-067 |
 | AST-069 | v1.2.0 | [69-worker-registry-split.md](issues/69-worker-registry-split.md) | done | AST-068 |
 | AST-070 | v1.2.0 | [70-src-layout.md](issues/70-src-layout.md) | done | AST-069 |
-| AST-071 | v1.2.0 | [71-runtime-diagnostics-routing.md](issues/71-runtime-diagnostics-routing.md) | ready-for-agent | AST-069, AST-070 |
+| AST-071 | v1.2.0 | [71-runtime-diagnostics-routing.md](issues/71-runtime-diagnostics-routing.md) | done | AST-073 |
+| AST-072 | v1.2.0 | [72-ready-queues.md](issues/72-ready-queues.md) | done | AST-070 |
+| AST-073 | v1.2.0 | [73-runtime-state.md](issues/73-runtime-state.md) | done | AST-072 |
 
 ## Approval
 
@@ -851,4 +853,4 @@ Revision approved by: project owner（user）
 Revision approved at: 2026-08-30（v1.1 encapsulation revision；v1.2.0 compiled TCB increment）
 Latest revision approved at: 2026-08-31（D-177 / AST-067..070 internal modularization increment；AST-071 diagnostics follow-up requested by project owner）
 
-本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-071 承载。
+本计划及后续修订均已获明确批准。具体 Ticket 发布到 `.scratch/astra-scheduler-runtime/issues/<NN>-<slug>.md`。v1.2.0 增量由 AST-058 至 AST-073 承载。
