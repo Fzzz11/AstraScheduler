@@ -20,7 +20,14 @@ RuntimeState::RuntimeState(
           metrics),
       timers(metrics),
       ready_queues(options.worker_count, metrics) {
-    metrics.init(options.metrics_level, options.worker_count);
+    metrics.init(options.metrics_level, options.worker_count, runtime_id);
+}
+
+void RuntimeState::release_external_slot_after_claim(
+    const ReadyQueues::QueuedTask& task) noexcept {
+    if (task.is_external) {
+        admission.release(1);
+    }
 }
 
 void RuntimeState::process_due_timers() {

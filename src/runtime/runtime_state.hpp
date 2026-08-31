@@ -51,6 +51,7 @@ struct RuntimeState {
     void process_due_timers();
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point> earliest_wake_time();
     [[nodiscard]] bool has_timers();
+    void release_external_slot_after_claim(const ReadyQueues::QueuedTask& task) noexcept;
 
     RuntimeId runtime_id;
     RuntimeIdentityAllocator identities;

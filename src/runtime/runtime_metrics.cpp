@@ -5,9 +5,12 @@
 namespace astra::detail {
 
 extern thread_local std::size_t t_current_worker_index;
+extern thread_local RuntimeId t_current_worker_runtime_id;
+extern thread_local void* t_current_worker_impl;
 
-void RuntimeMetrics::init(MetricsLevel lvl, std::size_t worker_count) {
+void RuntimeMetrics::init(MetricsLevel lvl, std::size_t worker_count, RuntimeId owner) {
     level = lvl;
+    owner_runtime_id = owner;
     if (level != MetricsLevel::Off) {
         control_shard = std::make_unique<WorkerShard>();
         worker_shards.reserve(worker_count);
@@ -19,7 +22,10 @@ void RuntimeMetrics::init(MetricsLevel lvl, std::size_t worker_count) {
 
 RuntimeMetrics::WorkerShard& RuntimeMetrics::shard_for_current() noexcept {
     const std::size_t w_idx = t_current_worker_index;
-    if (w_idx < worker_shards.size() && worker_shards[w_idx]) {
+    const bool on_owned_worker =
+        t_current_worker_impl != nullptr &&
+        t_current_worker_runtime_id == owner_runtime_id;
+    if (on_owned_worker && w_idx < worker_shards.size() && worker_shards[w_idx]) {
         return *worker_shards[w_idx];
     }
     if (control_shard) {
@@ -33,6 +39,15 @@ void RuntimeMetrics::saturating_inc(std::atomic<std::uint64_t>& counter) noexcep
     std::uint64_t cur = counter.load(std::memory_order_relaxed);
     while (cur < std::numeric_limits<std::uint64_t>::max()) {
         if (counter.compare_exchange_weak(cur, cur + 1, std::memory_order_relaxed)) {
+            return;
+        }
+    }
+}
+
+void RuntimeMetrics::saturating_dec(std::atomic<std::uint64_t>& counter) noexcept {
+    std::uint64_t cur = counter.load(std::memory_order_relaxed);
+    while (cur != 0) {
+        if (counter.compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
             return;
         }
     }

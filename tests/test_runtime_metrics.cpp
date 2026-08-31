@@ -203,6 +203,7 @@ void test_R084_coroutine_and_timer_metrics() {
     assert(snap.counters.explicit_yields >= 1);
     assert(snap.counters.timer_registrations >= 1);
     assert(snap.counters.timer_fires >= 1);
+    assert(snap.gauges.suspended_tasks == 0);
 
     std::cout << "[PASS] test_R084_coroutine_and_timer_metrics" << std::endl;
 }

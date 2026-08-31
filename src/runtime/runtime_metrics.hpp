@@ -2,6 +2,7 @@
 #define ASTRA_SRC_RUNTIME_METRICS_HPP
 
 #include <astra/metrics.hpp>
+#include <astra/id.hpp>
 
 #include <array>
 #include <atomic>
@@ -103,6 +104,9 @@ public:
 
     std::vector<std::unique_ptr<WorkerShard>> worker_shards;
     std::unique_ptr<WorkerShard> control_shard;
+    // 只有带有该 Runtime 身份且明确标记为 worker 的线程才能写入 worker shard。
+    // 其他线程（包括外部线程和其他 Runtime 的 worker）统一写入 control shard。
+    RuntimeId owner_runtime_id{};
 
     std::atomic<std::uint64_t> waiting_tasks{0};
     std::atomic<std::uint64_t> ready_tasks{0};
@@ -110,12 +114,13 @@ public:
     std::atomic<std::uint64_t> suspended_tasks{0};
     std::atomic<std::uint64_t> active_graph_runs{0};
 
-    void init(MetricsLevel lvl, std::size_t worker_count);
+    void init(MetricsLevel lvl, std::size_t worker_count, RuntimeId owner = {});
     [[nodiscard]] WorkerShard& shard_for_current() noexcept;
     void fill_counters_and_histograms(RuntimeMetricsSnapshot& snapshot, bool& any_saturated) const;
     void fill_task_gauges(RuntimeMetricsSnapshot& snapshot) const;
 
     static void saturating_inc(std::atomic<std::uint64_t>& counter) noexcept;
+    static void saturating_dec(std::atomic<std::uint64_t>& counter) noexcept;
     static void saturating_add(std::atomic<std::uint64_t>& counter, std::uint64_t val) noexcept;
 };
 

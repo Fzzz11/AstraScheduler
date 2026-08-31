@@ -94,9 +94,7 @@ void run_worker_loop(
                     global_calendar_index, global_deadline_bursts, task)) {
                 found_task = true;
                 consecutive_local_count = 0;
-                if (task.is_external) {
-                    runtime.admission.release(1);
-                }
+                runtime.release_external_slot_after_claim(task);
             } else if (consecutive_local_count >= runtime.options.local_burst_limit) {
                 consecutive_local_count = 0;
                 lock.unlock();
@@ -206,9 +204,7 @@ void run_worker_loop(
                         global_calendar_index, global_deadline_bursts, task)) {
                     found_task = true;
                     consecutive_local_count = 0;
-                    if (task.is_external) {
-                        runtime.admission.release(1);
-                    }
+                    runtime.release_external_slot_after_claim(task);
                 } else if (runtime.ready_queues.claim_local(
                                worker_index, local_calendar_index, task)) {
                     found_task = true;

@@ -578,9 +578,7 @@ struct ASTRA_NO_EXPORT Scheduler::Impl : public detail::RuntimeState,
                 break;
             }
         }
-        if (metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
-            metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
-        }
+        detail::RuntimeMetrics::saturating_dec(metrics.active_graph_runs);
     }
 
     static constexpr std::uint16_t pack(SchedulerState state, ShutdownMode mode) noexcept {
@@ -746,9 +744,7 @@ void perform_helping_loop(
                 impl.ready_queues.claim_global(
                     global_calendar, deadline_bursts, task)) {
                 found_task = true;
-                if (task.is_external) {
-                    impl.admission.release(1);
-                }
+                impl.release_external_slot_after_claim(task);
             }
         }
 

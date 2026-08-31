@@ -90,9 +90,7 @@ void record_metrics_first_start(TaskId id, std::optional<DeadlineDisposition> dl
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
     auto& shard = impl->metrics.shard_for_current();
     detail::RuntimeMetrics::saturating_inc(shard.first_starts);
-    if (impl->metrics.ready_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.ready_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.ready_tasks);
     impl->metrics.running_tasks.fetch_add(1, std::memory_order_relaxed);
     if (dl_disp.has_value()) {
         if (*dl_disp == DeadlineDisposition::Met) {
@@ -108,9 +106,7 @@ void record_metrics_succeeded(TaskId id) noexcept {
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
     auto& shard = impl->metrics.shard_for_current();
     detail::RuntimeMetrics::saturating_inc(shard.succeeded);
-    if (impl->metrics.running_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.running_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.running_tasks);
 }
 
 void record_metrics_failed(TaskId id) noexcept {
@@ -118,9 +114,7 @@ void record_metrics_failed(TaskId id) noexcept {
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
     auto& shard = impl->metrics.shard_for_current();
     detail::RuntimeMetrics::saturating_inc(shard.failed);
-    if (impl->metrics.running_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.running_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.running_tasks);
 }
 
 void record_metrics_cancelled_cooperative(TaskId id) noexcept {
@@ -128,9 +122,7 @@ void record_metrics_cancelled_cooperative(TaskId id) noexcept {
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
     auto& shard = impl->metrics.shard_for_current();
     detail::RuntimeMetrics::saturating_inc(shard.cancelled_cooperative);
-    if (impl->metrics.running_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.running_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.running_tasks);
 }
 
 void record_metrics_cancelled_before_start(TaskId id, bool has_deadline) noexcept {
@@ -138,9 +130,7 @@ void record_metrics_cancelled_before_start(TaskId id, bool has_deadline) noexcep
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
     auto& shard = impl->metrics.shard_for_current();
     detail::RuntimeMetrics::saturating_inc(shard.cancelled_before_start);
-    if (impl->metrics.ready_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.ready_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.ready_tasks);
     if (has_deadline) {
         detail::RuntimeMetrics::saturating_inc(shard.deadline_cancelled_before_start);
     }
@@ -284,18 +274,14 @@ void record_metrics_suspended(TaskId id) noexcept {
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
     auto& shard = impl->metrics.shard_for_current();
     detail::RuntimeMetrics::saturating_inc(shard.coroutine_suspends);
-    if (impl->metrics.running_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.running_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.running_tasks);
     impl->metrics.suspended_tasks.fetch_add(1, std::memory_order_relaxed);
 }
 
 void record_metrics_resumed(TaskId id) noexcept {
     auto* impl = find_runtime_diagnostics(id.runtime_id());
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    if (impl->metrics.suspended_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.suspended_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.suspended_tasks);
     impl->metrics.ready_tasks.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -304,9 +290,7 @@ void record_metrics_resume_segment(TaskId id) noexcept {
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
     auto& shard = impl->metrics.shard_for_current();
     detail::RuntimeMetrics::saturating_inc(shard.resume_segments);
-    if (impl->metrics.ready_tasks.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.ready_tasks.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.ready_tasks);
     impl->metrics.running_tasks.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -328,9 +312,7 @@ void record_metrics_graph_node_terminal(RuntimeId id) noexcept {
 void record_metrics_graph_run_completed(RuntimeId id) noexcept {
     auto* impl = find_runtime_diagnostics(id);
     if (!impl || impl->metrics.level == MetricsLevel::Off) return;
-    if (impl->metrics.active_graph_runs.load(std::memory_order_relaxed) > 0) {
-        impl->metrics.active_graph_runs.fetch_sub(1, std::memory_order_relaxed);
-    }
+    RuntimeMetrics::saturating_dec(impl->metrics.active_graph_runs);
 }
 
 void record_metrics_ready_queue_wait(TaskId id, std::uint64_t duration_ns) noexcept {

@@ -62,6 +62,7 @@ void CoroutineResumeInvoker::execute() {
             tcb->id(),
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - pub).count());
     }
+    record_metrics_resumed(tcb->id());
     record_metrics_resume_segment(tcb->id());
     const std::uint64_t handoff_seq_before = tcb->resume_handoff_seq();
     TaskExecutionContextGuard guard(tcb->id(), tcb->priority());
