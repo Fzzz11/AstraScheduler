@@ -27,6 +27,15 @@ namespace {
 
 using astra::RuntimeId;
 
+template <typename Predicate>
+void wait_until(Predicate&& predicate) {
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (!predicate()) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(1ms);
+    }
+}
+
 // -----------------------------------------------------------------------------
 // 1. 外部线程 wait/wait_for：task_wait_calls、thread_wait_duration、timeouts (R-096)
 // -----------------------------------------------------------------------------
@@ -36,8 +45,10 @@ void test_R096_external_thread_wait_metrics() {
     opts.metrics_level = astra::MetricsLevel::Detailed;
     astra::Scheduler sched(opts);
 
-    auto h = sched.submit([] {
-        std::this_thread::sleep_for(20ms);
+    std::promise<void> release;
+    auto release_future = release.get_future().share();
+    auto h = sched.submit([release_future] {
+        release_future.wait();
         return 1;
     });
 
@@ -53,6 +64,7 @@ void test_R096_external_thread_wait_metrics() {
     auto snap_timeout = sched.metrics_snapshot();
     assert(snap_timeout.counters.wait_for_timeouts >= 1);
 
+    release.set_value();
     assert(h.get() == 1);
 
     std::cout << "[PASS] test_R096_external_thread_wait_metrics" << std::endl;
@@ -63,12 +75,16 @@ void test_R096_external_thread_wait_metrics() {
 // -----------------------------------------------------------------------------
 void test_R096_same_runtime_helping_wait() {
     astra::SchedulerOptions opts{};
-    opts.worker_count = 2;
+    // Keep one worker available while the gated target and the waiting helper
+    // are both active; sanitizer scheduling can otherwise starve the helper.
+    opts.worker_count = 3;
     opts.metrics_level = astra::MetricsLevel::Detailed;
     astra::Scheduler sched(opts);
 
-    auto target = sched.submit([] {
-        std::this_thread::sleep_for(30ms);
+    std::promise<void> release;
+    auto release_future = release.get_future().share();
+    auto target = sched.submit([release_future] {
+        release_future.wait();
         return 7;
     });
 
@@ -77,6 +93,12 @@ void test_R096_same_runtime_helping_wait() {
         target.wait();
         return target.get();
     });
+
+    wait_until([&] {
+        return sched.metrics_snapshot().counters.same_runtime_helping_waits >= 1;
+    });
+    std::this_thread::sleep_for(30ms);
+    release.set_value();
     assert(helper.get() == 7);
 
     auto snap = sched.metrics_snapshot();
@@ -100,8 +122,10 @@ void test_R096_cross_runtime_helping_wait() {
     opts_b.metrics_level = astra::MetricsLevel::Detailed;
     astra::Scheduler b(opts_b);
 
-    auto target = b.submit([] {
-        std::this_thread::sleep_for(30ms);
+    std::promise<void> release;
+    auto release_future = release.get_future().share();
+    auto target = b.submit([release_future] {
+        release_future.wait();
         return 9;
     });
 
@@ -110,6 +134,11 @@ void test_R096_cross_runtime_helping_wait() {
         target.wait();
         return target.get();
     });
+
+    wait_until([&] {
+        return a.metrics_snapshot().counters.cross_runtime_helping_waits >= 1;
+    });
+    release.set_value();
     assert(helper.get() == 9);
 
     auto snap = a.metrics_snapshot();
@@ -123,12 +152,14 @@ void test_R096_cross_runtime_helping_wait() {
 // -----------------------------------------------------------------------------
 void test_R096_coroutine_await_metrics() {
     astra::SchedulerOptions opts{};
-    opts.worker_count = 2;
+    opts.worker_count = 3;
     opts.metrics_level = astra::MetricsLevel::Detailed;
     astra::Scheduler sched(opts);
 
-    auto inner = sched.submit([] {
-        std::this_thread::sleep_for(20ms);
+    std::promise<void> release;
+    auto release_future = release.get_future().share();
+    auto inner = sched.submit([release_future] {
+        release_future.wait();
         return 42;
     });
 
@@ -137,6 +168,12 @@ void test_R096_coroutine_await_metrics() {
         co_return 1;
     };
     auto outer = sched.spawn(coro_fn(sched));
+
+    wait_until([&] {
+        return sched.metrics_snapshot().counters.coroutine_await_registrations >= 1;
+    });
+    std::this_thread::sleep_for(20ms);
+    release.set_value();
     assert(outer.get() == 1);
 
     auto snap = sched.metrics_snapshot();

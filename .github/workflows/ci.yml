@@ -161,6 +161,8 @@ jobs:
           gcovr
           --root .
           --object-directory build/ci-coverage
+          --exclude-directories 'build/ci-coverage/CMakeFiles/.*/CompilerIdCXX'
+          --gcov-ignore-parse-errors negative_hits.warn_once_per_file
           --exclude 'build/.*'
           --exclude 'tests/.*'
           --exclude 'benchmarks/.*'
@@ -184,4 +186,6 @@ jobs:
           sudo apt-get install --yes doxygen
       - name: Build Doxygen documentation
         working-directory: docs
-        run: doxygen Doxyfile
+        run: |
+          mkdir -p ../build/doxygen
+          doxygen Doxyfile
