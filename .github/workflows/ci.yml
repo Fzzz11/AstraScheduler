@@ -53,7 +53,7 @@ jobs:
       - name: Build
         run: cmake --build build/ci-${{ matrix.compiler }} --parallel 2
       - name: Test
-        run: ctest --test-dir build/ci-${{ matrix.compiler }} --output-on-failure
+        run: ctest --test-dir build/ci-${{ matrix.compiler }} --output-on-failure --timeout 90
 
   tooling-lint:
     name: Clang format and tidy checks
@@ -132,7 +132,7 @@ jobs:
       - name: Build
         run: cmake --build build/ci-${{ matrix.name }} --parallel 2
       - name: Test
-        run: ctest --test-dir build/ci-${{ matrix.name }} --output-on-failure
+        run: ctest --test-dir build/ci-${{ matrix.name }} --output-on-failure --timeout 90
 
   coverage:
     name: GCC coverage baseline
@@ -155,7 +155,7 @@ jobs:
       - name: Build
         run: cmake --build build/ci-coverage --parallel 2
       - name: Test
-        run: ctest --test-dir build/ci-coverage --output-on-failure
+        run: ctest --test-dir build/ci-coverage --output-on-failure --timeout 90
       - name: Generate coverage report
         run: >-
           gcovr

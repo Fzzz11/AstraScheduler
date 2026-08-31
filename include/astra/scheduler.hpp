@@ -47,10 +47,10 @@
 //   Linux，经 export.hpp 编译期检查。）
 // ============================================================================
 
-#include <astra/export.hpp>
 #include <astra/capabilities.hpp>
 #include <astra/coroutine.hpp>
 #include <astra/error.hpp>
+#include <astra/export.hpp>
 #include <astra/graph.hpp>
 #include <astra/id.hpp>
 #include <astra/metrics.hpp>
@@ -85,24 +85,21 @@ enum class AdmissionDecision : std::uint8_t {
 
 ASTRA_EXPORT RuntimeId current_worker_runtime_id() noexcept;
 
-ASTRA_EXPORT void post_task_on_impl(
-    void* impl,
-    std::unique_ptr<TaskInvokerBase> invoker,
-    bool is_external);
-ASTRA_EXPORT std::uint64_t register_timer_on_impl(
-    void* impl,
-    std::chrono::steady_clock::time_point wake_time,
-    std::shared_ptr<AwaitHandshake> handshake,
-    std::function<void()> resume_action);
+ASTRA_EXPORT void post_task_on_impl(void* impl, std::unique_ptr<TaskInvokerBase> invoker,
+                                    bool is_external);
+ASTRA_EXPORT std::uint64_t register_timer_on_impl(void* impl,
+                                                  std::chrono::steady_clock::time_point wake_time,
+                                                  std::shared_ptr<AwaitHandshake> handshake,
+                                                  std::function<void()> resume_action);
 ASTRA_EXPORT void cancel_timer_on_impl(void* impl, std::uint64_t timer_id);
-}
+} // namespace detail
 
 /**
  * @brief AstraScheduler 的共享 Runtime 句柄。
  * @note 复制只增加观察句柄；最后一份句柄销毁时请求 Graceful 关停。
  */
 class ASTRA_EXPORT Scheduler {
-public:
+  public:
     // 同步校验 options 并启动 Runtime。
     // worker_count 等为 0 或未知枚举抛 invalid_argument。
     // 进程已 begin_finalization 后抛 scheduler_creation_rejected（R-098 / D-155 / D-157）。
@@ -149,12 +146,15 @@ public:
 
     // 提交已 freeze 的任务图并消耗 FrozenTaskGraph。
     // 空 Handle 抛 logic_error；admission 失败抛 submission_rejected。
-    // Worker 线程不得按 Block 策略阻塞。可用 TaskOptions 覆盖图级 priority/deadline（R-070 / R-061）。
+    // Worker 线程不得按 Block 策略阻塞。可用 TaskOptions 覆盖图级 priority/deadline（R-070 /
+    // R-061）。
     GraphRun run(FrozenTaskGraph&& graph);
     GraphRun run(TaskOptions options, FrozenTaskGraph&& graph);
 
     /**
      * @brief 提交可调用对象并返回共享结果句柄。
+     * @tparam F 任务函数类型。
+     * @tparam Args 传给任务函数的参数类型。
      * @param f 任务函数，须可按给定参数调用。
      * @param args 传给任务函数的参数。
      */
@@ -164,18 +164,31 @@ public:
     // 任意 Worker 线程不得阻塞。Stopping/Stopped/CapacityExhausted 抛 submission_rejected。
     // 未给 TaskOptions 时：同 Runtime 内部提交继承当前任务优先级，否则 Normal（R-061 / R-062）。
     template <typename F, typename... Args>
-        requires (!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
-    auto submit(F&& f, Args&&... args) -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
+    auto submit(F&& f, Args&&... args)
+        -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType>
+        requires(!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
+    {
         return submit_impl(std::nullopt, std::forward<F>(f), std::forward<Args>(args)...);
     }
 
+    /**
+     * @brief 带 TaskOptions 提交可调用对象并返回共享结果句柄。
+     * @tparam F 任务函数类型。
+     * @tparam Args 传给任务函数的参数类型。
+     * @param options 任务选项（优先级、截止时间）。
+     * @param f 任务函数，须可按给定参数调用。
+     * @param args 传给任务函数的参数。
+     */
     template <typename F, typename... Args>
-    auto submit(TaskOptions options, F&& f, Args&&... args) -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
+    auto submit(TaskOptions options, F&& f, Args&&... args)
+        -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
         return submit_impl(options, std::forward<F>(f), std::forward<Args>(args)...);
     }
 
     /**
      * @brief 非阻塞尝试提交可调用对象。
+     * @tparam F 任务函数类型。
+     * @tparam Args 传给任务函数的参数类型。
      * @param f 任务函数，须可按给定参数调用。
      * @param args 传给任务函数的参数。
      * @return 成功的 TaskHandle 或机器可读的拒绝原因。
@@ -183,49 +196,73 @@ public:
     // 非阻塞尝试提交。admission 失败返回 SubmissionError，不抛 submission_rejected。
     // 空 Handle 仍抛 logic_error。永不按 Block 等待容量（R-061 / D-088）。
     template <typename F, typename... Args>
-        requires (!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
-    auto try_submit(F&& f, Args&&... args) -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
+    auto try_submit(F&& f, Args&&... args)
+        -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType>
+        requires(!std::is_same_v<std::remove_cvref_t<F>, TaskOptions>)
+    {
         return try_submit_impl(std::nullopt, std::forward<F>(f), std::forward<Args>(args)...);
     }
 
+    /**
+     * @brief 带 TaskOptions 非阻塞尝试提交可调用对象。
+     * @tparam F 任务函数类型。
+     * @tparam Args 传给任务函数的参数类型。
+     * @param options 任务选项（优先级、截止时间）。
+     * @param f 任务函数，须可按给定参数调用。
+     * @param args 传给任务函数的参数。
+     * @return 成功的 TaskHandle 或机器可读的拒绝原因。
+     */
     template <typename F, typename... Args>
-    auto try_submit(TaskOptions options, F&& f, Args&&... args) -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
+    auto try_submit(TaskOptions options, F&& f, Args&&... args)
+        -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
         return try_submit_impl(options, std::forward<F>(f), std::forward<Args>(args)...);
     }
 
     /**
      * @brief 提交 cold Task 协程并转移其协程帧所有权。
+     * @tparam T 协程结果类型。
      * @param task 要提交的 cold 协程。
      */
     // 提交 cold Task 协程（消耗 Task）。空 Scheduler 或无效 Task 抛 logic_error。
     // admission 与线程约束同 submit()（R-073 / R-061）。
-    template <typename T>
-    TaskHandle<T> spawn(Task<T>&& task) {
+    template <typename T> TaskHandle<T> spawn(Task<T>&& task) {
         return spawn_impl(std::nullopt, std::move(task));
     }
 
-    template <typename T>
-    TaskHandle<T> spawn(TaskOptions options, Task<T>&& task) {
+    /**
+     * @brief 带 TaskOptions 提交 cold Task 协程并转移其协程帧所有权。
+     * @tparam T 协程结果类型。
+     * @param options 任务选项（优先级、截止时间）。
+     * @param task 要提交的 cold 协程。
+     */
+    template <typename T> TaskHandle<T> spawn(TaskOptions options, Task<T>&& task) {
         return spawn_impl(options, std::move(task));
     }
 
     /**
      * @brief 非阻塞尝试提交 cold Task 协程。
+     * @tparam T 协程结果类型。
      * @param task 要提交的 cold 协程。
      * @return 成功的 TaskHandle 或机器可读的拒绝原因。
      */
-    // 非阻塞尝试 spawn。admission 失败返回 SubmissionError；空 Scheduler/Task 仍抛 logic_error（R-073 / D-088）。
-    template <typename T>
-    SubmissionResult<T> try_spawn(Task<T>&& task) {
+    // 非阻塞尝试 spawn。admission 失败返回 SubmissionError；空 Scheduler/Task 仍抛
+    // logic_error（R-073 / D-088）。
+    template <typename T> SubmissionResult<T> try_spawn(Task<T>&& task) {
         return try_spawn_impl(std::nullopt, std::move(task));
     }
 
-    template <typename T>
-    SubmissionResult<T> try_spawn(TaskOptions options, Task<T>&& task) {
+    /**
+     * @brief 带 TaskOptions 非阻塞尝试提交 cold Task 协程。
+     * @tparam T 协程结果类型。
+     * @param options 任务选项（优先级、截止时间）。
+     * @param task 要提交的 cold 协程。
+     * @return 成功的 TaskHandle 或机器可读的拒绝原因。
+     */
+    template <typename T> SubmissionResult<T> try_spawn(TaskOptions options, Task<T>&& task) {
         return try_spawn_impl(options, std::move(task));
     }
 
-private:
+  private:
     struct SubmissionContext {
         bool is_internal{false};
         Priority priority{Priority::Normal};
@@ -233,15 +270,13 @@ private:
         detail::AdmissionDecision decision{detail::AdmissionDecision::Success};
     };
 
-    SubmissionContext prepare_submission(
-        std::optional<TaskOptions> options,
-        bool nonblocking) const;
+    SubmissionContext prepare_submission(std::optional<TaskOptions> options,
+                                         bool nonblocking) const;
     static SubmissionError submission_error_for(detail::AdmissionDecision decision);
 
     template <typename T, typename InvokerFactory>
-    TaskHandle<T> publish_submission(
-        const SubmissionContext& context,
-        InvokerFactory&& make_invoker) {
+    TaskHandle<T> publish_submission(const SubmissionContext& context,
+                                     InvokerFactory&& make_invoker) {
         using Cell = typename TaskHandle<T>::ResultCell;
         std::shared_ptr<Cell> state;
         try {
@@ -259,9 +294,8 @@ private:
     }
 
     template <typename T>
-    std::unique_ptr<detail::TaskInvokerBase> make_spawn_invoker(
-        Task<T>& task,
-        std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
+    std::unique_ptr<detail::TaskInvokerBase>
+    make_spawn_invoker(Task<T>& task, std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
         void* const impl = impl_.get();
         auto rescheduler = [impl](std::unique_ptr<detail::TaskInvokerBase> inv) {
             detail::post_task_on_impl(impl, std::move(inv), false);
@@ -269,19 +303,14 @@ private:
         state->set_rescheduler(std::move(rescheduler));
         state->set_timer_functions(
             [impl](std::chrono::steady_clock::time_point wt,
-                   std::shared_ptr<detail::AwaitHandshake> hs,
-                   std::function<void()> act) {
-                return detail::register_timer_on_impl(
-                    impl, wt, std::move(hs), std::move(act));
+                   std::shared_ptr<detail::AwaitHandshake> hs, std::function<void()> act) {
+                return detail::register_timer_on_impl(impl, wt, std::move(hs), std::move(act));
             },
-            [impl](std::uint64_t timer_id) {
-                detail::cancel_timer_on_impl(impl, timer_id);
-            });
+            [impl](std::uint64_t timer_id) { detail::cancel_timer_on_impl(impl, timer_id); });
         task.handle().promise().shared_state = state;
         auto coroutine_handle = task.release_handle();
         return detail::wrap_submitted_invoker(
-            std::make_unique<detail::CoroutineTaskInvokerModel<T>>(
-                coroutine_handle, state),
+            std::make_unique<detail::CoroutineTaskInvokerModel<T>>(coroutine_handle, state),
             state->protocol_token());
     }
 
@@ -290,11 +319,12 @@ private:
         -> TaskHandle<typename detail::InvocationTraits<F, Args...>::ResultType> {
         using Traits = detail::InvocationTraits<F, Args...>;
         static_assert(Traits::is_valid,
-            "Callable must be invocable as f(args...) or f(std::stop_token, args...)");
+                      "Callable must be invocable as f(args...) or f(std::stop_token, args...)");
         static_assert(!Traits::returns_reference,
-            "AstraScheduler tasks cannot return raw references (R-058 / D-074). Wrap in std::reference_wrapper if needed.");
+                      "AstraScheduler tasks cannot return raw references (R-058 / D-074). Wrap in "
+                      "std::reference_wrapper if needed.");
         static_assert(Traits::is_move_constructible,
-            "Task result type must be move-constructible (R-058 / D-075).");
+                      "Task result type must be move-constructible (R-058 / D-075).");
 
         using ResultType = typename Traits::ResultType;
         const auto context = prepare_submission(std::move(options), false);
@@ -316,11 +346,12 @@ private:
         -> SubmissionResult<typename detail::InvocationTraits<F, Args...>::ResultType> {
         using Traits = detail::InvocationTraits<F, Args...>;
         static_assert(Traits::is_valid,
-            "Callable must be invocable as f(args...) or f(std::stop_token, args...)");
+                      "Callable must be invocable as f(args...) or f(std::stop_token, args...)");
         static_assert(!Traits::returns_reference,
-            "AstraScheduler tasks cannot return raw references (R-058 / D-074). Wrap in std::reference_wrapper if needed.");
+                      "AstraScheduler tasks cannot return raw references (R-058 / D-074). Wrap in "
+                      "std::reference_wrapper if needed.");
         static_assert(Traits::is_move_constructible,
-            "Task result type must be move-constructible (R-058 / D-075).");
+                      "Task result type must be move-constructible (R-058 / D-075).");
 
         using ResultType = typename Traits::ResultType;
         const auto context = prepare_submission(std::move(options), true);
@@ -347,8 +378,7 @@ private:
             throw submission_rejected(submission_error_for(context.decision));
         }
         return publish_submission<T>(
-            context,
-            [this, &task](std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
+            context, [this, &task](std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
                 return make_spawn_invoker(task, std::move(state));
             });
     }
@@ -363,22 +393,22 @@ private:
             return SubmissionResult<T>(submission_error_for(context.decision));
         }
         return SubmissionResult<T>(publish_submission<T>(
-            context,
-            [this, &task](std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
+            context, [this, &task](std::shared_ptr<typename TaskHandle<T>::ResultCell> state) {
                 return make_spawn_invoker(task, std::move(state));
             }));
     }
 
-public:
+  public:
     struct ASTRA_NO_EXPORT Impl;
 
-private:
+  private:
     std::shared_ptr<Impl> impl_;
 
     detail::AdmissionDecision acquire_admission(bool block, bool is_internal) const;
     TaskId allocate_task_id() const;
     void rollback_external_slot() const;
-    void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker, bool is_external) const;
+    void post_task_invoker(std::unique_ptr<detail::TaskInvokerBase> invoker,
+                           bool is_external) const;
     ASTRA_NO_EXPORT GraphRun run_impl(std::optional<TaskOptions> options, FrozenTaskGraph&& graph);
     std::uint64_t register_timer(std::chrono::steady_clock::time_point wake_time,
                                  std::shared_ptr<detail::AwaitHandshake> handshake,
@@ -388,10 +418,11 @@ private:
     friend struct detail::SchedulerTestAccess;
     friend void detail::perform_caller_wait(const detail::TaskControlBlock&,
                                             std::optional<std::chrono::steady_clock::time_point>);
-    friend void detail::perform_graph_caller_wait(const detail::GraphRunSharedState&,
-                                                  std::optional<std::chrono::steady_clock::time_point>);
+    friend void
+    detail::perform_graph_caller_wait(const detail::GraphRunSharedState&,
+                                      std::optional<std::chrono::steady_clock::time_point>);
 };
 
-}  // namespace astra
+} // namespace astra
 
-#endif  // ASTRA_SCHEDULER_HPP
+#endif // ASTRA_SCHEDULER_HPP

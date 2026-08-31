@@ -11,11 +11,9 @@
 namespace astra::detail {
 
 class TaskControlBlock {
-public:
-    explicit TaskControlBlock(
-        TaskId id,
-        Priority priority = Priority::Normal,
-        std::optional<TaskDeadline> deadline = std::nullopt);
+  public:
+    explicit TaskControlBlock(TaskId id, Priority priority = Priority::Normal,
+                              std::optional<TaskDeadline> deadline = std::nullopt);
     ~TaskControlBlock();
 
     TaskControlBlock(const TaskControlBlock&) = delete;
@@ -28,6 +26,11 @@ public:
     [[nodiscard]] std::uint64_t resume_handoff_seq() const noexcept {
         return resume_handoff_seq_.load(std::memory_order_acquire);
     }
+
+    // R-074 / D-118：await_suspend 返回前不得 resume。handoff 后由 awaiter
+    // 发布此序号，ResumeInvoker 等到可见后再 coro.resume()。
+    void publish_await_suspend() noexcept;
+    void wait_for_await_suspend_publication() const noexcept;
 
     [[nodiscard]] TaskId id() const noexcept {
         return id_;
@@ -100,7 +103,7 @@ public:
         return s == TaskState::Succeeded || s == TaskState::Failed || s == TaskState::Cancelled;
     }
 
-private:
+  private:
     TaskId id_;
     Priority priority_{Priority::Normal};
     std::optional<TaskDeadline> deadline_{std::nullopt};
@@ -112,6 +115,7 @@ private:
     std::exception_ptr exception_{nullptr};
     mutable std::atomic<bool> observed_{false};
     std::atomic<std::uint64_t> resume_handoff_seq_{0};
+    std::atomic<std::uint64_t> suspend_published_seq_{0};
     std::vector<std::function<void()>> completion_callbacks_;
     TaskRescheduler rescheduler_;
     TimerRegistrar timer_registrar_{nullptr};
@@ -120,6 +124,6 @@ private:
     std::atomic<std::int64_t> ready_published_at_ns_{0};
 };
 
-}  // namespace astra::detail
+} // namespace astra::detail
 
-#endif  // ASTRA_TASK_CONTROL_BLOCK_HPP
+#endif // ASTRA_TASK_CONTROL_BLOCK_HPP

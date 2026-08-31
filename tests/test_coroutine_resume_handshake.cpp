@@ -15,13 +15,12 @@
 #include <thread>
 #include <vector>
 
-#define TEST_ASSERT(cond)                                                      \
-    do {                                                                       \
-        if (!(cond)) {                                                         \
-            std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond,     \
-                         __FILE__, __LINE__);                                  \
-            std::abort();                                                      \
-        }                                                                      \
+#define TEST_ASSERT(cond)                                                                          \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond, __FILE__, __LINE__);    \
+            std::abort();                                                                          \
+        }                                                                                          \
     } while (false)
 
 namespace {
@@ -87,14 +86,14 @@ struct TestEventAwaiter {
         return event_state->completed.load(std::memory_order_acquire);
     }
 
-    template <typename PromiseType>
-    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+    template <typename PromiseType> bool await_suspend(std::coroutine_handle<PromiseType> coro) {
         auto state = coro.promise().shared_state;
         auto rescheduler = state->get_rescheduler();
 
         auto post_action = [coro, state, rescheduler]() mutable {
             if (rescheduler) {
-                auto invoker = std::make_unique<astra::detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
+                auto invoker = std::make_unique<
+                    astra::detail::CoroutineResumeInvokerModel<typename PromiseType::value_type>>(
                     coro, std::move(state));
                 rescheduler(std::move(invoker));
             }
@@ -118,6 +117,7 @@ struct TestEventAwaiter {
 
         // Arm 握手
         event_state->handshake.arm(std::move(post_action));
+        state->publish_await_suspend();
         return true;
     }
 
@@ -127,7 +127,8 @@ struct TestEventAwaiter {
 // -----------------------------------------------------------------------------
 // 1. completion-before-arm 验证（R-074 / D-118）
 // -----------------------------------------------------------------------------
-astra::Task<int> coro_test_completion_before_arm(std::shared_ptr<TestEventAwaiter::EventState> event) {
+astra::Task<int>
+coro_test_completion_before_arm(std::shared_ptr<TestEventAwaiter::EventState> event) {
     FrameTracker tracker;
     co_await TestEventAwaiter(event, true /* trigger before arm */);
     co_return 42;
@@ -152,7 +153,8 @@ void test_R074_completion_before_arm() {
 // -----------------------------------------------------------------------------
 // 2. arm-before-completion 验证（R-074 / D-118）
 // -----------------------------------------------------------------------------
-astra::Task<int> coro_test_arm_before_completion(std::shared_ptr<TestEventAwaiter::EventState> event) {
+astra::Task<int>
+coro_test_arm_before_completion(std::shared_ptr<TestEventAwaiter::EventState> event) {
     FrameTracker tracker;
     co_await TestEventAwaiter(event, false /* trigger after arm */);
     co_return 99;
@@ -184,10 +186,9 @@ void test_R074_arm_before_completion() {
 // -----------------------------------------------------------------------------
 // 3. 多段挂起与恢复测试（Multi-step suspension & resumption）
 // -----------------------------------------------------------------------------
-astra::Task<int> coro_test_multistep(
-    std::shared_ptr<TestEventAwaiter::EventState> ev1,
-    std::shared_ptr<TestEventAwaiter::EventState> ev2,
-    std::shared_ptr<TestEventAwaiter::EventState> ev3) {
+astra::Task<int> coro_test_multistep(std::shared_ptr<TestEventAwaiter::EventState> ev1,
+                                     std::shared_ptr<TestEventAwaiter::EventState> ev2,
+                                     std::shared_ptr<TestEventAwaiter::EventState> ev3) {
     FrameTracker tracker;
     co_await TestEventAwaiter(ev1);
     co_await TestEventAwaiter(ev2);
@@ -271,7 +272,7 @@ void test_R074_concurrent_arm_trigger_race() {
     TEST_ASSERT(FrameTracker::construct_count.load() == FrameTracker::destruct_count.load());
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::printf("Running astra_coroutine_resume_handshake_test...\n");

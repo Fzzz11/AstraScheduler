@@ -86,10 +86,14 @@ void test_R081_saturated_calendar_ratio_8_4_2_1() {
     int low_count = 0;
 
     for (auto p : execution_order) {
-        if (p == astra::Priority::Critical) ++crit_count;
-        else if (p == astra::Priority::High) ++high_count;
-        else if (p == astra::Priority::Normal) ++norm_count;
-        else if (p == astra::Priority::Low) ++low_count;
+        if (p == astra::Priority::Critical)
+            ++crit_count;
+        else if (p == astra::Priority::High)
+            ++high_count;
+        else if (p == astra::Priority::Normal)
+            ++norm_count;
+        else if (p == astra::Priority::Low)
+            ++low_count;
     }
 
     assert(crit_count == 8 * kRounds);
@@ -113,12 +117,10 @@ void test_R081_empty_band_skipping_work_conserving() {
     std::vector<astra::TaskHandle<void>> handles;
 
     for (int i = 0; i < 20; ++i) {
-        handles.push_back(sched.submit(astra::TaskOptions{astra::Priority::Low}, [&] {
-            completed.fetch_add(1);
-        }));
-        handles.push_back(sched.submit(astra::TaskOptions{astra::Priority::Normal}, [&] {
-            completed.fetch_add(1);
-        }));
+        handles.push_back(sched.submit(astra::TaskOptions{astra::Priority::Low},
+                                       [&] { completed.fetch_add(1); }));
+        handles.push_back(sched.submit(astra::TaskOptions{astra::Priority::Normal},
+                                       [&] { completed.fetch_add(1); }));
     }
 
     for (auto& h : handles) {
@@ -154,9 +156,8 @@ void test_R081_continuous_critical_no_low_starvation() {
 
     // 3.2 先入队 1 个 Low 任务和 100 个 Critical 任务
     std::atomic<bool> low_executed{false};
-    auto low_handle = sched.submit(astra::TaskOptions{astra::Priority::Low}, [&] {
-        low_executed.store(true, std::memory_order_release);
-    });
+    auto low_handle = sched.submit(astra::TaskOptions{astra::Priority::Low},
+                                   [&] { low_executed.store(true, std::memory_order_release); });
 
     std::vector<astra::TaskHandle<void>> crit_handles;
     crit_handles.reserve(100);
@@ -169,7 +170,8 @@ void test_R081_continuous_critical_no_low_starvation() {
     blocker.wait();
 
     // 3.4 验证 Low 任务在有限时间内完成，并未被 100 个 Critical 任务永久饿死
-    low_handle.wait();
+    const auto low_waited = low_handle.wait_for(std::chrono::seconds(30));
+    assert(low_waited == astra::WaitResult::Completed);
     assert(low_executed.load(std::memory_order_acquire));
 
     for (auto& h : crit_handles) {
@@ -229,10 +231,14 @@ void test_R081_internal_local_bands_service() {
     auto parent = sched.submit([&] {
         // 在 worker 内部提交不同 Priority 的子任务
         std::atomic<int> completed{0};
-        auto h_crit = sched.submit(astra::TaskOptions{astra::Priority::Critical}, [&] { completed.fetch_add(1); });
-        auto h_high = sched.submit(astra::TaskOptions{astra::Priority::High}, [&] { completed.fetch_add(1); });
-        auto h_norm = sched.submit(astra::TaskOptions{astra::Priority::Normal}, [&] { completed.fetch_add(1); });
-        auto h_low  = sched.submit(astra::TaskOptions{astra::Priority::Low}, [&] { completed.fetch_add(1); });
+        auto h_crit = sched.submit(astra::TaskOptions{astra::Priority::Critical},
+                                   [&] { completed.fetch_add(1); });
+        auto h_high = sched.submit(astra::TaskOptions{astra::Priority::High},
+                                   [&] { completed.fetch_add(1); });
+        auto h_norm = sched.submit(astra::TaskOptions{astra::Priority::Normal},
+                                   [&] { completed.fetch_add(1); });
+        auto h_low =
+            sched.submit(astra::TaskOptions{astra::Priority::Low}, [&] { completed.fetch_add(1); });
 
         h_crit.wait();
         h_high.wait();
@@ -247,7 +253,7 @@ void test_R081_internal_local_bands_service() {
     sched.shutdown();
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "Running astra_priority_bands_test..." << std::endl;

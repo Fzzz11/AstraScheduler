@@ -27,6 +27,9 @@ function(astra_add_test target source library)
   target_link_libraries(${target} PRIVATE ${library})
   target_compile_features(${target} PRIVATE cxx_std_20)
   add_test(NAME ${target} COMMAND ${target})
+  # 防止死锁测试把 CI 拖到 GitHub Actions 6 小时硬超时。
+  # TSan 下部分测试会到数十秒；默认 90s 与 CI ctest --timeout 对齐。
+  set_tests_properties(${target} PROPERTIES TIMEOUT 90)
 endfunction()
 
 function(astra_add_public_test target source)
@@ -92,21 +95,33 @@ astra_add_public_test(astra_coroutine_frame_lifetime_test test_coroutine_frame_l
 astra_add_internal_test(astra_platform_invariants_test test_platform_invariants.cpp)
 astra_add_internal_test(astra_weak_memory_stress_test test_weak_memory_stress.cpp)
 
+set_tests_properties(astra_priority_bands_test PROPERTIES TIMEOUT 90)
+set_tests_properties(astra_weak_memory_stress_test PROPERTIES TIMEOUT 90)
+set_tests_properties(astra_coroutine_frame_lifetime_test PROPERTIES TIMEOUT 90)
+set_tests_properties(astra_helping_wait_test PROPERTIES TIMEOUT 90)
+set_tests_properties(astra_metrics_snapshot_test PROPERTIES TIMEOUT 90)
+
 # Package gate 资源使用回归：并行度有界、测试复用库产物、consumer 单次执行。
 add_test(NAME check_package_efficiency COMMAND
          ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1
          python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_package_efficiency.py)
 set_tests_properties(check_package_efficiency PROPERTIES
-  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  TIMEOUT 120)
 
 # AST-052 / R-111：Linux-only tier matrix 与 package 声明审计（以仓库根为工作目录）。
 add_test(NAME check_platform_matrix COMMAND
          ${CMAKE_COMMAND} -E env python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_platform_matrix.py)
 set_tests_properties(check_platform_matrix PROPERTIES
-  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  TIMEOUT 60)
 
 # AST-057 / R-114 / R-117：public tests 与实现控制入口必须物理隔离。
 add_test(NAME check_encapsulation COMMAND
-         ${CMAKE_COMMAND} -E env python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_encapsulation.py)
+         ${CMAKE_COMMAND} -E env
+         "ASTRA_CXX=${CMAKE_CXX_COMPILER}"
+         "ASTRA_BUILD_INCLUDE=${CMAKE_BINARY_DIR}/include"
+         python3 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_encapsulation.py)
 set_tests_properties(check_encapsulation PROPERTIES
-  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  TIMEOUT 120)

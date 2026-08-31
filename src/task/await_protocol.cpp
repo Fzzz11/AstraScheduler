@@ -30,10 +30,9 @@ std::shared_ptr<TaskControlBlock> as_tcb(const std::shared_ptr<void>& token) {
     return std::static_pointer_cast<TaskControlBlock>(token);
 }
 
-std::function<void()> make_resume_action(
-    std::shared_ptr<TaskControlBlock> waiter,
-    std::coroutine_handle<> coro,
-    TaskRescheduler rescheduler) {
+std::function<void()> make_resume_action(std::shared_ptr<TaskControlBlock> waiter,
+                                         std::coroutine_handle<> coro,
+                                         TaskRescheduler rescheduler) {
     return [waiter = std::move(waiter), coro, rescheduler = std::move(rescheduler)]() mutable {
         if (!waiter || !rescheduler) {
             return;
@@ -43,24 +42,23 @@ std::function<void()> make_resume_action(
     };
 }
 
-}  // namespace
+} // namespace
 
-CoroutineResumeInvoker::CoroutineResumeInvoker(
-    std::coroutine_handle<> h,
-    std::shared_ptr<TaskControlBlock> s)
+CoroutineResumeInvoker::CoroutineResumeInvoker(std::coroutine_handle<> h,
+                                               std::shared_ptr<TaskControlBlock> s)
     : coro(h), tcb(std::move(s)) {}
 
 void CoroutineResumeInvoker::execute() {
     if (!tcb) {
         return;
     }
+    tcb->wait_for_await_suspend_publication();
     tcb->transition_to_running();
     const auto now = std::chrono::steady_clock::now();
     const auto pub = tcb->ready_published_at();
     if (now >= pub && pub != std::chrono::steady_clock::time_point{}) {
         record_metrics_ready_queue_wait(
-            tcb->id(),
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - pub).count());
+            tcb->id(), std::chrono::duration_cast<std::chrono::nanoseconds>(now - pub).count());
     }
     record_metrics_resumed(tcb->id());
     record_metrics_resume_segment(tcb->id());
@@ -101,10 +99,9 @@ Priority CoroutineResumeInvoker::priority() const noexcept {
     return tcb ? tcb->priority() : Priority::Normal;
 }
 
-std::shared_ptr<void> tcb_arm_task_await(
-    std::shared_ptr<void> waiter_token,
-    std::shared_ptr<void> target_token,
-    std::coroutine_handle<> coro) {
+std::shared_ptr<void> tcb_arm_task_await(std::shared_ptr<void> waiter_token,
+                                         std::shared_ptr<void> target_token,
+                                         std::coroutine_handle<> coro) {
     auto waiter = as_tcb(waiter_token);
     auto target = as_tcb(target_token);
     if (!waiter || !target) {
@@ -136,10 +133,8 @@ std::shared_ptr<void> tcb_arm_task_await(
     return token;
 }
 
-std::shared_ptr<void> tcb_arm_graph_await(
-    std::shared_ptr<void> waiter_token,
-    GraphRun& run,
-    std::coroutine_handle<> coro) {
+std::shared_ptr<void> tcb_arm_graph_await(std::shared_ptr<void> waiter_token, GraphRun& run,
+                                          std::coroutine_handle<> coro) {
     auto waiter = as_tcb(waiter_token);
     if (!waiter) {
         throw std::logic_error("invalid coroutine shared_state");
@@ -153,12 +148,10 @@ std::shared_ptr<void> tcb_arm_graph_await(
     auto post_action = make_resume_action(waiter, coro, waiter->get_rescheduler());
     waiter->mark_resume_handoff();
     auto hs = token->handshake;
-    AwaitProtocolAccess::add_completion(run, [hs, post_action]() mutable {
-        hs->trigger(post_action);
-    });
-    token->stop_cb.emplace(waiter->stop_token(), [hs, post_action]() mutable {
-        hs->trigger_cancel(post_action);
-    });
+    AwaitProtocolAccess::add_completion(run,
+                                        [hs, post_action]() mutable { hs->trigger(post_action); });
+    token->stop_cb.emplace(waiter->stop_token(),
+                           [hs, post_action]() mutable { hs->trigger_cancel(post_action); });
     waiter->transition_to_suspended();
     hs->arm(std::move(post_action));
     return token;
@@ -179,10 +172,9 @@ void tcb_arm_yield(std::shared_ptr<void> waiter_token, std::coroutine_handle<> c
     }
 }
 
-std::shared_ptr<void> tcb_arm_sleep(
-    std::shared_ptr<void> waiter_token,
-    std::chrono::steady_clock::time_point wake_time,
-    std::coroutine_handle<> coro) {
+std::shared_ptr<void> tcb_arm_sleep(std::shared_ptr<void> waiter_token,
+                                    std::chrono::steady_clock::time_point wake_time,
+                                    std::coroutine_handle<> coro) {
     auto waiter = as_tcb(waiter_token);
     if (!waiter) {
         throw std::logic_error("invalid coroutine shared_state");
@@ -209,16 +201,15 @@ std::shared_ptr<void> tcb_arm_sleep(
     auto ctx = std::make_shared<RegistrationContext>();
     auto post_action = make_resume_action(waiter, coro, rescheduler);
 
-    token->stop_cb.emplace(
-        waiter->stop_token(),
-        [handshake = token->handshake, canceller, ctx, post_action]() mutable {
-            ctx->cancelled.store(true, std::memory_order_release);
-            const std::uint64_t tid = ctx->timer_id.load(std::memory_order_acquire);
-            if (tid != 0 && canceller) {
-                canceller(tid);
-            }
-            handshake->trigger_cancel(post_action);
-        });
+    token->stop_cb.emplace(waiter->stop_token(), [handshake = token->handshake, canceller, ctx,
+                                                  post_action]() mutable {
+        ctx->cancelled.store(true, std::memory_order_release);
+        const std::uint64_t tid = ctx->timer_id.load(std::memory_order_acquire);
+        if (tid != 0 && canceller) {
+            canceller(tid);
+        }
+        handshake->trigger_cancel(post_action);
+    });
 
     if (waiter->stop_token().stop_requested()) {
         token->stop_cb.reset();
@@ -242,9 +233,10 @@ void tcb_finish_await(std::shared_ptr<void>& token, TaskId target) {
     }
     await->stop_cb.reset();
     if (await->source_id.valid()) {
-        const auto dur_ns = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - await->armed_at).count());
+        const auto dur_ns =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::steady_clock::now() - await->armed_at)
+                                           .count());
         record_await_resumed(await->source_id, target, dur_ns);
     }
 }
@@ -254,4 +246,4 @@ bool tcb_await_cancelled(const std::shared_ptr<void>& token) noexcept {
     return await && await->handshake && await->handshake->is_cancelled();
 }
 
-}  // namespace astra::detail
+} // namespace astra::detail

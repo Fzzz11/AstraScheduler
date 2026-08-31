@@ -56,13 +56,11 @@ namespace astra {
 // 前向声明
 class Scheduler;
 class TaskGraph;
-template <typename T = void>
-class Task;
+template <typename T = void> class Task;
 
 namespace detail {
 
-template <typename T>
-struct TaskPromiseBase {
+template <typename T> struct TaskPromiseBase {
     std::shared_ptr<typename TaskHandle<T>::ResultCell> shared_state{nullptr};
 
     std::suspend_always initial_suspend() noexcept {
@@ -86,12 +84,11 @@ struct TaskPromiseBase {
     }
 };
 
-}  // namespace detail
+} // namespace detail
 
 /** @brief 非 void Astra 协程的 promise 类型。 */
-template <typename T = void>
-class TaskPromise final : public detail::TaskPromiseBase<T> {
-public:
+template <typename T = void> class TaskPromise final : public detail::TaskPromiseBase<T> {
+  public:
     using value_type = T;
 
     Task<T> get_return_object() noexcept;
@@ -106,9 +103,8 @@ public:
 };
 
 /** @brief void Astra 协程的 promise 类型。 */
-template <>
-class TaskPromise<void> final : public detail::TaskPromiseBase<void> {
-public:
+template <> class TaskPromise<void> final : public detail::TaskPromiseBase<void> {
+  public:
     using value_type = void;
 
     Task<void> get_return_object() noexcept;
@@ -127,9 +123,8 @@ public:
  * @tparam T 协程返回值类型。
  * @note Task 仅可移动；需交给 Scheduler::spawn() 才会开始执行。
  */
-template <typename T>
-class Task {
-public:
+template <typename T> class Task {
+  public:
     using promise_type = TaskPromise<T>;
     using handle_type = std::coroutine_handle<promise_type>;
 
@@ -169,7 +164,7 @@ public:
         return valid();
     }
 
-private:
+  private:
     friend class Scheduler;
     friend class TaskGraph;
 
@@ -184,8 +179,7 @@ private:
     handle_type coro_{nullptr};
 };
 
-template <typename T>
-inline Task<T> TaskPromise<T>::get_return_object() noexcept {
+template <typename T> inline Task<T> TaskPromise<T>::get_return_object() noexcept {
     return Task<T>{std::coroutine_handle<TaskPromise<T>>::from_promise(*this)};
 }
 
@@ -195,25 +189,20 @@ inline Task<void> TaskPromise<void>::get_return_object() noexcept {
 
 namespace detail {
 
-ASTRA_EXPORT std::shared_ptr<void> tcb_arm_task_await(
-    std::shared_ptr<void> waiter,
-    std::shared_ptr<void> target,
-    std::coroutine_handle<> coro);
-ASTRA_EXPORT std::shared_ptr<void> tcb_arm_graph_await(
-    std::shared_ptr<void> waiter,
-    GraphRun& run,
-    std::coroutine_handle<> coro);
+ASTRA_EXPORT std::shared_ptr<void> tcb_arm_task_await(std::shared_ptr<void> waiter,
+                                                      std::shared_ptr<void> target,
+                                                      std::coroutine_handle<> coro);
+ASTRA_EXPORT std::shared_ptr<void> tcb_arm_graph_await(std::shared_ptr<void> waiter, GraphRun& run,
+                                                       std::coroutine_handle<> coro);
 ASTRA_EXPORT void tcb_arm_yield(std::shared_ptr<void> waiter, std::coroutine_handle<> coro);
-ASTRA_EXPORT std::shared_ptr<void> tcb_arm_sleep(
-    std::shared_ptr<void> waiter,
-    std::chrono::steady_clock::time_point wake_time,
-    std::coroutine_handle<> coro);
+ASTRA_EXPORT std::shared_ptr<void> tcb_arm_sleep(std::shared_ptr<void> waiter,
+                                                 std::chrono::steady_clock::time_point wake_time,
+                                                 std::coroutine_handle<> coro);
 ASTRA_EXPORT void tcb_finish_await(std::shared_ptr<void>& token, TaskId target);
 ASTRA_EXPORT bool tcb_await_cancelled(const std::shared_ptr<void>& token) noexcept;
 
-template <typename T>
-class CoroutineTaskInvokerModel final : public TaskInvokerBase {
-public:
+template <typename T> class CoroutineTaskInvokerModel final : public TaskInvokerBase {
+  public:
     std::coroutine_handle<TaskPromise<T>> coro;
     std::shared_ptr<typename TaskHandle<T>::ResultCell> state;
 
@@ -267,12 +256,11 @@ public:
 };
 
 class GraphCoroutineNodeInvoker final : public TaskInvokerBase {
-public:
+  public:
     std::coroutine_handle<TaskPromise<void>> coro;
     std::shared_ptr<typename TaskHandle<void>::ResultCell> task_state{nullptr};
 
-    explicit GraphCoroutineNodeInvoker(std::coroutine_handle<TaskPromise<void>> h)
-        : coro(h) {}
+    explicit GraphCoroutineNodeInvoker(std::coroutine_handle<TaskPromise<void>> h) : coro(h) {}
 
     ~GraphCoroutineNodeInvoker() override {
         if (coro) {
@@ -305,8 +293,7 @@ public:
 // -----------------------------------------------------------------------------
 // TaskHandle Awaiter (R-076 / D-120)
 // -----------------------------------------------------------------------------
-template <typename T>
-struct TaskHandleAwaiter {
+template <typename T> struct TaskHandleAwaiter {
     TaskHandle<T> handle;
     std::shared_ptr<void> token;
 
@@ -324,10 +311,10 @@ struct TaskHandleAwaiter {
         return st == TaskState::Succeeded || st == TaskState::Failed || st == TaskState::Cancelled;
     }
 
-    template <typename PromiseType>
-    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
-        static_assert(requires { coro.promise().shared_state; },
-                      "co_await TaskHandle is only permitted within astra::Task coroutines (D-120)");
+    template <typename PromiseType> bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+        static_assert(
+            requires { coro.promise().shared_state; },
+            "co_await TaskHandle is only permitted within astra::Task coroutines (D-120)");
 
         auto task_state = coro.promise().shared_state;
         if (!task_state) {
@@ -343,10 +330,10 @@ struct TaskHandleAwaiter {
             throw task_cancelled{};
         }
 
-        token = tcb_arm_task_await(
-            task_state->protocol_token(),
-            handle.shared_state_internal()->protocol_token(),
-            std::coroutine_handle<>(coro));
+        token = tcb_arm_task_await(task_state->protocol_token(),
+                                   handle.shared_state_internal()->protocol_token(),
+                                   std::coroutine_handle<>(coro));
+        task_state->publish_await_suspend();
         return true;
     }
 
@@ -382,10 +369,10 @@ struct GraphRunAwaiter {
         return run.is_completed();
     }
 
-    template <typename PromiseType>
-    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
-        static_assert(requires { coro.promise().shared_state; },
-                      "co_await GraphRun is only permitted within astra::Task coroutines (D-121)");
+    template <typename PromiseType> bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+        static_assert(
+            requires { coro.promise().shared_state; },
+            "co_await GraphRun is only permitted within astra::Task coroutines (D-121)");
 
         auto task_state = coro.promise().shared_state;
         if (!task_state) {
@@ -400,10 +387,9 @@ struct GraphRunAwaiter {
             throw task_cancelled{};
         }
 
-        token = tcb_arm_graph_await(
-            task_state->protocol_token(),
-            run,
-            std::coroutine_handle<>(coro));
+        token =
+            tcb_arm_graph_await(task_state->protocol_token(), run, std::coroutine_handle<>(coro));
+        task_state->publish_await_suspend();
         return true;
     }
 
@@ -416,24 +402,24 @@ struct GraphRunAwaiter {
     }
 };
 
-}  // namespace detail
+} // namespace detail
 
 template <typename T>
-inline detail::TaskHandleAwaiter<T> TaskHandle<T>::operator co_await() const & {
+inline detail::TaskHandleAwaiter<T> TaskHandle<T>::operator co_await() const& {
     if (!cell_) {
         throw std::logic_error("operating on empty/moved-from TaskHandle");
     }
     return detail::TaskHandleAwaiter<T>(*this);
 }
 
-inline detail::TaskHandleAwaiter<void> TaskHandle<void>::operator co_await() const & {
+inline detail::TaskHandleAwaiter<void> TaskHandle<void>::operator co_await() const& {
     if (!cell_) {
         throw std::logic_error("operating on empty/moved-from TaskHandle");
     }
     return detail::TaskHandleAwaiter<void>(*this);
 }
 
-inline detail::GraphRunAwaiter GraphRun::operator co_await() const & {
+inline detail::GraphRunAwaiter GraphRun::operator co_await() const& {
     if (!state_) {
         throw std::logic_error("operating on empty/moved-from GraphRun");
     }
@@ -450,8 +436,9 @@ struct CancellationPointAwaiter {
 
     template <typename PromiseType>
     bool await_suspend(std::coroutine_handle<PromiseType> coro) const {
-        static_assert(requires { coro.promise().shared_state; },
-                      "cancellation_point is only permitted within astra::Task coroutines (D-122)");
+        static_assert(
+            requires { coro.promise().shared_state; },
+            "cancellation_point is only permitted within astra::Task coroutines (D-122)");
         auto task_state = coro.promise().shared_state;
         if (task_state && task_state->stop_token().stop_requested()) {
             throw task_cancelled{};
@@ -476,10 +463,10 @@ struct YieldAwaiter {
         return false;
     }
 
-    template <typename PromiseType>
-    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
-        static_assert(requires { coro.promise().shared_state; },
-                      "yield is only permitted within astra::Task coroutines (D-122)");
+    template <typename PromiseType> bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+        static_assert(
+            requires { coro.promise().shared_state; },
+            "yield is only permitted within astra::Task coroutines (D-122)");
 
         auto task_state = coro.promise().shared_state;
         if (!task_state) {
@@ -491,6 +478,7 @@ struct YieldAwaiter {
         }
 
         detail::tcb_arm_yield(task_state->protocol_token(), std::coroutine_handle<>(coro));
+        task_state->publish_await_suspend();
         return true;
     }
 
@@ -510,17 +498,16 @@ struct SleepAwaiter {
     std::chrono::steady_clock::time_point wake_time;
     std::shared_ptr<void> token;
 
-    explicit SleepAwaiter(std::chrono::steady_clock::time_point wt) noexcept
-        : wake_time(wt) {}
+    explicit SleepAwaiter(std::chrono::steady_clock::time_point wt) noexcept : wake_time(wt) {}
 
     constexpr bool await_ready() const noexcept {
         return false;
     }
 
-    template <typename PromiseType>
-    bool await_suspend(std::coroutine_handle<PromiseType> coro) {
-        static_assert(requires { coro.promise().shared_state; },
-                      "sleep is only permitted within astra::Task coroutines (D-126)");
+    template <typename PromiseType> bool await_suspend(std::coroutine_handle<PromiseType> coro) {
+        static_assert(
+            requires { coro.promise().shared_state; },
+            "sleep is only permitted within astra::Task coroutines (D-126)");
 
         auto task_state = coro.promise().shared_state;
         if (!task_state) {
@@ -535,10 +522,9 @@ struct SleepAwaiter {
             return false;
         }
 
-        token = detail::tcb_arm_sleep(
-            task_state->protocol_token(),
-            wake_time,
-            std::coroutine_handle<>(coro));
+        token = detail::tcb_arm_sleep(task_state->protocol_token(), wake_time,
+                                      std::coroutine_handle<>(coro));
+        task_state->publish_await_suspend();
         return true;
     }
 
@@ -552,7 +538,8 @@ struct SleepAwaiter {
 
 // 挂起到绝对时刻。只能在已 spawn 的 astra::Task 协程内 co_await。
 // 到期前取消则 await 点抛 task_cancelled。未绑定 Runtime 抛 logic_error（R-079）。
-[[nodiscard]] inline SleepAwaiter sleep_until(std::chrono::steady_clock::time_point wake_time) noexcept {
+[[nodiscard]] inline SleepAwaiter
+sleep_until(std::chrono::steady_clock::time_point wake_time) noexcept {
     return SleepAwaiter(wake_time);
 }
 
@@ -582,10 +569,8 @@ inline NodeId TaskGraph::emplace_coroutine(Task<void>&& task) {
     const std::uint64_t seq = nodes_.size() + 1;
     const NodeId id{seq};
     nodes_.push_back(FrozenTaskGraph::NodeData{
-        id,
-        std::make_unique<detail::GraphCoroutineNodeInvoker>(task.release_handle()),
-        std::nullopt
-    });
+        id, std::make_unique<detail::GraphCoroutineNodeInvoker>(task.release_handle()),
+        std::nullopt});
     return id;
 }
 
@@ -597,13 +582,10 @@ inline NodeId TaskGraph::emplace_coroutine(TaskOptions options, Task<void>&& tas
     const std::uint64_t seq = nodes_.size() + 1;
     const NodeId id{seq};
     nodes_.push_back(FrozenTaskGraph::NodeData{
-        id,
-        std::make_unique<detail::GraphCoroutineNodeInvoker>(task.release_handle()),
-        options
-    });
+        id, std::make_unique<detail::GraphCoroutineNodeInvoker>(task.release_handle()), options});
     return id;
 }
 
-}  // namespace astra
+} // namespace astra
 
-#endif  // ASTRA_COROUTINE_HPP
+#endif // ASTRA_COROUTINE_HPP

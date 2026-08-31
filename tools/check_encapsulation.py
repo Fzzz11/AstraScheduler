@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -257,15 +259,40 @@ def audit_public_tests() -> list[str]:
     return problems
 
 
+def probe_compiler() -> str:
+    env = os.environ.get("ASTRA_CXX")
+    if env:
+        return env
+    for candidate in ("c++", "g++", "clang++"):
+        path = shutil.which(candidate)
+        if path:
+            return path
+    return "c++"
+
+
+def probe_build_include() -> Path:
+    env = os.environ.get("ASTRA_BUILD_INCLUDE")
+    if env:
+        return Path(env)
+    build_root = ROOT / "build"
+    if build_root.is_dir():
+        for candidate in sorted(build_root.glob("*/include")):
+            if (candidate / "astra" / "version.hpp").is_file():
+                return candidate
+    return ROOT / "build" / "wsl-gcc-debug" / "include"
+
+
 def run_negative_probes() -> list[str]:
     problems: list[str] = []
+    cxx = probe_compiler()
+    generated_include = probe_build_include()
     with tempfile.TemporaryDirectory(prefix="astra-encapsulation-") as directory:
         probe = Path(directory) / "probe.cpp"
         for name, source in NEGATIVE_PROBES.items():
             probe.write_text(source, encoding="utf-8")
             result = subprocess.run(
-                ["g++", "-std=c++20", "-fsyntax-only", "-I", str(ROOT / "include"),
-                 "-I", str(ROOT / "build" / "wsl-gcc-debug" / "include"), str(probe)],
+                [cxx, "-std=c++20", "-fsyntax-only", "-I", str(ROOT / "include"),
+                 "-I", str(generated_include), str(probe)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

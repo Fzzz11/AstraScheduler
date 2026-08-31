@@ -5,17 +5,17 @@
 #include "ready_linked_invoker.hpp"
 
 #include <chrono>
+#include <thread>
 #include <utility>
 
 namespace astra::detail {
 
-TaskControlBlock::TaskControlBlock(
-    TaskId id,
-    Priority priority,
-    std::optional<TaskDeadline> deadline)
+TaskControlBlock::TaskControlBlock(TaskId id, Priority priority,
+                                   std::optional<TaskDeadline> deadline)
     : id_(id), priority_(priority), deadline_(deadline),
       admitted_at_ns_(std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch()).count()),
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count()),
       ready_published_at_ns_(admitted_at_ns_.load(std::memory_order_relaxed)) {}
 
 TaskControlBlock::~TaskControlBlock() {
@@ -31,7 +31,8 @@ DeadlineDisposition TaskControlBlock::deadline_disposition() const noexcept {
 }
 
 void TaskControlBlock::set_ready_published_at(std::chrono::steady_clock::time_point tp) noexcept {
-    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
+    const auto ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
     ready_published_at_ns_.store(ns, std::memory_order_release);
 }
 
@@ -95,7 +96,8 @@ void TaskControlBlock::add_completion_callback(std::function<void()> cb) {
 
 void TaskControlBlock::record_terminal_wall_time() noexcept {
     const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
     const auto admitted_ns = admitted_at_ns_.load(std::memory_order_relaxed);
     if (now_ns >= admitted_ns && admitted_ns > 0) {
         record_metrics_task_wall_time(id_, static_cast<std::uint64_t>(now_ns - admitted_ns));
@@ -136,16 +138,20 @@ bool TaskControlBlock::try_start() noexcept {
                 deadline_disposition_ = DeadlineDisposition::Met;
             } else {
                 deadline_disposition_ = DeadlineDisposition::Missed;
-                const auto lateness = std::chrono::duration_cast<std::chrono::nanoseconds>(now - deadline_->time_point()).count();
+                const auto lateness = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          now - deadline_->time_point())
+                                          .count();
                 record_metrics_deadline_start_lateness(id_, lateness);
             }
         }
         const auto pub_ns = ready_published_at_ns_.load(std::memory_order_acquire);
-        const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+        const auto now_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
         if (now_ns >= pub_ns && pub_ns > 0) {
             record_metrics_ready_queue_wait(id_, static_cast<std::uint64_t>(now_ns - pub_ns));
         }
-        record_metrics_first_start(id_, deadline_.has_value() ? std::optional{deadline_disposition_} : std::nullopt);
+        record_metrics_first_start(id_, deadline_.has_value() ? std::optional{deadline_disposition_}
+                                                              : std::nullopt);
         return true;
     }
     return false;
@@ -215,10 +221,8 @@ std::exception_ptr TaskControlBlock::exception() const noexcept {
     return exception_;
 }
 
-std::shared_ptr<TaskControlBlock> make_task_control_block(
-    TaskId id,
-    Priority priority,
-    std::optional<TaskDeadline> deadline) {
+std::shared_ptr<TaskControlBlock> make_task_control_block(TaskId id, Priority priority,
+                                                          std::optional<TaskDeadline> deadline) {
     return std::make_shared<TaskControlBlock>(id, priority, deadline);
 }
 
@@ -254,9 +258,8 @@ std::chrono::steady_clock::time_point tcb_ready_published_at(const TaskControlBl
     return tcb.ready_published_at();
 }
 
-void tcb_set_ready_published_at(
-    TaskControlBlock& tcb,
-    std::chrono::steady_clock::time_point tp) noexcept {
+void tcb_set_ready_published_at(TaskControlBlock& tcb,
+                                std::chrono::steady_clock::time_point tp) noexcept {
     tcb.set_ready_published_at(tp);
 }
 
@@ -268,6 +271,25 @@ void tcb_mark_resume_handoff(TaskControlBlock& tcb) noexcept {
     tcb.mark_resume_handoff();
 }
 
+void TaskControlBlock::publish_await_suspend() noexcept {
+    suspend_published_seq_.store(resume_handoff_seq_.load(std::memory_order_relaxed),
+                                 std::memory_order_release);
+}
+
+void TaskControlBlock::wait_for_await_suspend_publication() const noexcept {
+    const auto need = resume_handoff_seq_.load(std::memory_order_acquire);
+    if (need == 0) {
+        return;
+    }
+    while (suspend_published_seq_.load(std::memory_order_acquire) < need) {
+        std::this_thread::yield();
+    }
+}
+
+void tcb_publish_await_suspend(TaskControlBlock& tcb) noexcept {
+    tcb.publish_await_suspend();
+}
+
 void tcb_set_rescheduler(TaskControlBlock& tcb, TaskRescheduler rescheduler) {
     tcb.set_rescheduler(std::move(rescheduler));
 }
@@ -276,10 +298,8 @@ TaskRescheduler tcb_get_rescheduler(const TaskControlBlock& tcb) {
     return tcb.get_rescheduler();
 }
 
-void tcb_set_timer_functions(
-    TaskControlBlock& tcb,
-    TimerRegistrar registrar,
-    TimerCanceller canceller) {
+void tcb_set_timer_functions(TaskControlBlock& tcb, TimerRegistrar registrar,
+                             TimerCanceller canceller) {
     tcb.set_timer_functions(std::move(registrar), std::move(canceller));
 }
 
@@ -332,8 +352,9 @@ void tcb_mark_observed(const TaskControlBlock& tcb) noexcept {
 }
 
 class SubmittedInvokerGate final : public ReadyLinkedInvoker {
-public:
-    SubmittedInvokerGate(std::unique_ptr<TaskInvokerBase> inner, std::shared_ptr<TaskControlBlock> tcb)
+  public:
+    SubmittedInvokerGate(std::unique_ptr<TaskInvokerBase> inner,
+                         std::shared_ptr<TaskControlBlock> tcb)
         : inner_(std::move(inner)), tcb_(std::move(tcb)) {}
 
     void execute() override {
@@ -382,17 +403,15 @@ public:
         return inner_ ? inner_->deadline() : std::nullopt;
     }
 
-private:
+  private:
     std::unique_ptr<TaskInvokerBase> inner_;
     std::shared_ptr<TaskControlBlock> tcb_;
 };
 
-std::unique_ptr<TaskInvokerBase> wrap_submitted_invoker(
-    std::unique_ptr<TaskInvokerBase> inner,
-    std::shared_ptr<void> protocol) {
+std::unique_ptr<TaskInvokerBase> wrap_submitted_invoker(std::unique_ptr<TaskInvokerBase> inner,
+                                                        std::shared_ptr<void> protocol) {
     return std::make_unique<SubmittedInvokerGate>(
-        std::move(inner),
-        std::static_pointer_cast<TaskControlBlock>(std::move(protocol)));
+        std::move(inner), std::static_pointer_cast<TaskControlBlock>(std::move(protocol)));
 }
 
-}  // namespace astra::detail
+} // namespace astra::detail

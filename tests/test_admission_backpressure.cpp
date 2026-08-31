@@ -1,5 +1,6 @@
 #include <astra/scheduler.hpp>
 
+#include "testing/test_seam.hpp"
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -11,18 +12,36 @@
 #include <string>
 #include <thread>
 #include <variant>
-#include "testing/test_seam.hpp"
 
-#define TEST_ASSERT(cond)                                                      \
-    do {                                                                       \
-        if (!(cond)) {                                                         \
-            std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond,     \
-                         __FILE__, __LINE__);                                  \
-            std::abort();                                                      \
-        }                                                                      \
+#define TEST_ASSERT(cond)                                                                          \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond, __FILE__, __LINE__);    \
+            std::abort();                                                                          \
+        }                                                                                          \
     } while (false)
 
 namespace {
+
+template <typename Pred> bool wait_pred(Pred pred, std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+constexpr auto kWait = std::chrono::seconds(2);
+
+void release_promise(std::promise<void>& p) {
+    try {
+        p.set_value();
+    } catch (const std::future_error&) {
+    }
+}
 
 // -----------------------------------------------------------------------------
 // R-061: Reject 策略下容量耗尽立即拒绝（submit 抛异常，try_submit 返回枚举）
@@ -45,9 +64,7 @@ void test_R061_reject_capacity_exhaustion() {
         worker_release.wait();
     });
 
-    while (!worker_started.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return worker_started.load(); }, kWait));
 
     // 2. 提交 2 个 pending 外部任务，恰好占满容量配额（capacity = 2）
     auto h1 = s.submit([]() { return 1; });
@@ -69,16 +86,15 @@ void test_R061_reject_capacity_exhaustion() {
     // 4. try_submit 必须返回 SubmissionError::CapacityExhausted 变体
     auto try_res = s.try_submit([]() { return 4; });
     TEST_ASSERT(std::holds_alternative<astra::SubmissionError>(try_res));
-    TEST_ASSERT(std::get<astra::SubmissionError>(try_res) == astra::SubmissionError::CapacityExhausted);
+    TEST_ASSERT(std::get<astra::SubmissionError>(try_res) ==
+                astra::SubmissionError::CapacityExhausted);
 
     // 5. 释放 Worker，等待所有任务完成，容量配额应正确归零
     worker_release_promise.set_value();
     TEST_ASSERT(h1.get() == 1);
     TEST_ASSERT(h2.get() == 2);
 
-    while (astra::detail::external_pending_count(s) > 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return astra::detail::external_pending_count(s) == 0; }, kWait));
     TEST_ASSERT(astra::detail::external_pending_count(s) == 0);
 
     // 6. 容量释放后可以再次正常提交
@@ -107,9 +123,7 @@ void test_R061_block_backpressure_ordinary_thread() {
         worker_release.wait();
     });
 
-    while (!worker_started.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return worker_started.load(); }, kWait));
 
     // 2. 占满 pending slot（capacity = 1）
     auto h1 = s.submit([]() { return 100; });
@@ -125,9 +139,7 @@ void test_R061_block_backpressure_ordinary_thread() {
         TEST_ASSERT(h2.get() == 200);
     });
 
-    while (!background_submit_started.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return background_submit_started.load(); }, kWait));
 
     // 稍作等待，确认后台线程处于阻塞状态（未完成）
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -166,9 +178,7 @@ void test_R061_worker_cross_runtime_never_blocks() {
         b_worker_release.wait();
     });
 
-    while (!b_worker_started.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return b_worker_started.load(); }, kWait));
 
     // 占满 Runtime B 的 pending slot
     auto hb1 = runtime_b.submit([]() { return 10; });
@@ -181,7 +191,8 @@ void test_R061_worker_cross_runtime_never_blocks() {
     runtime_a.submit([&]() {
         cross_worker_executed.store(true);
         try {
-            // 虽然 Runtime B 配置了 Block，但对于来自 Runtime A 的 Worker 线程绝不能阻塞自锁，必须立即拒绝
+            // 虽然 Runtime B 配置了 Block，但对于来自 Runtime A 的 Worker
+            // 线程绝不能阻塞自锁，必须立即拒绝
             runtime_b.submit([]() { return 20; });
         } catch (const astra::submission_rejected& e) {
             if (e.reason() == astra::SubmissionError::CapacityExhausted) {
@@ -190,19 +201,14 @@ void test_R061_worker_cross_runtime_never_blocks() {
         }
     });
 
-    while (!cross_worker_executed.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return cross_worker_executed.load(); }, kWait));
 
-    while (!cross_worker_rejected.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-
-    TEST_ASSERT(cross_worker_rejected.load());
-
-    // 恢复并清理
-    b_worker_release_promise.set_value();
+    const bool rejected = wait_pred([&] { return cross_worker_rejected.load(); }, kWait);
+    // 无论是否拒绝成功，必须先释放 B 的 Worker，避免跨 Runtime 阻塞时死锁。
+    release_promise(b_worker_release_promise);
     TEST_ASSERT(hb1.get() == 10);
+    TEST_ASSERT(rejected);
+    TEST_ASSERT(cross_worker_rejected.load());
 }
 
 // -----------------------------------------------------------------------------
@@ -234,9 +240,7 @@ void test_R061_internal_submission_exempt_from_external_capacity() {
         worker_release.wait();
     });
 
-    while (!worker_started.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return worker_started.load(); }, kWait));
 
     // 2. 占满外部 pending slot（capacity = 1）
     auto h_ext = s.submit([]() { return 1; });
@@ -246,9 +250,7 @@ void test_R061_internal_submission_exempt_from_external_capacity() {
     worker_release_promise.set_value();
     TEST_ASSERT(h_ext.get() == 1);
 
-    while (!internal_submit_succeeded.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return internal_submit_succeeded.load(); }, kWait));
     TEST_ASSERT(internal_submit_succeeded.load());
 }
 
@@ -273,9 +275,7 @@ void test_R061_block_waiter_wakes_on_shutdown_rejection() {
         worker_release.wait();
     });
 
-    while (!worker_started.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return worker_started.load(); }, kWait));
 
     // 填满 slot
     s->submit([]() { return 1; });
@@ -297,25 +297,36 @@ void test_R061_block_waiter_wakes_on_shutdown_rejection() {
         }
     });
 
-    while (!waiter_started.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    TEST_ASSERT(wait_pred([&] { return waiter_started.load(); }, kWait));
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
-    // 启动异步线程在稍后释放 worker，允许 Scheduler 顺利完成优雅析构
-    std::thread release_thread([worker_release_promise = std::move(worker_release_promise)]() mutable {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        worker_release_promise.set_value();
+    std::atomic<bool> released{false};
+    auto release_once = [&] {
+        if (!released.exchange(true)) {
+            release_promise(worker_release_promise);
+        }
+    };
+
+    // Worker 阻塞在 promise 上；shutdown() 会 join 该 Worker。
+    // 等到 Stopping（或超时）后再释放，避免关停永远等用户任务。
+    std::thread release_thread([&] {
+        const auto deadline = std::chrono::steady_clock::now() + kWait;
+        while (s && s->status().state == astra::SchedulerState::Running &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        release_once();
     });
 
     // AST-053：显式 shutdown 走与析构相同的 Stopping 唤醒路径，唤醒 waiter；
     // waiter 持有自己的 Handle 拷贝，因此 reset 必须在 join 之后才是最后 Handle。
     s->shutdown();
+    release_once();
 
     release_thread.join();
     waiter_thread.join();
     TEST_ASSERT(waiter_rejected.load());
-    s.reset();  // waiter 已结束：此处才是最后 Handle 的 RAII 关停
+    s.reset(); // waiter 已结束：此处才是最后 Handle 的 RAII 关停
 }
 
 // -----------------------------------------------------------------------------
@@ -341,9 +352,7 @@ void test_R062_strong_exception_safety_transaction_rollback() {
     bool exception_propagated = false;
     try {
         // 将按值捕获 ThrowOnCopy，在 TaskInvoker 构造期间抛出异常
-        s.submit([obj]() {
-            (void)obj;
-        });
+        s.submit([obj]() { (void)obj; });
     } catch (const std::runtime_error& e) {
         if (std::string(e.what()) == "simulated copy constructor exception") {
             exception_propagated = true;
@@ -387,7 +396,7 @@ void test_R062_try_submit_result_matrix() {
     TEST_ASSERT(logic_error_thrown);
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::printf("Running astra_admission_backpressure_test...\n");
