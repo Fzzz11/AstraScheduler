@@ -1,11 +1,12 @@
+#include "lifecycle/reaper_registry.hpp"
 #include <astra/capabilities.hpp>
 #include <astra/error.hpp>
 #include <astra/id.hpp>
 #include <astra/scheduler.hpp>
 #include <astra/scheduler_options.hpp>
 #include <astra/status.hpp>
-#include "lifecycle/reaper_registry.hpp"
 
+#include "testing/test_seam.hpp"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -13,12 +14,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <vector>
-#include "testing/test_seam.hpp"
 
 // AST-006 测试套件：解耦 Runtime State 并实现最后 Worker Handle handoff
 // 覆盖 primary 规则：
@@ -26,13 +27,12 @@
 // - R-021: 目标 Worker 最后 Handle 通过 Reaper handoff 返回，杜绝 self-join / deadlock
 // - R-022: Worker orphan handoff 保留 Graceful 默认
 
-#define TEST_ASSERT(cond)                                                      \
-    do {                                                                       \
-        if (!(cond)) {                                                         \
-            std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond,     \
-                         __FILE__, __LINE__);                                  \
-            std::abort();                                                      \
-        }                                                                      \
+#define TEST_ASSERT(cond)                                                                          \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond, __FILE__, __LINE__);    \
+            std::abort();                                                                          \
+        }                                                                                          \
     } while (0)
 
 namespace {
@@ -93,9 +93,17 @@ void test_R021_R022_worker_last_handle_destruction_handoff() {
     auto holder = std::make_shared<astra::Scheduler>(std::move(*s));
     s.reset();
 
+    std::promise<void> worker_started;
+    auto worker_started_future = worker_started.get_future();
+    std::promise<void> release_last_handle;
+    auto release_last_handle_future = release_last_handle.get_future().share();
+
     // 获取引用后，将 holder 移动进 lambda，清空外部变量
     auto& sched_ref = *holder;
-    auto task = [&, h = std::move(holder)]() mutable {
+    auto task = [&, h = std::move(holder), release_last_handle_future]() mutable {
+        worker_started.set_value();
+        release_last_handle_future.wait();
+
         const auto t0 = std::chrono::steady_clock::now();
 
         // 在当前 Worker 线程上销毁唯一的 Handle
@@ -121,13 +129,19 @@ void test_R021_R022_worker_last_handle_destruction_handoff() {
     };
 
     astra::detail::run_test_task_on_worker(sched_ref, std::move(task));
+    TEST_ASSERT(worker_started_future.wait_for(std::chrono::seconds(5)) ==
+                std::future_status::ready);
+    // run_test_task_on_worker() 已返回，其临时 Runtime State 强引用已经释放；
+    // 此后 h.reset() 才真正构成 R-021 的 Worker 最后 Handle 场景。
+    release_last_handle.set_value();
 
     // 等待 Worker 任务执行完成
     const auto wait_start = std::chrono::steady_clock::now();
     while (!task_completed.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if (std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - wait_start).count() > 5) {
+        if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() -
+                                                             wait_start)
+                .count() > 5) {
             TEST_ASSERT(false && "Worker task timed out or deadlocked");
         }
     }
@@ -139,8 +153,9 @@ void test_R021_R022_worker_last_handle_destruction_handoff() {
     const auto reaper_wait_start = std::chrono::steady_clock::now();
     while (registry.registered_count() > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if (std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - reaper_wait_start).count() > 5) {
+        if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() -
+                                                             reaper_wait_start)
+                .count() > 5) {
             TEST_ASSERT(false && "Reaper join timed out");
         }
     }
@@ -186,7 +201,7 @@ void test_R021_multi_worker_handoff() {
     TEST_ASSERT(registry.registered_count() == 0);
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::printf("Running astra_runtime_state_handoff_test...\n");

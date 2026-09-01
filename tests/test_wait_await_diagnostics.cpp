@@ -6,15 +6,15 @@
 #include "astra/graph.hpp"
 #include "astra/metrics.hpp"
 #include "astra/scheduler.hpp"
+#include "astra/task_handle.hpp"
 #include "astra/trace.hpp"
 #include "astra/trace_export.hpp"
-#include "astra/task_handle.hpp"
 #include "observability/trace_collector.hpp"
 
 #include <atomic>
-#include <future>
 #include <cassert>
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -27,8 +27,7 @@ namespace {
 
 using astra::RuntimeId;
 
-template <typename Predicate>
-void wait_until(Predicate&& predicate) {
+template <typename Predicate> void wait_until(Predicate&& predicate) {
     const auto deadline = std::chrono::steady_clock::now() + 10s;
     while (!predicate()) {
         assert(std::chrono::steady_clock::now() < deadline);
@@ -94,9 +93,7 @@ void test_R096_same_runtime_helping_wait() {
         return target.get();
     });
 
-    wait_until([&] {
-        return sched.metrics_snapshot().counters.same_runtime_helping_waits >= 1;
-    });
+    wait_until([&] { return sched.metrics_snapshot().counters.same_runtime_helping_waits >= 1; });
     std::this_thread::sleep_for(30ms);
     release.set_value();
     assert(helper.get() == 7);
@@ -135,9 +132,7 @@ void test_R096_cross_runtime_helping_wait() {
         return target.get();
     });
 
-    wait_until([&] {
-        return a.metrics_snapshot().counters.cross_runtime_helping_waits >= 1;
-    });
+    wait_until([&] { return a.metrics_snapshot().counters.cross_runtime_helping_waits >= 1; });
     release.set_value();
     assert(helper.get() == 9);
 
@@ -164,14 +159,13 @@ void test_R096_coroutine_await_metrics() {
     });
 
     auto coro_fn = [&](astra::Scheduler&) -> astra::Task<int> {
-        co_await inner;  // TaskHandleAwaiter
+        co_await inner; // TaskHandleAwaiter
         co_return 1;
     };
     auto outer = sched.spawn(coro_fn(sched));
 
-    wait_until([&] {
-        return sched.metrics_snapshot().counters.coroutine_await_registrations >= 1;
-    });
+    wait_until(
+        [&] { return sched.metrics_snapshot().counters.coroutine_await_registrations >= 1; });
     std::this_thread::sleep_for(20ms);
     release.set_value();
     assert(outer.get() == 1);
@@ -203,7 +197,7 @@ void test_R096_self_and_depth_rejections() {
         auto h = sched.submit([self_holder, ready_fut]() -> int {
             ready_fut.wait();
             try {
-                (void)self_holder->get();  // direct self-wait
+                (void)self_holder->get(); // direct self-wait
             } catch (const std::logic_error&) {
                 // 语义不变：异常可被任务捕获（R-096 不改变执行）。
             }
@@ -245,7 +239,7 @@ void test_R096_self_and_depth_rejections() {
 
         auto victim = sched.submit([&third]() -> int {
             try {
-                return third.get();  // 在 helping guard（depth=1）内等待未完成任务
+                return third.get(); // 在 helping guard（depth=1）内等待未完成任务
             } catch (const astra::helping_depth_exceeded&) {
                 return -1;
             }
@@ -274,11 +268,9 @@ void test_R096_graph_wait_calls() {
 
     bool ran = false;
     astra::TaskGraph graph;
-    (void)graph.emplace([&ran] {
-        ran = true;
-    });
+    (void)graph.emplace([&ran] { ran = true; });
     auto run = sched.run(std::move(graph).freeze());
-    run.wait();  // 外部线程 graph wait
+    run.wait(); // 外部线程 graph wait
 
     auto snap = sched.metrics_snapshot();
     assert(ran);
@@ -298,7 +290,7 @@ void test_R096_trace_wait_await_edges_offline_rebuild() {
     opts.trace_collector = collector;
     astra::Scheduler sched(opts);
 
-    auto capture = collector->start_capture();  // 在等待发生前开始 recording
+    auto capture = collector->start_capture(); // 在等待发生前开始 recording
 
     auto target = sched.submit([] {
         std::this_thread::sleep_for(15ms);
@@ -323,15 +315,26 @@ void test_R096_trace_wait_await_edges_offline_rebuild() {
     std::size_t begins = 0, ends = 0, armed = 0, triggered = 0, resumed = 0;
     for (const auto& ev : snap.events()) {
         switch (static_cast<astra::TraceEventKind>(ev.kind)) {
-            case astra::TraceEventKind::WaitBegin: ++begins; break;
-            case astra::TraceEventKind::WaitEnd: ++ends; break;
-            case astra::TraceEventKind::AwaitArmed: ++armed; break;
-            case astra::TraceEventKind::AwaitTriggered: ++triggered; break;
-            case astra::TraceEventKind::AwaitResumed: ++resumed; break;
-            default: break;
+        case astra::TraceEventKind::WaitBegin:
+            ++begins;
+            break;
+        case astra::TraceEventKind::WaitEnd:
+            ++ends;
+            break;
+        case astra::TraceEventKind::AwaitArmed:
+            ++armed;
+            break;
+        case astra::TraceEventKind::AwaitTriggered:
+            ++triggered;
+            break;
+        case astra::TraceEventKind::AwaitResumed:
+            ++resumed;
+            break;
+        default:
+            break;
         }
     }
-    assert(begins >= 2);  // helper 的 helping wait + outer 的 await 上下文
+    assert(begins >= 2); // helper 的 helping wait + outer 的 await 上下文
     assert(ends == begins);
     assert(armed >= 1 && triggered >= 1 && resumed >= 1);
 
@@ -367,8 +370,8 @@ void test_R060_unobserved_failure_diagnostics() {
         astra::Scheduler sched(opts);
         {
             auto h = sched.submit([]() -> int { throw std::runtime_error("boom"); });
-            h.wait();  // wait 不标记 observed
-        }  // Handle 释放：unobserved
+            h.wait(); // wait 不标记 observed
+        } // Handle 释放：unobserved
         std::this_thread::sleep_for(20ms);
         auto snap = sched.metrics_snapshot();
         assert(snap.counters.unobserved_failures >= 1);
@@ -396,7 +399,7 @@ void test_R060_unobserved_failure_diagnostics() {
         opts.worker_count = 2;
         opts.trace_collector = collector;
         astra::Scheduler sched(opts);
-        auto capture = collector->start_capture();  // 在 Handle 释放前开始 recording
+        auto capture = collector->start_capture(); // 在 Handle 释放前开始 recording
         {
             auto h = sched.submit([]() -> int { throw std::runtime_error("boom trace"); });
             h.wait();
@@ -405,7 +408,8 @@ void test_R060_unobserved_failure_diagnostics() {
         auto snap = capture.stop();
         bool seen = false;
         for (const auto& ev : snap.events()) {
-            if (static_cast<astra::TraceEventKind>(ev.kind) == astra::TraceEventKind::UnobservedFailure) {
+            if (static_cast<astra::TraceEventKind>(ev.kind) ==
+                astra::TraceEventKind::UnobservedFailure) {
                 seen = true;
             }
         }
@@ -415,7 +419,7 @@ void test_R060_unobserved_failure_diagnostics() {
     std::cout << "[PASS] test_R060_unobserved_failure_diagnostics" << std::endl;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "Running astra_wait_await_diagnostics_test..." << std::endl;
