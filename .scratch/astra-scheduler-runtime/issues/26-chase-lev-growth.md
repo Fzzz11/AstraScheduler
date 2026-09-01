@@ -43,8 +43,8 @@ Claimed by: agent
 - Verification:
   - 架构与实现：`src/chase_lev_deque.hpp` 实现了 `grow()` 几何级扩容（容量翻倍且始终留 1 个空 cell），所有历史 `Buffer` 代数均保存在 `history_buffers_` 中直至 quiescent 析构；提供 `set_inject_growth_failure` 故障注入与分配失败返回 `false` 触发全局队列 fallback 机制。
   - 单元测试：`tests/test_chase_lev_growth.cpp` 覆盖 R-067（极小容量 2 频繁连续扩容至 128+、历史 Buffer 完整保留无 UAF、多并发 Thieves 窃取下任务恰好执行一次、内存耗尽故障注入下安全回退）。
+  - 2026-09-01 Oracle 并发扩容回归：`tests/test_chase_lev_ordering.cpp` 以初始容量 2 和受控 thief 门闩强制扩容、清空、重新发布序列，验证 thief 必须从与已观察索引一致的新 buffer 领取任务，不得读取旧代 cell 导致重复/丢失；Clang/GCC Debug 全量及 ASan/UBSan、TSan 定向重复验证通过。
   - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 24/24 tests 全部 PASS。
   - ASan / UBSan / LSan 内存安全与泄漏门禁：`build/wsl-gcc-asan` 24/24 tests 全部 PASS（0 leaks / 0 errors / 0 deadlocks）。
   - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 41/41 tests 全部 OK。
   - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。
-

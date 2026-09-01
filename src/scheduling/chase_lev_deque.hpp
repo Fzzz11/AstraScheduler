@@ -37,8 +37,8 @@ inline void tsan_release(const void* addr) noexcept {
 #endif
 }
 
-}  // namespace
-}  // namespace astra::detail
+} // namespace
+} // namespace astra::detail
 
 // ============================================================================
 // Chase-Lev work-stealing deque —— 本调度器的"本地任务队列"。
@@ -78,9 +78,8 @@ enum class DequeResultStatus : std::uint8_t {
 // ChaseLevSeqCstOracle (R-066 / D-097)
 // 全序一致（seq_cst）Reference Oracle，用于与生产 portable 算法进行差分验证
 // =============================================================================
-template <typename T>
-class ChaseLevSeqCstOracle {
-private:
+template <typename T> class ChaseLevSeqCstOracle {
+  private:
     // AST-053（TSan 证据）：动态 grow 的 buffer 必须经原子指针发布（steal 端
     // acquire 读取）且旧 buffer 永久保留（R-067 retention），否则并发 steal
     // 读 cells_ 与 owner 的 unique_ptr 换装构成 data race。
@@ -91,9 +90,10 @@ private:
             : capacity(cap), cells(std::make_unique<std::atomic<T>[]>(cap)) {}
     };
 
-public:
-    explicit ChaseLevSeqCstOracle(std::size_t initial_capacity = 64)
-        : top_(0), bottom_(0) {
+  public:
+    using BeforeStealIndexSnapshotHook = void (*)(void*) noexcept;
+
+    explicit ChaseLevSeqCstOracle(std::size_t initial_capacity = 64) : top_(0), bottom_(0) {
         auto buf = std::make_unique<OracleBuffer>(initial_capacity);
         published_.store(buf.get(), std::memory_order_relaxed);
         retired_.push_back(std::move(buf));
@@ -104,6 +104,14 @@ public:
     ChaseLevSeqCstOracle(const ChaseLevSeqCstOracle&) = delete;
     ChaseLevSeqCstOracle& operator=(const ChaseLevSeqCstOracle&) = delete;
 
+    // Deterministic scheduling seam for oracle concurrency tests. Configure
+    // only while the oracle is quiescent; production code never uses it.
+    void set_before_steal_index_snapshot_hook(BeforeStealIndexSnapshotHook hook,
+                                              void* context) noexcept {
+        before_steal_index_snapshot_hook_ = hook;
+        before_steal_index_snapshot_context_ = context;
+    }
+
     void push(T item) {
         OracleBuffer* buf = published_.load(std::memory_order_acquire);
         std::int64_t b = bottom_.load(std::memory_order_seq_cst);
@@ -111,7 +119,8 @@ public:
         if (b - t >= static_cast<std::int64_t>(buf->capacity)) {
             buf = grow(b, t, buf);
         }
-        buf->cells[static_cast<std::size_t>(b) & (buf->capacity - 1)].store(item, std::memory_order_seq_cst);
+        buf->cells[static_cast<std::size_t>(b) & (buf->capacity - 1)].store(
+            item, std::memory_order_seq_cst);
         bottom_.store(b + 1, std::memory_order_seq_cst);
     }
 
@@ -122,10 +131,12 @@ public:
         std::int64_t t = top_.load(std::memory_order_seq_cst);
 
         if (t <= b) {
-            T item = buf->cells[static_cast<std::size_t>(b) & (buf->capacity - 1)].load(std::memory_order_seq_cst);
+            T item = buf->cells[static_cast<std::size_t>(b) & (buf->capacity - 1)].load(
+                std::memory_order_seq_cst);
             if (t == b) {
                 // 争抢最后一个元素
-                if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_seq_cst)) {
+                if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
+                                                 std::memory_order_seq_cst)) {
                     bottom_.store(b + 1, std::memory_order_seq_cst);
                     out = item;
                     return DequeResultStatus::Success;
@@ -142,13 +153,18 @@ public:
     }
 
     DequeResultStatus steal(T& out) {
-        OracleBuffer* buf = published_.load(std::memory_order_acquire);
+        if (before_steal_index_snapshot_hook_ != nullptr) {
+            before_steal_index_snapshot_hook_(before_steal_index_snapshot_context_);
+        }
         std::int64_t t = top_.load(std::memory_order_seq_cst);
         std::int64_t b = bottom_.load(std::memory_order_seq_cst);
 
         if (t < b) {
-            T item = buf->cells[static_cast<std::size_t>(t) & (buf->capacity - 1)].load(std::memory_order_seq_cst);
-            if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_seq_cst)) {
+            OracleBuffer* buf = published_.load(std::memory_order_acquire);
+            T item = buf->cells[static_cast<std::size_t>(t) & (buf->capacity - 1)].load(
+                std::memory_order_seq_cst);
+            if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
+                                             std::memory_order_seq_cst)) {
                 out = item;
                 return DequeResultStatus::Success;
             }
@@ -172,15 +188,17 @@ public:
         return (b > t) ? static_cast<std::size_t>(b - t) : 0;
     }
 
-private:
+  private:
     OracleBuffer* grow(std::int64_t b, std::int64_t t, OracleBuffer* old_buf) {
         auto new_buf = std::make_unique<OracleBuffer>(old_buf->capacity * 2);
         for (std::int64_t i = t; i < b; ++i) {
-            T val = old_buf->cells[static_cast<std::size_t>(i) & (old_buf->capacity - 1)].load(std::memory_order_seq_cst);
-            new_buf->cells[static_cast<std::size_t>(i) & (new_buf->capacity - 1)].store(val, std::memory_order_seq_cst);
+            T val = old_buf->cells[static_cast<std::size_t>(i) & (old_buf->capacity - 1)].load(
+                std::memory_order_seq_cst);
+            new_buf->cells[static_cast<std::size_t>(i) & (new_buf->capacity - 1)].store(
+                val, std::memory_order_seq_cst);
         }
         OracleBuffer* raw = new_buf.get();
-        retired_.push_back(std::move(new_buf));  // R-067 retention：旧 buffer 永久保留
+        retired_.push_back(std::move(new_buf)); // R-067 retention：旧 buffer 永久保留
         published_.store(raw, std::memory_order_release);
         return raw;
     }
@@ -189,6 +207,8 @@ private:
     std::vector<std::unique_ptr<OracleBuffer>> retired_;
     std::atomic<std::int64_t> top_;
     std::atomic<std::int64_t> bottom_;
+    BeforeStealIndexSnapshotHook before_steal_index_snapshot_hook_{nullptr};
+    void* before_steal_index_snapshot_context_{nullptr};
 };
 
 // =============================================================================
@@ -196,9 +216,8 @@ private:
 // 生产 Portable C++20 Chase-Lev Deque
 // 严格遵循 Lê et al. 2013 portable memory ordering 规范
 // =============================================================================
-template <typename T>
-class ChaseLevDeque {
-public:
+template <typename T> class ChaseLevDeque {
+  public:
     struct Buffer {
         std::size_t capacity;
         std::unique_ptr<std::atomic<T>[]> cells;
@@ -215,8 +234,7 @@ public:
         }
     };
 
-    explicit ChaseLevDeque(std::size_t initial_capacity = 64)
-        : top_(0), bottom_(0) {
+    explicit ChaseLevDeque(std::size_t initial_capacity = 64) : top_(0), bottom_(0) {
         auto buf = std::make_unique<Buffer>(initial_capacity);
         active_buffer_.store(buf.get(), std::memory_order_relaxed);
         history_buffers_.push_back(std::move(buf));
@@ -280,8 +298,8 @@ public:
         if (t <= b) {
             T item = buf->load_cell(b, std::memory_order_relaxed);
             if (t == b) {
-                if (top_.compare_exchange_strong(
-                        t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+                if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
+                                                 std::memory_order_relaxed)) {
                     bottom_.store(b + 1, std::memory_order_relaxed);
                     out = item;
                     return DequeResultStatus::Success;
@@ -318,8 +336,8 @@ public:
         if (t < b) {
             Buffer* buf = active_buffer_.load(std::memory_order_acquire);
             T item = buf->load_cell(t, std::memory_order_relaxed);
-            if (top_.compare_exchange_strong(
-                    t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+            if (top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
+                                             std::memory_order_relaxed)) {
                 tsan_acquire(buf);
                 out = item;
                 status = DequeResultStatus::Success;
@@ -354,16 +372,15 @@ public:
 
     static constexpr bool is_lock_free() noexcept {
         return std::atomic<std::uint64_t>::is_always_lock_free &&
-               std::atomic<Buffer*>::is_always_lock_free &&
-               std::atomic<T>::is_always_lock_free &&
+               std::atomic<Buffer*>::is_always_lock_free && std::atomic<T>::is_always_lock_free &&
                std::atomic<bool>::is_always_lock_free &&
                std::atomic<std::uint32_t>::is_always_lock_free;
     }
 
     // Quiescent Rebase (R-068 / D-101):
     // 设置 maintenance，等待 active thief 归零后把 live interval 规范化到 0。
-    bool maybe_quiescent_rebase(
-        std::uint64_t high_watermark = kDefaultRebaseHighWatermark) noexcept {
+    bool
+    maybe_quiescent_rebase(std::uint64_t high_watermark = kDefaultRebaseHighWatermark) noexcept {
         std::uint64_t b = bottom_.load(std::memory_order_relaxed);
         std::uint64_t t = top_.load(std::memory_order_relaxed);
         if (b < high_watermark && t < high_watermark) {
@@ -437,7 +454,7 @@ public:
         inject_rebase_failure_.store(inject, std::memory_order_relaxed);
     }
 
-private:
+  private:
     static constexpr std::uint64_t kDefaultRebaseHighWatermark = (UINT64_C(1) << 58);
 
     Buffer* grow(std::uint64_t b, std::uint64_t t, Buffer* old_buf) {
@@ -475,6 +492,6 @@ private:
     std::atomic<std::uint32_t> active_thieves_{0};
 };
 
-}  // namespace astra::detail
+} // namespace astra::detail
 
-#endif  // ASTRA_SRC_CHASE_LEV_DEQUE_HPP
+#endif // ASTRA_SRC_CHASE_LEV_DEQUE_HPP

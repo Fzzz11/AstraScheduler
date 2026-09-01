@@ -43,8 +43,9 @@ Claimed by: agent
 - Verification:
   - 架构与实现：`src/chase_lev_deque.hpp` 实现了 `ChaseLevSeqCstOracle` 全序参考实现与严格符合 Lê et al. 2013 论文 portable memory-order 规范的生产级 `ChaseLevDeque`。
   - 单元测试：`tests/test_chase_lev_ordering.cpp` 覆盖 R-066（单线程 LIFO pop / FIFO steal 契约验证、1000 轮 1 Owner + 4 Thieves 针对单个元素的 last-item CAS 决胜仲裁、10000 任务高并发多 Thief 差分压测）。
+  - 2026-09-01 Oracle growth snapshot 回归：受控门闩稳定复现 thief 先捕获旧 buffer、再观察扩容后 `top/bottom` 时错误返回旧值 `300`（期望新值 `500`）的 RED；将 acquire buffer 快照移动到 `top/bottom` 非空判断之后得到 GREEN，回归在 Clang 下连续 100 次、ASan/UBSan 与 TSan 下各连续 30 次通过。
+  - 2026-09-01 本机 WSL CI 对等验证：Clang Debug 54/54、GCC Debug 54/54 全部通过；clang-format 18 dry-run 与 clang-tidy 18（`bugprone-*`、`concurrency-*`）返回成功。
   - In-tree CTest：`wsl bash -lc "ctest --test-dir build/wsl-gcc-debug --output-on-failure"` 23/23 tests 全部 PASS。
   - ASan / UBSan / LSan 内存安全与泄漏门禁：`build/wsl-gcc-asan` 23/23 tests 全部 PASS（0 leaks / 0 errors / 0 deadlocks）。
   - Package consumer 与安装门禁：`python3 -X utf8 tools/check_cmake_package.py` 40/40 tests 全部 OK。
   - 发布门禁：`python3 -X utf8 tools/check_release_gates.py` 15/15 tests 全部 OK。
-

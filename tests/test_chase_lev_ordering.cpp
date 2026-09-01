@@ -7,13 +7,12 @@
 #include <thread>
 #include <vector>
 
-#define TEST_ASSERT(cond)                                                      \
-    do {                                                                       \
-        if (!(cond)) {                                                         \
-            std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond,     \
-                         __FILE__, __LINE__);                                  \
-            std::abort();                                                      \
-        }                                                                      \
+#define TEST_ASSERT(cond)                                                                          \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond, __FILE__, __LINE__);    \
+            std::abort();                                                                          \
+        }                                                                                          \
     } while (false)
 
 namespace {
@@ -107,7 +106,8 @@ void test_R066_last_item_race_resolution() {
 
         // Owner 线程执行 Pop
         threads.emplace_back([&] {
-            while (!start_signal.load(std::memory_order_acquire)) {}
+            while (!start_signal.load(std::memory_order_acquire)) {
+            }
             int val = 0;
             if (deque.pop(val) == astra::detail::DequeResultStatus::Success) {
                 success_count.fetch_add(1, std::memory_order_relaxed);
@@ -118,7 +118,8 @@ void test_R066_last_item_race_resolution() {
         // Thief 线程执行 Steal
         for (int t = 0; t < kThieves; ++t) {
             threads.emplace_back([&] {
-                while (!start_signal.load(std::memory_order_acquire)) {}
+                while (!start_signal.load(std::memory_order_acquire)) {
+                }
                 int val = 0;
                 if (deque.steal(val) == astra::detail::DequeResultStatus::Success) {
                     success_count.fetch_add(1, std::memory_order_relaxed);
@@ -142,10 +143,65 @@ void test_R066_last_item_race_resolution() {
 }
 
 // -----------------------------------------------------------------------------
-// 3. 高并发多 Thief 差分压测（1 Owner + 4 Thieves, 10,000 Tasks）
+// 3. Oracle 扩容期间的 buffer/index 快照必须一致（R-066 / R-067）
 // -----------------------------------------------------------------------------
-template <typename DequeType>
-void run_stress_test(const char* name) {
+struct OracleStealSnapshotGate {
+    std::atomic<bool> entered{false};
+    std::atomic<bool> release{false};
+
+    static void pause(void* context) noexcept {
+        auto* gate = static_cast<OracleStealSnapshotGate*>(context);
+        gate->entered.store(true, std::memory_order_release);
+        while (!gate->release.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    }
+};
+
+void test_R066_R067_oracle_growth_snapshot_consistency() {
+    astra::detail::ChaseLevSeqCstOracle<int> oracle(2);
+
+    // 在旧 buffer 留下一个已消费值，后续可检测 thief 是否错误读取旧代 cell。
+    oracle.push(100);
+    int value = -1;
+    TEST_ASSERT(oracle.pop(value) == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(value == 100);
+
+    OracleStealSnapshotGate gate;
+    oracle.set_before_steal_index_snapshot_hook(&OracleStealSnapshotGate::pause, &gate);
+
+    astra::detail::DequeResultStatus steal_status = astra::detail::DequeResultStatus::Empty;
+    int stolen = -1;
+    std::thread thief([&] { steal_status = oracle.steal(stolen); });
+
+    while (!gate.entered.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    // Thief 暂停在索引快照前；Owner 扩容、清空队列，再在新 buffer 发布 500。
+    oracle.push(200);
+    oracle.push(300);
+    oracle.push(400);
+    TEST_ASSERT(oracle.pop(value) == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(value == 400);
+    TEST_ASSERT(oracle.pop(value) == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(value == 300);
+    TEST_ASSERT(oracle.pop(value) == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(value == 200);
+    oracle.push(500);
+
+    gate.release.store(true, std::memory_order_release);
+    thief.join();
+
+    TEST_ASSERT(steal_status == astra::detail::DequeResultStatus::Success);
+    TEST_ASSERT(stolen == 500);
+    TEST_ASSERT(oracle.empty());
+}
+
+// -----------------------------------------------------------------------------
+// 4. 高并发多 Thief 差分压测（1 Owner + 4 Thieves, 10,000 Tasks）
+// -----------------------------------------------------------------------------
+template <typename DequeType> void run_stress_test(const char* name) {
     constexpr int kTotalItems = 10000;
     constexpr int kThieves = 4;
 
@@ -211,12 +267,13 @@ void test_R066_oracle_portable_differential_stress() {
     run_stress_test<astra::detail::ChaseLevDeque<int>>("ChaseLevPortableDeque");
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::printf("Running astra_chase_lev_ordering_test...\n");
     test_R066_single_thread_lifo_fifo_contract();
     test_R066_last_item_race_resolution();
+    test_R066_R067_oracle_growth_snapshot_consistency();
     test_R066_oracle_portable_differential_stress();
     std::printf("All AST-025 Chase-Lev memory ordering tests passed successfully!\n");
     return 0;
